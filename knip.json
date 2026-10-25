@@ -1,0 +1,41 @@
+{
+	"$schema": "https://unpkg.com/knip@6/schema.json",
+	"workspaces": {
+		"packages/core": {
+			"project": [
+				"src/**/*.{ts,tsx}!"
+			]
+		},
+		"packages/react-native": {
+			"project": [
+				"src/**/*.{ts,tsx}!"
+			],
+			"ignoreDependencies": [
+				"expo-file-system",
+				"expo-image-picker"
+			]
+		},
+		"apps/desktop": {
+			"entry": [
+				"scripts/before-build.cjs!",
+				"scripts/after-pack.cjs!"
+			],
+			"project": [
+				"src/**/*.{ts,tsx}!",
+				"src/**/*.css!",
+				"scripts/**/*.{cjs,mjs}!",
+				"e2e/**/*.ts!",
+				"*.ts!"
+			]
+		},
+		"examples/expo-demo": {
+			"entry": [
+				"src/lib/devtools-host-disabled.tsx!"
+			],
+			"ignoreDependencies": [
+				"expo-updates",
+				"expo-system-ui"
+			]
+		}
+	}
+}

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>RN Devtools</title>
+  <desc>A phone between blue code chevrons on a graphite app tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="512" y1="64" x2="512" y2="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#20252C"/>
+      <stop offset="1" stop-color="#0B0E13"/>
+    </linearGradient>
+    <linearGradient id="code" x1="512" y1="408" x2="512" y2="616" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#70A5FF"/>
+      <stop offset="1" stop-color="#4386F7"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#tile)"/>
+  <rect x="66" y="66" width="892" height="892" rx="206" stroke="#353C46" stroke-width="4"/>
+  <path d="M298 410 210 512 298 614M726 410 814 512 726 614" stroke="url(#code)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="396" y="272" width="232" height="480" rx="54" stroke="#F2F4F7" stroke-width="40"/>
+</svg>

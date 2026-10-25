@@ -1,0 +1,27 @@
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+release/
+.turbo/
+*.tsbuildinfo
+
+# Native helper build output
+apps/desktop/build/native/
+
+# Test output
+coverage/
+
+# Local environment
+.env
+.env.*
+!.env.example
+.npmrc
+
+# Editor and OS
+.DS_Store
+*.log
+.idea/
+.vscode/
+.build/

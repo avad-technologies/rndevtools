@@ -1,0 +1,15 @@
+{
+	"cli": "2.121.0",
+	"surface": "migration.list",
+	"provenance": "synthesized",
+	"source": "stack-local-database.ts:84-102: --local commands fail as LocalDbRunningError carrying the mismatch text",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "LocalDbRunningError",
+			"message": "Stack b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8 is served by release 0.1.0+a559977f2134f3a5, but this client is release 0.1.0+8b6cc1ef8a8469e7; stop or destroy the stack (both work across releases) and retry"
+		}
+	},
+	"stderr": []
+}

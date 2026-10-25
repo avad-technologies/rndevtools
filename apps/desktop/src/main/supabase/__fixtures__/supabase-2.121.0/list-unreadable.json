@@ -1,0 +1,31 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.list",
+	"provenance": "synthesized",
+	"source": "list.handler.ts:30-33 stderr warning for an undecodable stack",
+	"exitCode": 0,
+	"stdout": {
+		"stacks": [
+			{
+				"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+				"project_root": "/private/tmp/supa-spike/work/repo",
+				"name": "default",
+				"branch_context": "refs/heads/main",
+				"runtime": "native",
+				"owner": "reachable"
+			},
+			{
+				"id": "b7d2540d73c761df0a9c08923965e2172482324bb631b0d9d71962daa1b499e6",
+				"project_root": "/private/tmp/supa-spike/work/wt-b",
+				"name": "default",
+				"branch_context": "refs/heads/feature-b",
+				"runtime": "native",
+				"owner": "reachable"
+			}
+		],
+		"message": ""
+	},
+	"stderr": [
+		"Warning: skipping invalid stack aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: state.json is not valid JSON"
+	]
+}

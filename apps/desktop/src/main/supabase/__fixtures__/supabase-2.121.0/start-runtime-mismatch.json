@@ -1,0 +1,16 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.start",
+	"provenance": "synthesized",
+	"source": "stack.shared.ts:195-202 for a Docker stack on the same identity",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "ExperimentalStackStartError",
+			"message": "Requested runtime native does not match existing stack runtime docker",
+			"suggestion": "Use --runtime auto to reuse the saved runtime, or omit --stack-id and choose a different --stack name."
+		}
+	},
+	"stderr": []
+}

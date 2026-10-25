@@ -1,0 +1,19 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.start",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) D-start (pinned api port held by wt-c's stack)",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "ExperimentalStackStartError",
+			"message": "rest 647cf238-de8d-4d1b-b23e-8207d7c67ec6: Public port 54321 for api is in use by the stack of project /private/tmp/supa-spike/work/wt-c (stack caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6); run `supabase stack stop` in that project, or configure a different port for api",
+			"suggestion": "Set `api.port` in supabase/config.toml (or SUPABASE_API_PORT) to a free port."
+		}
+	},
+	"stderr": [
+		"[task] start: Starting local Supabase stack...",
+		"[task] failed: rest 647cf238-de8d-4d1b-b23e-8207d7c67ec6: Public port 54321 for api is in use by the stack of project /private/tmp/supa-spike/work/wt-c (stack caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6); run `supabase stack stop` in that project, or configure a different port for api"
+	]
+}

@@ -1,0 +1,18 @@
+# Local Supabase for this app. RN Devtools gives each git worktree its own
+# native stack with automatic ports, so nothing here pins a port.
+project_id = "example-app"
+
+[experimental]
+# The managed stack backend: one stack per worktree and branch.
+stack = true
+
+[db]
+major_version = 17
+
+[studio]
+# Studio serves an unauthenticated SQL endpoint while it runs; RN Devtools
+# turns it on for one stack when you ask.
+enabled = false
+
+[analytics]
+enabled = false

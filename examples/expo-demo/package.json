@@ -1,0 +1,39 @@
+{
+	"name": "@rndevtools/example-expo-demo",
+	"version": "0.0.0",
+	"private": true,
+	"main": "index.ts",
+	"scripts": {
+		"lint": "biome check src",
+		"typecheck": "tsc --noEmit",
+		"verify:bundle": "expo export --platform ios --platform android --output-dir ./build && rndevtools-verify-bundle ./build",
+		"quality": "pnpm lint && pnpm typecheck && pnpm verify:seam && pnpm verify:scene",
+		"verify:scene": "node --test scripts/scene-lifecycle.test.mjs",
+		"verify:seam": "node scripts/verify-prune-seam.mjs"
+	},
+	"dependencies": {
+		"@expo/material-symbols": "catalog:",
+		"@expo/ui": "catalog:",
+		"@rndevtools/core": "workspace:*",
+		"@rndevtools/react-native": "workspace:*",
+		"@tanstack/react-query": "catalog:",
+		"expo": "catalog:",
+		"expo-constants": "57.0.21",
+		"expo-dev-client": "catalog:",
+		"expo-device": "57.0.2",
+		"expo-file-system": "57.0.7",
+		"react": "catalog:",
+		"react-native": "catalog:",
+		"react-native-gesture-handler": "catalog:",
+		"react-native-reanimated": "catalog:",
+		"react-native-safe-area-context": "catalog:",
+		"react-native-svg": "catalog:",
+		"react-native-worklets": "catalog:"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"@types/react": "catalog:",
+		"supabase": "catalog:",
+		"typescript": "catalog:"
+	}
+}

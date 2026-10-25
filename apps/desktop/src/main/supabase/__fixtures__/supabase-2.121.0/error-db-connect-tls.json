@@ -1,0 +1,18 @@
+{
+	"cli": "2.121.0",
+	"surface": "migration.up",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-migup-dburl-wtc (a non-matching --db-url without sslmode=disable)",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "DbConnectError",
+			"message": "failed to connect to postgres: failed to connect to `host=127.0.0.1 user=postgres database=postgres`: tls error (The server does not support SSL connections)",
+			"suggestion": "This server does not accept TLS. Set `sslmode=disable` on the connection string to connect in plaintext."
+		}
+	},
+	"stderr": [
+		"Connecting to remote database..."
+	]
+}

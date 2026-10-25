@@ -1,0 +1,108 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.start",
+	"provenance": "synthesized",
+	"source": "start.handler.ts:731 fast path for a running stack",
+	"exitCode": 0,
+	"stdout": {
+		"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+		"runtime": "native",
+		"endpoints": {
+			"database.sql": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 30630,
+				"url": "tcp://127.0.0.1:30630"
+			},
+			"rest.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"auth.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"realtime.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"realtime.rpc": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 25862,
+				"url": "tcp://127.0.0.1:25862"
+			},
+			"storage.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"functions.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"functions.inspector": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 25596,
+				"url": "tcp://127.0.0.1:25596"
+			},
+			"mail.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 21213,
+				"url": "http://127.0.0.1:21213"
+			},
+			"mail.smtp": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 30079,
+				"url": "tcp://127.0.0.1:30079"
+			},
+			"mail.pop3": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 28903,
+				"url": "tcp://127.0.0.1:28903"
+			}
+		},
+		"lazy_services": [
+			"rest",
+			"auth",
+			"realtime",
+			"storage",
+			"functions",
+			"mail"
+		],
+		"env": {
+			"API_URL": "http://127.0.0.1:26211",
+			"REST_URL": "http://127.0.0.1:26211/rest/v1",
+			"FUNCTIONS_URL": "http://127.0.0.1:26211/functions/v1",
+			"DB_URL": "postgresql://postgres:<password>@127.0.0.1:<port>/postgres",
+			"MAILPIT_URL": "http://127.0.0.1:21213",
+			"INBUCKET_URL": "http://127.0.0.1:21213",
+			"PUBLISHABLE_KEY": "<publishable-key>",
+			"SECRET_KEY": "<secret-key>",
+			"ANON_KEY": "<anon-jwt>",
+			"SERVICE_ROLE_KEY": "<service-role-jwt>",
+			"STORAGE_S3_URL": "http://127.0.0.1:26211/storage/v1/s3",
+			"S3_PROTOCOL_ACCESS_KEY_ID": "<s3-access-key>",
+			"S3_PROTOCOL_ACCESS_KEY_SECRET": "<s3-secret>",
+			"S3_PROTOCOL_REGION": "local"
+		},
+		"message": "Stack is already running with its current services. Run `supabase stack stop`, then `supabase stack start` to apply configuration or service-selection changes."
+	},
+	"stderr": [
+		"[task] start: Starting local Supabase stack...",
+		"[task] done: Stack is ready."
+	]
+}

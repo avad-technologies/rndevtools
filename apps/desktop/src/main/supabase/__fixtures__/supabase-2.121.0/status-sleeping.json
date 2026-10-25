@@ -1,0 +1,300 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.status",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-status-sleeping",
+	"exitCode": 0,
+	"stdout": {
+		"identity": {
+			"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+			"name": "default",
+			"project_root": "/private/tmp/supa-spike/work/repo",
+			"branch_context": "refs/heads/main"
+		},
+		"runtime": "native",
+		"owner": "reachable",
+		"lifecycle": "running",
+		"readiness": "sleeping",
+		"composition": {
+			"members": [
+				{
+					"id": "13fcca92-620e-4c85-9e1c-d1901558554c",
+					"service": "database",
+					"activation": "eager",
+					"state": "running",
+					"lifecycle": "running",
+					"health": "healthy"
+				},
+				{
+					"id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+					"service": "rest",
+					"activation": "lazy",
+					"state": "sleeping",
+					"lifecycle": "stopped",
+					"health": null
+				},
+				{
+					"id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+					"service": "auth",
+					"activation": "lazy",
+					"state": "sleeping",
+					"lifecycle": "stopped",
+					"health": null
+				},
+				{
+					"id": "62617916-de3c-4132-9fb2-e1f21bb24e73",
+					"service": "realtime",
+					"activation": "lazy",
+					"state": "sleeping",
+					"lifecycle": "stopped",
+					"health": null
+				},
+				{
+					"id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+					"service": "storage",
+					"activation": "lazy",
+					"state": "sleeping",
+					"lifecycle": "stopped",
+					"health": null
+				},
+				{
+					"id": "ca6142fa-56f2-4208-9a73-2c833186b2e4",
+					"service": "functions",
+					"activation": "lazy",
+					"state": "sleeping",
+					"lifecycle": "stopped",
+					"health": null
+				},
+				{
+					"id": "b2455e4b-f0f9-48be-b910-bf45d7688720",
+					"service": "mail",
+					"activation": "lazy",
+					"state": "sleeping",
+					"lifecycle": "stopped",
+					"health": null
+				}
+			]
+		},
+		"services": [
+			{
+				"id": "13fcca92-620e-4c85-9e1c-d1901558554c",
+				"service": "database",
+				"state": "running",
+				"lifecycle": "running",
+				"health": "healthy",
+				"endpoints": {
+					"sql": {
+						"protocol": "tcp",
+						"address": "127.0.0.1",
+						"port": 30630,
+						"url": "tcp://127.0.0.1:30630"
+					}
+				}
+			},
+			{
+				"id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+				"service": "rest",
+				"state": "sleeping",
+				"lifecycle": "stopped",
+				"health": null,
+				"endpoints": {
+					"http": {
+						"protocol": "http",
+						"address": "127.0.0.1",
+						"port": 26211,
+						"url": "http://127.0.0.1:26211"
+					}
+				}
+			},
+			{
+				"id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+				"service": "auth",
+				"state": "sleeping",
+				"lifecycle": "stopped",
+				"health": null,
+				"endpoints": {
+					"http": {
+						"protocol": "http",
+						"address": "127.0.0.1",
+						"port": 26211,
+						"url": "http://127.0.0.1:26211"
+					}
+				}
+			},
+			{
+				"id": "62617916-de3c-4132-9fb2-e1f21bb24e73",
+				"service": "realtime",
+				"state": "sleeping",
+				"lifecycle": "stopped",
+				"health": null,
+				"endpoints": {
+					"http": {
+						"protocol": "http",
+						"address": "127.0.0.1",
+						"port": 26211,
+						"url": "http://127.0.0.1:26211"
+					},
+					"rpc": {
+						"protocol": "tcp",
+						"address": "127.0.0.1",
+						"port": 25862,
+						"url": "tcp://127.0.0.1:25862"
+					}
+				}
+			},
+			{
+				"id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+				"service": "storage",
+				"state": "sleeping",
+				"lifecycle": "stopped",
+				"health": null,
+				"endpoints": {
+					"http": {
+						"protocol": "http",
+						"address": "127.0.0.1",
+						"port": 26211,
+						"url": "http://127.0.0.1:26211"
+					}
+				}
+			},
+			{
+				"id": "ca6142fa-56f2-4208-9a73-2c833186b2e4",
+				"service": "functions",
+				"state": "sleeping",
+				"lifecycle": "stopped",
+				"health": null,
+				"endpoints": {
+					"http": {
+						"protocol": "http",
+						"address": "127.0.0.1",
+						"port": 26211,
+						"url": "http://127.0.0.1:26211"
+					},
+					"inspector": {
+						"protocol": "tcp",
+						"address": "127.0.0.1",
+						"port": 25596,
+						"url": "tcp://127.0.0.1:25596"
+					}
+				}
+			},
+			{
+				"id": "b2455e4b-f0f9-48be-b910-bf45d7688720",
+				"service": "mail",
+				"state": "sleeping",
+				"lifecycle": "stopped",
+				"health": null,
+				"endpoints": {
+					"http": {
+						"protocol": "http",
+						"address": "127.0.0.1",
+						"port": 21213,
+						"url": "http://127.0.0.1:21213"
+					},
+					"smtp": {
+						"protocol": "tcp",
+						"address": "127.0.0.1",
+						"port": 30079,
+						"url": "tcp://127.0.0.1:30079"
+					},
+					"pop3": {
+						"protocol": "tcp",
+						"address": "127.0.0.1",
+						"port": 28903,
+						"url": "tcp://127.0.0.1:28903"
+					}
+				}
+			}
+		],
+		"endpoints": {
+			"database.sql": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 30630,
+				"url": "tcp://127.0.0.1:30630"
+			},
+			"rest.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"auth.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"realtime.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"realtime.rpc": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 25862,
+				"url": "tcp://127.0.0.1:25862"
+			},
+			"storage.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"functions.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 26211,
+				"url": "http://127.0.0.1:26211"
+			},
+			"functions.inspector": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 25596,
+				"url": "tcp://127.0.0.1:25596"
+			},
+			"mail.http": {
+				"protocol": "http",
+				"address": "127.0.0.1",
+				"port": 21213,
+				"url": "http://127.0.0.1:21213"
+			},
+			"mail.smtp": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 30079,
+				"url": "tcp://127.0.0.1:30079"
+			},
+			"mail.pop3": {
+				"protocol": "tcp",
+				"address": "127.0.0.1",
+				"port": 28903,
+				"url": "tcp://127.0.0.1:28903"
+			}
+		},
+		"config_drift": {
+			"status": "unchanged",
+			"message": "Project configuration matches the saved composition members."
+		},
+		"env": {
+			"API_URL": "http://127.0.0.1:26211",
+			"REST_URL": "http://127.0.0.1:26211/rest/v1",
+			"FUNCTIONS_URL": "http://127.0.0.1:26211/functions/v1",
+			"DB_URL": "postgresql://postgres:<password>@127.0.0.1:<port>/postgres",
+			"MAILPIT_URL": "http://127.0.0.1:21213",
+			"INBUCKET_URL": "http://127.0.0.1:21213",
+			"PUBLISHABLE_KEY": "<publishable-key>",
+			"SECRET_KEY": "<secret-key>",
+			"ANON_KEY": "<anon-jwt>",
+			"SERVICE_ROLE_KEY": "<service-role-jwt>",
+			"STORAGE_S3_URL": "http://127.0.0.1:26211/storage/v1/s3",
+			"S3_PROTOCOL_ACCESS_KEY_ID": "<s3-access-key>",
+			"S3_PROTOCOL_ACCESS_KEY_SECRET": "<s3-secret>",
+			"S3_PROTOCOL_REGION": "local"
+		},
+		"message": ""
+	},
+	"stderr": []
+}

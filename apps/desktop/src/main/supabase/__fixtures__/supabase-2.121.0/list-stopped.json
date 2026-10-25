@@ -1,0 +1,21 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.list",
+	"provenance": "synthesized",
+	"source": "spike 2 (2026-10-17): a stopped stack lists with owner unavailable",
+	"exitCode": 0,
+	"stdout": {
+		"stacks": [
+			{
+				"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+				"project_root": "/private/tmp/supa-spike/work/repo",
+				"name": "default",
+				"branch_context": "refs/heads/main",
+				"runtime": "native",
+				"owner": "unavailable"
+			}
+		],
+		"message": ""
+	},
+	"stderr": []
+}

@@ -1,0 +1,103 @@
+{
+	"name": "@rndevtools/core",
+	"version": "0.2.0",
+	"description": "Extensible, privacy-bounded on-device diagnostics for Expo and React Native",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/adalloul0928/rndevtools.git",
+		"directory": "packages/core"
+	},
+	"homepage": "https://github.com/adalloul0928/rndevtools/tree/main/packages/core#readme",
+	"bugs": "https://github.com/adalloul0928/rndevtools/issues",
+	"keywords": [
+		"react-native",
+		"expo",
+		"devtools",
+		"debugging",
+		"diagnostics",
+		"network-inspector"
+	],
+	"sideEffects": false,
+	"publishConfig": {
+		"access": "public"
+	},
+	"source": "./src/index.ts",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./desktop-protocol": "./src/desktop-protocol.ts",
+		"./format": "./src/core/format.ts",
+		"./redact": "./src/core/redact.ts",
+		"./scenario-model": "./src/scenario-model.ts",
+		"./serialize": "./src/core/serialize.ts",
+		"./plugins": "./src/plugins/index.ts",
+		"./plugins/images": "./src/plugins/images.tsx",
+		"./plugins/image-overlay": "./src/plugins/image-overlay.ts",
+		"./plugins/storage": "./src/plugins/storage.tsx",
+		"./plugins/network-presentation": "./src/plugins/network-presentation.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"src",
+		"!src/**/*.test.ts",
+		"!src/**/*.test.tsx",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"lint": "biome check src",
+		"typecheck": "tsc --noEmit",
+		"check:unused": "knip --directory ../.. --workspace packages/core --treat-config-hints-as-errors",
+		"check:cycles": "knip --directory ../.. --workspace packages/core --cycles --treat-config-hints-as-errors",
+		"check:dead-code": "pnpm check:unused && pnpm check:cycles",
+		"test:run": "jest --runInBand",
+		"test:coverage": "jest --runInBand --coverage",
+		"quality": "pnpm lint && pnpm typecheck && pnpm check:dead-code && pnpm test:run"
+	},
+	"peerDependencies": {
+		"@expo/material-symbols": ">=0.1 <1",
+		"@expo/ui": ">=56 <58",
+		"@tanstack/react-query": ">=5 <6",
+		"expo": ">=56 <58",
+		"react": ">=19 <20",
+		"react-native": ">=0.85 <0.87",
+		"react-native-gesture-handler": ">=2.16 <3",
+		"react-native-reanimated": ">=4 <5",
+		"react-native-safe-area-context": ">=5 <6",
+		"react-native-svg": ">=15 <16",
+		"react-native-worklets": ">=0.8 <1"
+	},
+	"peerDependenciesMeta": {
+		"@tanstack/react-query": {
+			"optional": true
+		}
+	},
+	"dependencies": {
+		"@hugeicons/core-free-icons": "catalog:",
+		"@hugeicons/react-native": "catalog:"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"@expo/material-symbols": "catalog:",
+		"@expo/ui": "catalog:",
+		"@tanstack/react-query": "catalog:",
+		"@testing-library/react-native": "catalog:",
+		"@types/jest": "catalog:",
+		"@types/react": "catalog:",
+		"expo": "catalog:",
+		"jest": "catalog:",
+		"jest-expo": "catalog:",
+		"knip": "catalog:",
+		"react": "catalog:",
+		"react-native": "catalog:",
+		"react-native-gesture-handler": "catalog:",
+		"react-native-reanimated": "catalog:",
+		"react-native-safe-area-context": "catalog:",
+		"react-native-svg": "catalog:",
+		"react-native-worklets": "catalog:",
+		"test-renderer": "catalog:",
+		"typescript": "catalog:"
+	}
+}

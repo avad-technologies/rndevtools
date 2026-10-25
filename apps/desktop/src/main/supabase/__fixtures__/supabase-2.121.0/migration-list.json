@@ -1,0 +1,25 @@
+{
+	"cli": "2.121.0",
+	"surface": "migration.list",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-miglist-pending (one applied, one pending)",
+	"exitCode": 0,
+	"stdout": {
+		"migrations": [
+			{
+				"local": "20261016000000",
+				"remote": "20261016000000",
+				"time": "2026-10-16 00:00:00"
+			},
+			{
+				"local": "20261017000000",
+				"remote": "",
+				"time": "2026-10-17 00:00:00"
+			}
+		],
+		"message": "Migrations listed"
+	},
+	"stderr": [
+		"Connecting to local database..."
+	]
+}

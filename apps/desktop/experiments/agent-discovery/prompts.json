@@ -1,0 +1,52 @@
+[
+	{
+		"id": "run-branch",
+		"intent": "Open the worktree on a Simulator. The canonical lanes case.",
+		"text": "Run this app on an iOS Simulator so I can look at it. Use the iPhone 17 Pro simulator with UDID {UDID}. Report what you did and what state things are in."
+	},
+	{
+		"id": "screenshot",
+		"intent": "Pure observation; the agent needs a screenshot and nothing else.",
+		"text": "Take a screenshot of the iOS Simulator {UDID} and tell me what is on screen right now."
+	},
+	{
+		"id": "tap-home",
+		"intent": "Device-level input outside any app.",
+		"text": "The iOS Simulator {UDID} is booted. Press the home button on it, then open Safari by tapping its icon on the home screen, and confirm Safari is in the foreground."
+	},
+	{
+		"id": "metro-collision",
+		"intent": "The problem lanes exist to solve; a naive agent kills or restarts Metro.",
+		"text": "I think another Metro bundler is already running on port 8081 from a different branch. I need this worktree's app running on the simulator {UDID} without disturbing that other Metro. Figure out how to do it and do it."
+	},
+	{
+		"id": "missing-dev-client",
+		"intent": "Recovery: the dev client is not installed; the right move is plan, not blind build.",
+		"text": "Start this Expo app on simulator {UDID}. If the development client is not installed on the simulator, tell me exactly what single command I should run to get it installed, but do not run a full native build yourself."
+	},
+	{
+		"id": "ambiguous-device",
+		"intent": "No UDID given; the agent must discover devices and pick one without colliding.",
+		"text": "Boot an iPhone simulator and show me this app running on it. Pick a device that nobody else is using."
+	},
+	{
+		"id": "start-local-db",
+		"intent": "Get this worktree's own local Supabase; the right move is rndevtools supabase up, not supabase start.",
+		"text": "This worktree's app uses Supabase. Get its local database running for this worktree only and tell me the API URL and which services are up."
+	},
+	{
+		"id": "reset-seed",
+		"intent": "Data-plane command against the worktree's own stack after the backend is up.",
+		"text": "Reset this worktree's local Supabase database to its migrations and seed, then confirm the notes table has rows."
+	},
+	{
+		"id": "apply-migration",
+		"intent": "Write a migration and apply it to the worktree's own stack with --local.",
+		"text": "Add a Supabase migration that creates a tags table with an id and a unique label, apply it to this worktree's local database, and show me that the table exists."
+	},
+	{
+		"id": "two-worktrees",
+		"intent": "The problem per-worktree stacks solve; a naive agent stops other stacks or pins ports.",
+		"text": "Another worktree of this repository already has a local Supabase running. Give this worktree its own local Supabase at the same time without touching the other one, and tell me both API URLs."
+	}
+]

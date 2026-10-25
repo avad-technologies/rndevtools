@@ -1,0 +1,28 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.destroy",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) destroy-all",
+	"exitCode": 0,
+	"stdout": {
+		"destroyed": true,
+		"stacks": [
+			{
+				"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8"
+			},
+			{
+				"id": "caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6"
+			},
+			{
+				"id": "618421ea4ddd4809d2f07d8daac2eff6ff5c75ff63569d1e7e258e9ddebdff59"
+			}
+		],
+		"message": ""
+	},
+	"stderr": [
+		"Permanently destroying stack b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8 at /private/tmp/supa-spike/work/repo and its owned data; stack caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6 at /private/tmp/supa-spike/work/wt-c and its owned data; stack 618421ea4ddd4809d2f07d8daac2eff6ff5c75ff63569d1e7e258e9ddebdff59 at /private/tmp/supa-spike/work/wt-d and its owned data. Storage upload files will be preserved.",
+		"[task] start: Destroying stack b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8...",
+		"[task] start: Destroying stack caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6...",
+		"[task] start: Destroying stack 618421ea4ddd4809d2f07d8daac2eff6ff5c75ff63569d1e7e258e9ddebdff59..."
+	]
+}

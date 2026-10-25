@@ -1,0 +1,134 @@
+diff --git a/clone.go b/clone.go
+index 9c5bceaa676b2d242dc7b52b4b473c8560d56c65..6d025a09915658e8b335479a40715838d36c04a4 100644
+--- a/clone.go
++++ b/clone.go
+@@ -757,11 +757,17 @@ func verifyRunningCloneDoesNotOpenSource(ctx context.Context, paths cloneFilesys
+ // auditRunningCloneOpenFilesOnce reports complete=false only when process churn
+ // prevented a meaningful snapshot. The caller retries those transient cases.
+ func auditRunningCloneOpenFilesOnce(ctx context.Context, paths cloneFilesystem) (complete bool, err error) {
+-	psOutput, err := exec.CommandContext(ctx, "/bin/ps", "eww", "-axo", "pid=,command=").Output()
++	// Inspect only the exact Simulator launchd tree. Process environments can
++	// contain credentials and are not needed to identify that tree.
++	rootPID, err := simLaunchdPID(ctx, paths.cloneUDID)
+ 	if err != nil {
+-		return true, fmt.Errorf("enumerate cloned simulator processes: %w", err)
++		return true, fmt.Errorf("locate cloned simulator launchd root: %w", err)
+ 	}
+-	pids := simulatorProcessIDsFromPS(string(psOutput), paths.cloneUDID)
++	snapshot, err := processSnapshot(ctx)
++	if err != nil {
++		return true, fmt.Errorf("snapshot cloned simulator process tree: %w", err)
++	}
++	pids := sortedProcessIDs(treePIDs(rootPID, snapshot.children))
+ 	if len(pids) == 0 {
+ 		return false, fmt.Errorf("could not identify any running processes for cloned simulator %s", paths.cloneUDID)
+ 	}
+@@ -805,29 +811,23 @@ func evaluateCloneLsofAudit(output string, commandErr error, paths cloneFilesyst
+ 	return false, fmt.Errorf("audit cloned simulator open files returned no process or path records")
+ }
+ 
+-func simulatorProcessIDsFromPS(output, udid string) []int {
+-	marker := "SIMULATOR_UDID=" + udid
+-	seen := make(map[int]bool)
+-	var pids []int
+-	for _, line := range strings.Split(output, "\n") {
+-		if !strings.Contains(line, marker) {
+-			continue
+-		}
+-		fields := strings.Fields(line)
+-		if len(fields) == 0 {
+-			continue
+-		}
+-		pid, err := strconv.Atoi(fields[0])
+-		if err != nil || pid <= 0 || seen[pid] {
+-			continue
++func sortedProcessIDs(set map[int]bool) []int {
++	pids := make([]int, 0, len(set))
++	for pid := range set {
++		if pid > 0 {
++			pids = append(pids, pid)
+ 		}
+-		seen[pid] = true
+-		pids = append(pids, pid)
+ 	}
+ 	sort.Ints(pids)
+ 	return pids
+ }
+ 
++// SimulatorProcessTreePIDsFromPS projects PID, PPID, CPU, and executable-path
++// columns for adapter tests, without reading arguments or environments.
++func SimulatorProcessTreePIDsFromPS(rootPID int, output string) []int {
++	return sortedProcessIDs(treePIDs(rootPID, parsePS(output).children))
++}
++
+ func sourceReferencesFromLsof(output string, paths cloneFilesystem) []sourceReference {
+ 	references, _ := parseCloneLsofOutput(output, paths)
+ 	return references
+diff --git a/disk_cleanup.go b/disk_cleanup.go
+index f27b899611e12b96af7d3f5ac38bebbe542c9949..a494c913b52104256b7ba18884880ac957f75a8a 100644
+--- a/disk_cleanup.go
++++ b/disk_cleanup.go
+@@ -173,7 +173,7 @@ func diskCleanupPlanAt(udid, dataDirectory string) (DiskCleanupPlan, error) {
+ 	return plan, nil
+ }
+ 
+-func CleanDeviceDisk(ctx context.Context, udid string, categoryIDs []string, preserveBootState bool) (DiskCleanupResult, error) {
++func CleanDeviceDisk(ctx context.Context, udid string, categoryIDs []string, preserveBootState bool) (result DiskCleanupResult, err error) {
+ 	device, dataDirectory, err := simulatorDataDirectory(ctx, udid)
+ 	if err != nil {
+ 		return DiskCleanupResult{}, err
+@@ -190,17 +190,29 @@ func CleanDeviceDisk(ctx context.Context, udid string, categoryIDs []string, pre
+ 		}
+ 	}
+ 
+-	result, cleanupErr := cleanDiskAt(udid, dataDirectory, categoryIDs)
+-	result.WasBooted = wasBooted
++	// Restore the original boot state even if cleanup is cancelled. A separate
++	// timeout bounds restoration without inheriting the cancelled context.
+ 	if wasBooted && preserveBootState {
+-		if bootErr := BootAndWait(ctx, device.Set, udid); bootErr != nil {
+-			if cleanupErr != nil {
+-				return result, fmt.Errorf("%v; additionally could not restore boot state: %w", cleanupErr, bootErr)
++		defer func() {
++			if result.BootStateRestored {
++				return
+ 			}
+-			return result, fmt.Errorf("disk cleanup finished, but could not restore boot state: %w", bootErr)
+-		}
+-		result.BootStateRestored = true
++			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), BootTimeout)
++			defer cancel()
++			if bootErr := BootAndWait(restoreCtx, device.Set, udid); bootErr != nil {
++				if err != nil {
++					err = fmt.Errorf("%v; additionally could not restore boot state: %w", err, bootErr)
++				} else {
++					err = fmt.Errorf("disk cleanup finished, but could not restore boot state: %w", bootErr)
++				}
++				return
++			}
++			result.BootStateRestored = true
++		}()
+ 	}
++
++	result, cleanupErr := cleanDiskAt(udid, dataDirectory, categoryIDs)
++	result.WasBooted = wasBooted
+ 	return result, cleanupErr
+ }
+ 
+diff --git a/simctl.go b/simctl.go
+index a21e75c30e9636aeb0d64227d460f32b0db47cb9..32dc9ced418eb8672575dd4a15430e6a6b21e50d 100644
+--- a/simctl.go
++++ b/simctl.go
+@@ -386,6 +386,12 @@ func parseDisabled(output string) map[string]bool {
+ 	return set
+ }
+ 
++// ParseDisabledOutput shares the launchctl parser with RN Devtools, which
++// runs fixed executables with bounded output and a minimal environment.
++func ParseDisabledOutput(output string) map[string]bool {
++	return parseDisabled(output)
++}
++
+ // SpawnTimeout bounds a single `simctl spawn launchctl` transition. Right
+ // after a first boot — especially on older Intel hosts — the simulator is
+ // saturated by data migration and Spotlight indexing, and an individual spawn

@@ -1,0 +1,26 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.prepare",
+	"provenance": "synthesized",
+	"source": "prepare.handler.ts:170-182 output shape",
+	"exitCode": 0,
+	"stdout": {
+		"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+		"capabilities": [
+			{
+				"capability": "database",
+				"version": "17.11",
+				"outcome": "prepared"
+			},
+			{
+				"capability": "rest",
+				"version": "16.4",
+				"outcome": "prepared"
+			}
+		],
+		"message": ""
+	},
+	"stderr": [
+		"[task] start: Preparing local Supabase stack..."
+	]
+}

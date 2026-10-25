@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    name: Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Public content
+        run: |
+          node --test scripts/check-public-content.test.mjs
+          node scripts/check-public-content.mjs
+      # Neither npm package needs an install script, so none run here. That
+      # keeps dependency postinstall code off a job that builds fork PRs.
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Core
+        run: pnpm --dir packages/core quality
+      - name: React Native host runtime
+        run: pnpm --dir packages/react-native quality
+      - name: Example app
+        run: pnpm --dir examples/expo-demo quality
+      # Exports the demo's iOS and Android release bundles the way a store
+      # build does (production, minified, Hermes bytecode) with no app
+      # variable set, because a release build must be pruned without being
+      # told to, then fails if any devtools marker survives in the bytecode.
+      - name: Example release bundle
+        run: pnpm --dir examples/expo-demo verify:bundle
+
+  native:
+    name: Native helpers
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          # setup-node can infer a package-manager cache from package.json's
+          # packageManager and call pnpm, which this job deliberately does
+          # not install.
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: apps/desktop/native/rndevtools-sim-helper/go.mod
+          cache-dependency-path: apps/desktop/native/rndevtools-sim-helper/go.mod
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      # These scripts use only Node builtins, so the project's real Go gate
+      # (gofmt, vet, race tests, govulncheck, module allowlist), the check that
+      # the Swift host's generated HelperVersion.swift matches package.json, and
+      # the SimSlim provenance check run with no install and no secrets. Fork
+      # contributors get the same coverage as maintainers.
+      - name: Go helper checks
+        working-directory: apps/desktop
+        run: node scripts/check-native-helpers.mjs --go
+      # Compile coverage only. `swift test` passes in about a second on real
+      # hardware but hangs indefinitely on GitHub's hosted macOS runners: the
+      # suite probes real media hardware (AVCaptureDevice, a VideoToolbox
+      # compression session) and exercises process-group reaping, and those
+      # runners are headless VMs. Run it locally with `pnpm native:check:swift`,
+      # or use the manual "Swift tests" workflow to identify the blocking test.
+      - name: Swift native host builds
+        working-directory: apps/desktop/native/rndevtools-native-host
+        timeout-minutes: 10
+        run: swift build
+      - name: Vendored SimSlim provenance
+        working-directory: apps/desktop
+        run: node --test scripts/verify-vendored-simslim.node-test.mjs
+
+  desktop:
+    name: Desktop
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      HEROUI_AUTH_TOKEN: ${{ secrets.HEROUI_AUTH_TOKEN }}
+    steps:
+      # The renderer imports HeroUI Pro, a licensed library. Without a token
+      # the install still succeeds but the package is not hydrated, so
+      # typecheck and build fail on a missing module. Secrets are unavailable
+      # to job-level `if`, and to pull requests from forks, so detect the token
+      # here and skip the Electron gate with a notice instead of failing.
+      - name: Detect HeroUI Pro license
+        id: license
+        run: |
+          if [ -n "${HEROUI_AUTH_TOKEN}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Desktop gate skipped::HEROUI_AUTH_TOKEN is not available to this run, so the Electron app was not built. A maintainer must run this job for changes under apps/desktop."
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.license.outputs.available == 'true'
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.license.outputs.available == 'true'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.license.outputs.available == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install
+        if: steps.license.outputs.available == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Desktop quality
+        if: steps.license.outputs.available == 'true'
+        run: pnpm --filter @rndevtools/desktop quality

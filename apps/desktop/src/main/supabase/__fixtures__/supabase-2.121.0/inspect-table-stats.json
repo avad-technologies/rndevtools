@@ -1,0 +1,31 @@
+{
+	"cli": "2.121.0",
+	"surface": "inspect",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-inspect-table-stats",
+	"exitCode": 0,
+	"stdout": {
+		"rows": [
+			{
+				"name": "public.notes",
+				"table_size": "96 kB",
+				"index_size": "40 kB",
+				"total_size": "136 kB",
+				"estimated_row_count": "1000",
+				"seq_scans": "2"
+			},
+			{
+				"name": "public.tags",
+				"table_size": "8192 bytes",
+				"index_size": "16 kB",
+				"total_size": "24 kB",
+				"estimated_row_count": "0",
+				"seq_scans": "2"
+			}
+		],
+		"message": "inspect db table-stats"
+	},
+	"stderr": [
+		"Connecting to local database..."
+	]
+}

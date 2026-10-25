@@ -1,0 +1,20 @@
+{
+	"cli": "2.121.0",
+	"surface": "db.reset",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-reset-local",
+	"exitCode": 0,
+	"stdout": {
+		"target": "local",
+		"version": "",
+		"message": "Reset local database."
+	},
+	"stderr": [
+		"Resetting local database...",
+		"Seeding globals from roles.sql...",
+		"Applying migration 20261016000000_notes.sql...",
+		"Applying migration 20261017000000_tags.sql...",
+		"Seeding data from supabase/seed.sql...",
+		"Finished supabase db reset on branch main."
+	]
+}

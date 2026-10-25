@@ -1,0 +1,158 @@
+{
+	"description": "Read-only probe outputs in the exact shapes seen on macOS with Supabase CLI 2.121.0 (native runtime). Stacks repo and wtC, their pids, listeners, ports and RSS come from the 2026-10-17 spike (scratch SUPABASE_HOME /tmp/supa-spike/home, results2/final-inspect.json and A-status-sleeping.json). Owner exampleApp is synthetic and has spaces in every path. Non-owner lines are processes whose argv merely mentions the markers. No secrets appear in any probe output.",
+	"uid": 501,
+	"stacks": {
+		"repo": {
+			"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+			"ownerPid": 20075,
+			"executable": "/private/tmp/supa-spike/dl/extract/package/bin/supabase",
+			"stateRoot": "/tmp/supa-spike/home/stacks",
+			"cacheRoot": "/tmp/supa-spike/home/cache/stack",
+			"treePids": [
+				20075, 20085, 20086, 20104, 20105, 20107, 20108, 20109, 20110, 20111
+			],
+			"launcherPids": [20085],
+			"listenerPorts": [
+				21213, 21391, 25596, 25862, 25998, 26211, 28903, 30079, 30630, 30768,
+				61600
+			]
+		},
+		"wtC": {
+			"id": "caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6",
+			"ownerPid": 20218,
+			"executable": "/private/tmp/supa-spike/dl/extract/package/bin/supabase",
+			"stateRoot": "/tmp/supa-spike/home/stacks",
+			"cacheRoot": "/tmp/supa-spike/home/cache/stack"
+		},
+		"exampleApp": {
+			"id": "b6b5c982876672f74d0474b9c92a3283f7d839c375043e369eb5931252131330",
+			"ownerPid": 31012,
+			"executable": "/Users/developer/Projects/Example App/node_modules/@supabase/cli-darwin-arm64/bin/supabase",
+			"stateRoot": "/Users/developer/Library/Application Support/Example Home/stacks",
+			"cacheRoot": "/Users/developer/Library/Application Support/Example Home/cache/stack"
+		}
+	},
+	"pgrepOwners": {
+		"exitCode": 0,
+		"lines": [
+			"20075 /private/tmp/supa-spike/dl/extract/package/bin/supabase __supabase_stack_host__ /tmp/supa-spike/home/stacks /tmp/supa-spike/home/cache/stack b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+			"20218 /private/tmp/supa-spike/dl/extract/package/bin/supabase __supabase_stack_host__ /tmp/supa-spike/home/stacks /tmp/supa-spike/home/cache/stack caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6",
+			"31012 /Users/developer/Projects/Example App/node_modules/@supabase/cli-darwin-arm64/bin/supabase __supabase_stack_host__ /Users/developer/Library/Application Support/Example Home/stacks /Users/developer/Library/Application Support/Example Home/cache/stack b6b5c982876672f74d0474b9c92a3283f7d839c375043e369eb5931252131330 /Users/developer/Library/Application Support/Example Home/stacks/b6b5c982876672f74d0474b9c92a3283f7d839c375043e369eb5931252131330/startup-dcb3f4a5ab66090602d0543dd603f191.json",
+			"40001 /bin/zsh -c pgrep -lf __supabase_stack_host__ | head",
+			"40002 /usr/bin/grep -r __supabase_stack_host__ /Users/developer/Projects",
+			"40003 /usr/bin/less /tmp/notes-__supabase_stack_host__.txt"
+		]
+	},
+	"pgrepLaunchersRepo": {
+		"exitCode": 0,
+		"lines": [
+			"20085 /private/tmp/supa-spike/dl/extract/package/bin/supabase __supabase_stack_native__ -- supabase-stack-id=b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8 supabase-workload-id=13fcca92-620e-4c85-9e1c-d1901558554c",
+			"40010 /usr/bin/grep supabase-stack-id=b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8 /tmp/owner.log"
+		]
+	},
+	"pgrepChildrenRepo": [
+		{ "parents": "20075,20085", "exitCode": 0, "lines": ["20085", "20086"] },
+		{ "parents": "20086", "exitCode": 0, "lines": ["20104", "20105", "20107", "20108", "20109", "20110", "20111"] },
+		{ "parents": "20104,20105,20107,20108,20109,20110,20111", "exitCode": 1, "lines": [] }
+	],
+	"lsofTcpRepo": {
+		"exitCode": 0,
+		"lines": [
+			"p20075", "csupabase",
+			"f20", "tIPv4", "PTCP", "n127.0.0.1:61600",
+			"f23", "tIPv4", "PTCP", "n127.0.0.1:30630",
+			"f24", "tIPv4", "PTCP", "n127.0.0.1:26211",
+			"f25", "tIPv4", "PTCP", "n127.0.0.1:25862",
+			"f26", "tIPv4", "PTCP", "n127.0.0.1:25596",
+			"f27", "tIPv4", "PTCP", "n127.0.0.1:21213",
+			"f28", "tIPv4", "PTCP", "n127.0.0.1:30079",
+			"f29", "tIPv4", "PTCP", "n127.0.0.1:28903",
+			"f31", "tIPv4", "PTCP", "n127.0.0.1:30768",
+			"f32", "tIPv4", "PTCP", "n127.0.0.1:25998",
+			"f33", "tIPv4", "PTCP", "n127.0.0.1:21391"
+		]
+	},
+	"lsofUdpNone": { "exitCode": 1, "lines": [] },
+	"lsofTcpMixed": {
+		"exitCode": 0,
+		"lines": [
+			"p20218", "csupabase",
+			"f18", "tIPv4", "PTCP", "n*:54321",
+			"f19", "tIPv6", "PTCP", "n*:54321",
+			"f21", "tIPv4", "PTCP", "n127.0.0.1:30831",
+			"f22", "tIPv6", "PTCP", "n[::1]:30832",
+			"f23", "tIPv6", "PTCP", "n[fe80:4::1c2a:9eff:fe31:8a10]:30833",
+			"p20228", "c.postgres-wrapped",
+			"f9", "tIPv4", "PTCP", "n192.168.1.20:30834"
+		]
+	},
+	"lsofUdpMixed": {
+		"exitCode": 0,
+		"lines": [
+			"p20218", "csupabase",
+			"f30", "tIPv4", "PUDP", "n*:5353",
+			"f31", "tIPv4", "PUDP", "n192.168.1.20:60071->192.168.1.1:53",
+			"f32", "tIPv6", "PUDP", "n*:*",
+			"f33", "tIPv4", "PUDP", "n127.0.0.1:41000"
+		]
+	},
+	"sysctlShmmni": { "exitCode": 0, "lines": ["32"] },
+	"ipcsTwoSegments": {
+		"exitCode": 0,
+		"lines": [
+			"IPC status from <running system> as of Sat Oct 17 00:01:12 PDT 2026",
+			"T     ID     KEY        MODE       OWNER    GROUP",
+			"Shared Memory:",
+			"m  65536 0x00007796 --rw-------  developer    staff",
+			"m  65537 0x0000779e --rw-------  developer    staff",
+			""
+		]
+	},
+	"ipcsNoSegments": {
+		"exitCode": 0,
+		"lines": [
+			"IPC status from <running system> as of Sat Oct 17 00:57:51 PDT 2026",
+			"T     ID     KEY        MODE       OWNER    GROUP",
+			"Shared Memory:",
+			""
+		]
+	},
+	"psRssRepo": {
+		"exitCode": 0,
+		"lines": [
+			"20075 125952",
+			"20085  49050",
+			"20086  62669",
+			"20104   3379",
+			"20105   3891",
+			"20107   4506",
+			"20108   5120",
+			"20109  14541",
+			"20110   9523",
+			"20111   4813"
+		],
+		"totalKilobytes": 283444
+	},
+	"diskKilobytes": { "stack": 61440, "cache": 1782580 },
+	"portReservations": [
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "mail.http", "port": 21213 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "analytics.http", "port": 21391 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "functions.inspector", "port": 25596 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "realtime.rpc", "port": 25862 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "pgmeta.http", "port": 25998 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "api", "port": 26211 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "mail.pop3", "port": 28903 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "mail.smtp", "port": 30079 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "database.sql", "port": 30630 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "studio.http", "port": 30768 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6", "endpoint": "mail.http", "port": 20442 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6", "endpoint": "database.sql", "port": 30831 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6", "endpoint": "api", "port": 54321 },
+		{ "state_root": "/Users/developer/.sandbox-home/.supabase/stacks", "stack_id": "038b09154c347ec9c824da74a249440ee4d4a9f5420c29fa5d1fa28b6aa52075", "endpoint": "api", "port": 24117 }
+	],
+	"invalidPortReservations": [
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "not-a-stack-id", "endpoint": "api", "port": 29001 },
+		{ "state_root": "relative/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "api", "port": 29002 },
+		{ "state_root": "/tmp/supa-spike/home/stacks", "stack_id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8", "endpoint": "has spaces", "port": 29003 }
+	]
+}

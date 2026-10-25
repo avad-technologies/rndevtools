@@ -1,0 +1,34 @@
+name: Swift tests
+
+# Manual only. `swift test` for the native host passes in about a second on
+# real hardware but hangs on GitHub's hosted macOS runners, which are headless
+# VMs with no capture devices or media engine. Keeping it out of CI stops a
+# known environmental hang from turning main red or burning runner minutes.
+#
+# This workflow exists to find the blocking test. It runs serially so exactly
+# one test is in flight, and under a pty so output is line-buffered: when a
+# hang is killed by the timeout, the last "started" line names the culprit.
+# Once known, gate that probe on the environment and move this back into CI.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift-tests:
+    name: Native host tests (diagnostic)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        working-directory: apps/desktop/native/rndevtools-native-host
+        timeout-minutes: 10
+        run: swift build --build-tests
+      - name: Test serially under a pty
+        working-directory: apps/desktop/native/rndevtools-native-host
+        timeout-minutes: 8
+        run: script -q /dev/null swift test --skip-build --no-parallel

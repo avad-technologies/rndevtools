@@ -1,0 +1,12 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.list",
+	"provenance": "synthesized",
+	"source": "list.handler.ts shape with no stacks",
+	"exitCode": 0,
+	"stdout": {
+		"stacks": [],
+		"message": ""
+	},
+	"stderr": []
+}

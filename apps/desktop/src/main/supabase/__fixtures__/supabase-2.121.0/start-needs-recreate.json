@@ -1,0 +1,30 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.start",
+	"provenance": "synthesized",
+	"source": "start.handler.ts:404-460 and 887-897 (stack_changes and recreate_command at the envelope root)",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "ExperimentalStackStartError",
+			"message": "The saved stack cannot adopt these changes: [db] major_version: saved 15, requested 17",
+			"suggestion": "Revert [db] major_version to its saved value to keep the stack and its data, or run `supabase stack destroy --stack-id b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8` to recreate the stack — this permanently deletes its local database data."
+		},
+		"stack_changes": [
+			{
+				"service": "database",
+				"path": "config.version",
+				"key": "[db] major_version",
+				"saved": "15",
+				"requested": "17",
+				"editable": true
+			}
+		],
+		"recreate_command": "supabase stack destroy --stack-id b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8"
+	},
+	"stderr": [
+		"[task] start: Starting local Supabase stack...",
+		"[task] failed: The saved stack cannot adopt these changes: [db] major_version: saved 15, requested 17"
+	]
+}

@@ -1,0 +1,25 @@
+{
+	"cli": "2.121.0",
+	"surface": "inspect",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-inspect-db-stats",
+	"exitCode": 0,
+	"stdout": {
+		"rows": [
+			{
+				"database_size": "11 MB",
+				"total_index_size": "56 kB",
+				"total_table_size": "64 kB",
+				"total_toast_size": "0 bytes",
+				"time_since_stats_reset": "00:01:11.432894",
+				"index_hit_rate": "1.00",
+				"table_hit_rate": "1.00",
+				"wal_size": "32 MB"
+			}
+		],
+		"message": "inspect db db-stats"
+	},
+	"stderr": [
+		"Connecting to local database..."
+	]
+}

@@ -1,0 +1,402 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.logs",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-logs (stack logs --tail 200, json)",
+	"exitCode": 0,
+	"stdout": [
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:58:52.948Z",
+			"source": "history",
+			"service": "database",
+			"instance_id": "13fcca92-620e-4c85-9e1c-d1901558554c",
+			"stream": "stderr",
+			"line": "[local] 2026-10-17 06:58:52.948 UTC [16257] postgres@postgres LOG:  statement: CREATE TABLE IF NOT EXISTS supabase_migrations.seed_files (path text NOT NULL PRIMARY KEY, hash text NOT NULL)"
+		},
+		{
+			"type": "log-marker",
+			"timestamp": "2026-10-17T06:59:18.355Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"kind": "launch"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.355Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Starting PostgREST 16.4..."
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.391Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Successfully connected to PostgreSQL 17.11 on aarch64-apple-darwin25.3.0, compiled by clang version 21.1.7, 64-bit"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.391Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Connection Pool initialized with a maximum size of 2 connections"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.392Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Listener connected to PostgreSQL 17.11 on aarch64-apple-darwin25.3.0, compiled by clang version 21.1.7, 64-bit on \"127.0.0.1:30630\" and listening for database notifications on the \"pgrst\" channel"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.398Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Config reloaded"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.437Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: API server listening on 127.0.0.1:13405"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.437Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Schema cache queried in 38.0 milliseconds "
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.437Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Schema cache loaded 1 Relations, 0 Relationships, 1 RPCs, 0 Domain Representations, 4 Media Type Handlers"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.437Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stderr",
+			"line": "16/Oct/2026:23:59:18 -0700: Schema cache loaded in 0.4 milliseconds"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.469Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stdout",
+			"line": "127.0.0.1 - anon [16/Oct/2026:23:59:18 -0700] \"GET / HTTP/1.1\" 200 4176 \"\" \"\""
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.475Z",
+			"source": "history",
+			"service": "rest",
+			"instance_id": "f2fba936-bc07-4c8d-b807-9a74cb55196a",
+			"stream": "stdout",
+			"line": "127.0.0.1 - anon [16/Oct/2026:23:59:18 -0700] \"GET /notes?select=id&limit=1 HTTP/1.1\" 200 10 \"\" \"Python-urllib/3.14\""
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.477Z",
+			"source": "history",
+			"service": "gateway",
+			"instance_id": "gateway",
+			"stream": "stdout",
+			"line": "127.0.0.1 - - [17/Oct/2026:06:59:18.146 +0000] \"GET /rest/v1/notes?select=id&limit=1 HTTP/1.1\" 200 10 \"-\" \"Python-urllib/3.14\" 330ms"
+		},
+		{
+			"type": "log-marker",
+			"timestamp": "2026-10-17T06:59:18.729Z",
+			"source": "history",
+			"service": "mail",
+			"instance_id": "b2455e4b-f0f9-48be-b910-bf45d7688720",
+			"kind": "launch"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.729Z",
+			"source": "history",
+			"service": "mail",
+			"instance_id": "b2455e4b-f0f9-48be-b910-bf45d7688720",
+			"stream": "stdout",
+			"line": "time=\"2026/10/16 23:59:18\" level=info msg=\"[smtpd] starting on 127.0.0.1:19151 (no encryption)\""
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.729Z",
+			"source": "history",
+			"service": "mail",
+			"instance_id": "b2455e4b-f0f9-48be-b910-bf45d7688720",
+			"stream": "stdout",
+			"line": "time=\"2026/10/16 23:59:18\" level=info msg=\"[http] starting on 127.0.0.1:14941\""
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.729Z",
+			"source": "history",
+			"service": "mail",
+			"instance_id": "b2455e4b-f0f9-48be-b910-bf45d7688720",
+			"stream": "stdout",
+			"line": "time=\"2026/10/16 23:59:18\" level=info msg=\"[http] accessible via http://127.0.0.1:14941/\""
+		},
+		{
+			"type": "log-marker",
+			"timestamp": "2026-10-17T06:59:18.951Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"kind": "launch"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.951Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"level\":\"info\",\"msg\":\"Go runtime metrics collection started\",\"time\":\"2026-10-17T06:59:18Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.975Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"pop\",\"level\":\"info\",\"msg\":\"Migrations already up to date, nothing to apply\",\"time\":\"2026-10-17T06:59:18Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.975Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"args\":[0.023794083],\"component\":\"pop\",\"level\":\"info\",\"msg\":\"%.4f seconds\",\"time\":\"2026-10-17T06:59:18Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:18.975Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"count\":0,\"level\":\"info\",\"msg\":\"GoTrue migrations applied successfully\",\"time\":\"2026-10-17T06:59:18Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.053Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"level\":\"info\",\"msg\":\"Go runtime metrics collection started\",\"time\":\"2026-10-17T06:59:19Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.078Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"pop\",\"level\":\"info\",\"msg\":\"Migrations already up to date, nothing to apply\",\"time\":\"2026-10-17T06:59:19Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.079Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"args\":[0.025157292],\"component\":\"pop\",\"level\":\"info\",\"msg\":\"%.4f seconds\",\"time\":\"2026-10-17T06:59:19Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.079Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"count\":0,\"level\":\"info\",\"msg\":\"GoTrue migrations applied successfully\",\"time\":\"2026-10-17T06:59:19Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.081Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"api\",\"level\":\"warning\",\"msg\":\"DEPRECATION NOTICE: GOTRUE_JWT_ADMIN_GROUP_NAME not supported by Supabase's GoTrue, will be removed soon\",\"time\":\"2026-10-17T06:59:19Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.081Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"api\",\"level\":\"warning\",\"msg\":\"DEPRECATION NOTICE: GOTRUE_JWT_DEFAULT_GROUP_NAME not supported by Supabase's GoTrue, will be removed soon\",\"time\":\"2026-10-17T06:59:19Z\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.082Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"level\":\"info\",\"msg\":\"GoTrue API started on: 127.0.0.1:11485\",\"time\":\"2026-10-17T06:59:19Z\",\"version\":\"v2.197.0\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.082Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"apiworker\",\"level\":\"info\",\"msg\":\"apiworker: index worker started\",\"time\":\"2026-10-17T06:59:19Z\",\"worker_type\":\"apiworker_index_worker\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.082Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"apiworker\",\"level\":\"info\",\"msg\":\"apiworker: config notifier started\",\"time\":\"2026-10-17T06:59:19Z\",\"worker_type\":\"apiworker_config_notifier\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.082Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"apiworker\",\"level\":\"info\",\"msg\":\"apiworker: template cache worker started\",\"time\":\"2026-10-17T06:59:19Z\",\"worker_type\":\"apiworker_template_cache\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.082Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"apiworker\",\"level\":\"info\",\"msg\":\"apiworker: db worker started\",\"time\":\"2026-10-17T06:59:19Z\",\"worker_type\":\"apiworker_db_worker\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.091Z",
+			"source": "history",
+			"service": "auth",
+			"instance_id": "0083b30c-e9db-4d16-8058-e3f1b9034e2d",
+			"stream": "stderr",
+			"line": "{\"component\":\"apiworker\",\"config_conn_max_idle_time\":\"0s\",\"config_conn_max_lifetime\":\"0s\",\"config_conn_percentage\":0,\"config_max_idle_pool_size\":2,\"config_max_pool_size\":2,\"level\":\"info\",\"limit_conn_max_idle_time\":\"0s\",\"limit_conn_max_lifetime\":\"0s\",\"limit_max_idle_conns\":2,\"limit_max_open_conns\":2,\"limit_strategy\":\"fixed\",\"msg\":\"applying connection limits to db using the \\\"fixed\\\" strategy\",\"server_max_conns\":100,\"time\":\"2026-10-17T06:59:19Z\",\"worker_type\":\"apiworker_db_worker\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.270Z",
+			"source": "history",
+			"service": "gateway",
+			"instance_id": "gateway",
+			"stream": "stdout",
+			"line": "127.0.0.1 - - [17/Oct/2026:06:59:18.478 +0000] \"GET /auth/v1/health HTTP/1.1\" 200 107 \"-\" \"Python-urllib/3.14\" 792ms"
+		},
+		{
+			"type": "log-marker",
+			"timestamp": "2026-10-17T06:59:19.711Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"kind": "launch"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.711Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"stream": "stdout",
+			"line": "{\"level\":30,\"time\":1792220359710,\"pid\":17171,\"hostname\":\"842f57865fe1\",\"region\":\"local\",\"appVersion\":\"0.0.0\",\"type\":\"migrations\",\"msg\":\"[Migrations] Running vector_store migrations\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:19.802Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"stream": "stdout",
+			"line": "{\"level\":30,\"time\":1792220359802,\"pid\":17171,\"hostname\":\"842f57865fe1\",\"region\":\"local\",\"appVersion\":\"0.0.0\",\"type\":\"migrations\",\"msg\":\"[Migrations] Created database storage_vectors\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:20.293Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"stream": "stdout",
+			"line": "{\"level\":30,\"time\":1792220360292,\"pid\":17187,\"hostname\":\"842f57865fe1\",\"region\":\"local\",\"appVersion\":\"0.0.0\",\"type\":\"migrations\",\"msg\":\"[Migrations] Running vector_store migrations\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:20.499Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"stream": "stdout",
+			"line": "{\"level\":30,\"time\":1792220360498,\"pid\":17187,\"hostname\":\"842f57865fe1\",\"region\":\"local\",\"appVersion\":\"0.0.0\",\"msg\":\"Server listening at http://127.0.0.1:12899\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:20.499Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"stream": "stdout",
+			"line": "{\"level\":30,\"time\":1792220360499,\"pid\":17187,\"hostname\":\"842f57865fe1\",\"region\":\"local\",\"appVersion\":\"0.0.0\",\"type\":\"server\",\"msg\":\"[Server] Started Successfully\"}"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:20.675Z",
+			"source": "history",
+			"service": "gateway",
+			"instance_id": "gateway",
+			"stream": "stdout",
+			"line": "127.0.0.1 - - [17/Oct/2026:06:59:19.270 +0000] \"GET /storage/v1/bucket HTTP/1.1\" 200 2 \"-\" \"Python-urllib/3.14\" 1405ms"
+		},
+		{
+			"type": "log-entry",
+			"timestamp": "2026-10-17T06:59:20.675Z",
+			"source": "history",
+			"service": "storage",
+			"instance_id": "4f7b758e-f91c-49ca-a374-61b67efc573a",
+			"stream": "stdout",
+			"line": "{\"level\":30,\"time\":1792220360675,\"pid\":17187,\"hostname\":\"842f57865fe1\",\"region\":\"local\",\"appVersion\":\"0.0.0\",\"type\":\"request\",\"tenantId\":\"stub\",\"project\":\"stub\",\"reqId\":\"req-2\",\"traceId\":\"\",\"spanId\":\"\",\"req\":{\"region\":\"local\",\"traceId\":\"req-2\",\"method\":\"GET\",\"url\":\"/bucket\",\"headers\":{\"host\":\"127.0.0.1:26211\",\"user_agent\":\"Python-urllib/3.14\"},\"hostname\":\"127.0.0.1\",\"remoteAddress\":\"127.0.0.1\",\"remotePort\":61206},\"reqMetadata\":\"{}\",\"res\":{\"statusCode\":200,\"headers\":{\"content_type\":\"application/json; charset=utf-8\",\"content_length\":\"2\"}},\"responseTime\":13.056041999999934,\"executionTime\":13,\"role\":\"service_role\",\"resources\":[],\"operation\":\"storage.bucket.list\",\"msg\":\"stub | GET | 200 | 127.0.0.1 | req-2 | /bucket | Python-urllib/3.14\"}"
+		}
+	],
+	"stderr": []
+}

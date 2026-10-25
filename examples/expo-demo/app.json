@@ -1,0 +1,18 @@
+{
+	"expo": {
+		"name": "RN Devtools Demo",
+		"slug": "rndevtools-demo",
+		"version": "1.0.0",
+		"scheme": "rndevtoolsdemo",
+		"orientation": "portrait",
+		"userInterfaceStyle": "automatic",
+		"newArchEnabled": true,
+		"ios": {
+			"bundleIdentifier": "io.github.adalloul0928.rndevtools.demo",
+			"supportsTablet": true
+		},
+		"android": {
+			"package": "io.github.adalloul0928.rndevtools.demo"
+		}
+	}
+}

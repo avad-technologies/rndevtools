@@ -1,0 +1,24 @@
+{
+	"cli": "2.121.0",
+	"surface": "seed.buckets",
+	"provenance": "synthesized",
+	"source": "seed-buckets.ts:71-95 SeedSummary shape",
+	"exitCode": 0,
+	"stdout": {
+		"buckets_created": [
+			"avatars"
+		],
+		"buckets_updated": [],
+		"buckets_skipped": [],
+		"vector_created": [],
+		"vector_pruned": [],
+		"vector_skipped": false,
+		"objects_uploaded": [
+			"supabase/seed/avatars/example.png => avatars/example.png"
+		],
+		"analytics_created": [],
+		"analytics_pruned": [],
+		"message": ""
+	},
+	"stderr": []
+}

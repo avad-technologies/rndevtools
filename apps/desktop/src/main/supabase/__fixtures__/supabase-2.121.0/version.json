@@ -1,0 +1,9 @@
+{
+	"cli": "2.121.0",
+	"surface": "version",
+	"provenance": "synthesized",
+	"source": "bare semver per apps/cli/src/cli/agent-output.e2e.test.ts; the npm package and binary are 2.121.0",
+	"exitCode": 0,
+	"stdoutText": "2.121.0\n",
+	"stderr": []
+}

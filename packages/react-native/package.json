@@ -1,0 +1,96 @@
+{
+	"name": "@rndevtools/react-native",
+	"version": "0.2.0",
+	"description": "React Native host runtime for RN Devtools: desktop broker client, authorization, and adapters",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/adalloul0928/rndevtools.git",
+		"directory": "packages/react-native"
+	},
+	"homepage": "https://github.com/adalloul0928/rndevtools/tree/main/packages/react-native#readme",
+	"bugs": "https://github.com/adalloul0928/rndevtools/issues",
+	"keywords": [
+		"react-native",
+		"expo",
+		"devtools",
+		"debugging",
+		"diagnostics"
+	],
+	"sideEffects": false,
+	"publishConfig": {
+		"access": "public"
+	},
+	"source": "./src/index.ts",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./desktop": "./src/desktop/client.ts",
+		"./authorization": "./src/authorization.ts",
+		"./adapters/storage": "./src/adapters/storage.ts",
+		"./camera": "./src/camera/provider.ts",
+		"./diagnostics/image-overlay": "./src/diagnostics/image-overlay.ts",
+		"./metro": "./metro.js",
+		"./build-cache": {
+			"types": "./build-cache.d.ts",
+			"default": "./build-cache.js"
+		},
+		"./package.json": "./package.json",
+		"./verify-bundle": "./verify-bundle.mjs"
+	},
+	"files": [
+		"src",
+		"!src/**/*.test.ts",
+		"!src/**/*.test.tsx",
+		"metro.js",
+		"build-cache.js",
+		"build-cache.d.ts",
+		"README.md",
+		"LICENSE",
+		"verify-bundle.mjs"
+	],
+	"scripts": {
+		"lint": "biome check src",
+		"typecheck": "tsc --noEmit",
+		"check:unused": "knip --directory ../.. --workspace packages/react-native --treat-config-hints-as-errors",
+		"check:cycles": "knip --directory ../.. --workspace packages/react-native --cycles --treat-config-hints-as-errors",
+		"check:dead-code": "pnpm check:unused && pnpm check:cycles",
+		"test:run": "jest --runInBand",
+		"quality": "pnpm lint && pnpm typecheck && pnpm check:dead-code && pnpm test:run"
+	},
+	"peerDependencies": {
+		"@rndevtools/core": "workspace:^",
+		"expo": ">=56 <58",
+		"expo-constants": ">=56 <58",
+		"expo-device": ">=56 <58",
+		"expo-file-system": ">=56 <58",
+		"expo-image-picker": ">=56 <58",
+		"react": ">=19 <20",
+		"react-native": ">=0.85 <0.87"
+	},
+	"peerDependenciesMeta": {
+		"expo-image-picker": {
+			"optional": true
+		},
+		"expo-file-system": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"@rndevtools/core": "workspace:*",
+		"@types/jest": "catalog:",
+		"@types/react": "catalog:",
+		"expo": "catalog:",
+		"jest": "catalog:",
+		"jest-expo": "catalog:",
+		"knip": "catalog:",
+		"react": "catalog:",
+		"react-native": "catalog:",
+		"typescript": "catalog:"
+	},
+	"bin": {
+		"rndevtools-verify-bundle": "./verify-bundle.mjs"
+	}
+}

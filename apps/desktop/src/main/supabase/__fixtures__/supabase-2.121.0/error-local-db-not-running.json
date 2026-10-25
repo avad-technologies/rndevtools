@@ -1,0 +1,15 @@
+{
+	"cli": "2.121.0",
+	"surface": "migration.list",
+	"provenance": "recorded",
+	"source": "spike 1 (2026-10-16) B-miglist-after-switch (migration list --local after a branch switch)",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "LocalDbRunningError",
+			"message": "The local stack is not running."
+		}
+	},
+	"stderr": []
+}

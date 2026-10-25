@@ -1,0 +1,12 @@
+{
+	"cli": "2.121.0",
+	"surface": "db.dump",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-dump (--data-only --file; no stdout on success)",
+	"exitCode": 0,
+	"stdoutText": "",
+	"stderr": [
+		"Dumping data from local database...",
+		"Dumped schema to /tmp/supa-spike/results2/A-dump.sql."
+	]
+}

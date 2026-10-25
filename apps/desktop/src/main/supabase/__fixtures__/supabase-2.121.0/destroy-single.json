@@ -1,0 +1,16 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.destroy",
+	"provenance": "recorded",
+	"source": "spike 1 (2026-10-16) B-destroy",
+	"exitCode": 0,
+	"stdout": {
+		"destroyed": true,
+		"id": "b7d2540d73c761df0a9c08923965e2172482324bb631b0d9d71962daa1b499e6",
+		"message": ""
+	},
+	"stderr": [
+		"Permanently destroying stack b7d2540d73c761df0a9c08923965e2172482324bb631b0d9d71962daa1b499e6 at /private/tmp/supa-spike/work/wt-b and its owned data. Storage upload files will be preserved.",
+		"[task] start: Destroying stack b7d2540d73c761df0a9c08923965e2172482324bb631b0d9d71962daa1b499e6..."
+	]
+}

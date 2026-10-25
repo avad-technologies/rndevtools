@@ -1,0 +1,31 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.status",
+	"provenance": "synthesized",
+	"source": "a prepared stack with an empty composition (status.handler.ts:120-133)",
+	"exitCode": 0,
+	"stdout": {
+		"identity": {
+			"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8",
+			"name": "default",
+			"project_root": "/private/tmp/supa-spike/work/repo",
+			"branch_context": "refs/heads/main"
+		},
+		"runtime": "native",
+		"owner": "unavailable",
+		"lifecycle": null,
+		"readiness": "unavailable",
+		"composition": {
+			"members": []
+		},
+		"services": [],
+		"endpoints": {},
+		"config_drift": {
+			"status": "unavailable",
+			"message": ""
+		},
+		"env": {},
+		"message": ""
+	},
+	"stderr": []
+}

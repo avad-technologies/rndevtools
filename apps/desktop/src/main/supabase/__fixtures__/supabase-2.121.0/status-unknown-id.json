@@ -1,0 +1,16 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.status",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) err-unknown",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "ExperimentalStackStatusError",
+			"message": "Stack ffffffffffff was not found",
+			"suggestion": "Run `supabase stack list` to see managed stacks and their IDs."
+		}
+	},
+	"stderr": []
+}

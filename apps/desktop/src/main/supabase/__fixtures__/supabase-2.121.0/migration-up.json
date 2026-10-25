@@ -1,0 +1,17 @@
+{
+	"cli": "2.121.0",
+	"surface": "migration.up",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-migup",
+	"exitCode": 0,
+	"stdout": {
+		"applied": [
+			"/tmp/supa-spike/work/repo/supabase/migrations/20261017000000_tags.sql"
+		],
+		"message": "Migrations applied"
+	},
+	"stderr": [
+		"Connecting to local database...",
+		"Applying migration 20261017000000_tags.sql..."
+	]
+}

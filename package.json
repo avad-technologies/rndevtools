@@ -1,0 +1,28 @@
+{
+  "name": "rndevtools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Extensible on-device diagnostics for React Native, with a local-first desktop inspector",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adalloul0928/rndevtools.git"
+  },
+  "packageManager": "pnpm@12.4.1",
+  "engines": {
+    "node": "^22.19.0 || ^24.3.0 || >=26.0.0",
+    "pnpm": ">=12.4.1 <13"
+  },
+  "scripts": {
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "lint:scripts": "pnpm --filter @rndevtools/core exec biome check ../../scripts",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test:run",
+    "check:public": "node --test scripts/check-public-content.test.mjs && node scripts/check-public-content.mjs",
+    "quality": "pnpm check:public && pnpm lint:scripts && turbo lint typecheck test:run"
+  },
+  "devDependencies": {
+    "turbo": "2.11.7"
+  }
+}

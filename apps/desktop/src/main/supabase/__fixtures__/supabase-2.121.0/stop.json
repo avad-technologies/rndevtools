@@ -1,0 +1,15 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.stop",
+	"provenance": "recorded",
+	"source": "spike 2 (2026-10-17) A-stop",
+	"exitCode": 0,
+	"stdout": {
+		"stopped": [
+			"b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8"
+		],
+		"not_running": [],
+		"message": ""
+	},
+	"stderr": []
+}

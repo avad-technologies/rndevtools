@@ -1,0 +1,22 @@
+{
+	"cli": "2.121.0",
+	"surface": "stack.destroy",
+	"provenance": "synthesized",
+	"source": "destroy.handler.ts:186-203 (destroyed_stacks at the envelope root)",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "ExperimentalStackDestroyError",
+			"message": "Failed to destroy 1 managed stack(s).",
+			"detail": "caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6: Another process holds the stack lease; run stop again",
+			"suggestion": "Resolve each error, then run \"supabase stack destroy --stack-id caa17ef5f48a374c852df92e3c2f8d4d6f6d4e446b606b21388dc9fcdf555fb6 --yes\" to retry the stacks that failed."
+		},
+		"destroyed_stacks": [
+			{
+				"id": "b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8"
+			}
+		]
+	},
+	"stderr": []
+}

@@ -1,0 +1,18 @@
+{
+	"cli": "2.121.0",
+	"surface": "migration.list",
+	"provenance": "synthesized",
+	"source": "connect-errors.ts:65 local suggestion, which is wrong for native stacks",
+	"exitCode": 1,
+	"stdout": {
+		"_tag": "Error",
+		"error": {
+			"code": "DbConnectError",
+			"message": "failed to connect to postgres: failed to connect to `host=127.0.0.1 user=postgres database=postgres`: dial error (dial tcp 127.0.0.1:54322: connect: connection refused)",
+			"suggestion": "Make sure Docker is running, then run: supabase start"
+		}
+	},
+	"stderr": [
+		"Connecting to local database..."
+	]
+}
