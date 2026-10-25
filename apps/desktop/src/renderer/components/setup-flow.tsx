@@ -33,7 +33,7 @@ import { useLaneRuntime } from '@/state/lane-runtime';
 import { useSimulatorRuntime } from '@/state/simulator-runtime';
 import { useSlimmingRuntime } from '@/state/slimming-runtime';
 import { useSupabaseState } from '@/state/supabase-runtime';
-import appIcon from '../../../build/icon.svg';
+import appIcon from '../../../build/icon.png';
 
 const STEP_COPY: Record<
 	SetupStep,

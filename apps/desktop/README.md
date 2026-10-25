@@ -110,8 +110,9 @@ pnpm --filter @rndevtools/desktop make
 
 `package` creates an unpacked, locally runnable app in `apps/desktop/release`. `make` creates the configured platform artifacts: DMG and ZIP on macOS, NSIS on Windows, or AppImage and DEB on Linux. Distribution releases still require the normal platform signing and notarization credentials.
 
-The app icon source is [`build/icon.svg`](build/icon.svg). After editing it, regenerate
-the committed PNG and macOS ICNS assets on a Mac:
+The app icon source is [`build/icon-source.png`](build/icon-source.png): the approved
+phone-and-inspection-target artwork, with transparent margins. After replacing it,
+regenerate the committed 1024px PNG and macOS ICNS assets on a Mac:
 
 ```bash
 pnpm --filter @rndevtools/desktop icons:generate

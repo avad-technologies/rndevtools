@@ -44,7 +44,7 @@ function generate() {
 	const temporary = mkdtempSync(join(tmpdir(), 'rndevtools-icons-'));
 	try {
 		const png = join(temporary, 'icon.png');
-		// PNG keeps the SVG's transparent margins; never flatten onto a background.
+		// Derive every size from the approved artwork, preserving its alpha margins.
 		run('/usr/bin/sips', [
 			'-s',
 			'format',
@@ -52,7 +52,7 @@ function generate() {
 			'-z',
 			'1024',
 			'1024',
-			join(buildDirectory, 'icon.svg'),
+			join(buildDirectory, 'icon-source.png'),
 			'--out',
 			png,
 		]);
@@ -99,7 +99,7 @@ function generate() {
 		copyFileSync(png, join(buildDirectory, 'icon.png'));
 		copyFileSync(icns, join(buildDirectory, 'icon.icns'));
 		console.log(
-			'Generated build/icon.png and build/icon.icns from build/icon.svg.'
+			'Generated build/icon.png and build/icon.icns from build/icon-source.png.'
 		);
 	} finally {
 		rmSync(temporary, { recursive: true, force: true });
