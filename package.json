@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/adalloul0928/rndevtools.git"
+    "url": "git+https://github.com/avad-technologies/rndevtools.git"
   },
   "packageManager": "pnpm@12.4.1",
   "engines": {

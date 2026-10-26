@@ -6,7 +6,7 @@ launch it. Node, pnpm, Go and the HeroUI Pro build license are not needed to
 install that app. Simulator features still require Xcode and an installed iOS
 Simulator runtime. Local Supabase uses the consuming repository's pinned CLI.
 
-The signed and notarized [desktop 0.2.0 preview](https://github.com/adalloul0928/rndevtools/releases/tag/desktop-v0.2.0)
+The signed and notarized [desktop 0.2.0 preview](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.0)
 is available on GitHub Releases. Its declared minimum is macOS 14; testing so
 far covers one Apple silicon Mac with macOS 27 and Xcode 27. A separate
 clean-Mac installation and broader version coverage remain pending.
@@ -98,10 +98,12 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Desktop-only previews
 
-The first preview was built locally from
-`720a153eeadfbe3fc3d8fde511cb71e6e8d37041`. Keep `desktop-v0.2.0` pointing to that
-exact commit so its DMG and manifest remain traceable to the reviewed source.
-Documentation updates belong in later commits; keep the release tag unchanged.
+The AVAD desktop 0.2.0 preview includes the approved phone-and-focus-brackets
+icon and was built locally from
+`cfa76763a8dce6a8e30f5c059ceee92e0ba4e3ce`. Keep `desktop-v0.2.0` in this
+repository pointing to that exact commit so its DMG and manifest remain
+traceable to the reviewed source. Documentation and repository metadata updates
+belong in later commits; keep the release tag unchanged.
 
 For a desktop-only preview, build and verify with the local credentials above,
 then prepare a GitHub prerelease under `desktop-v<version>` pointing to that

@@ -5,11 +5,11 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/adalloul0928/rndevtools.git",
+		"url": "git+https://github.com/avad-technologies/rndevtools.git",
 		"directory": "packages/react-native"
 	},
-	"homepage": "https://github.com/adalloul0928/rndevtools/tree/main/packages/react-native#readme",
-	"bugs": "https://github.com/adalloul0928/rndevtools/issues",
+	"homepage": "https://github.com/avad-technologies/rndevtools/tree/main/packages/react-native#readme",
+	"bugs": "https://github.com/avad-technologies/rndevtools/issues",
 	"keywords": [
 		"react-native",
 		"expo",

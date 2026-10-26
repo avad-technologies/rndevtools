@@ -1,6 +1,6 @@
 # @rndevtools/react-native
 
-The React Native host runtime for [RN Devtools](https://github.com/adalloul0928/rndevtools).
+The React Native host runtime for [RN Devtools](https://github.com/avad-technologies/rndevtools).
 
 `@rndevtools/core` owns the on-device panels and diagnostic plugins. This
 package owns the glue an app needs to drive them: the desktop broker client,

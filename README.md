@@ -4,9 +4,9 @@
 
 A desktop workspace for React Native diagnostics, iOS Simulators, and parallel development across git worktrees.
 
-**[Download the macOS preview](https://github.com/adalloul0928/rndevtools/releases/download/desktop-v0.2.0/RN-Devtools-0.2.0-arm64.dmg)** · Apple silicon · Version 0.2.0
+**[Download the macOS preview](https://github.com/avad-technologies/rndevtools/releases/download/desktop-v0.2.0/RN-Devtools-0.2.0-arm64.dmg)** · Apple silicon · Version 0.2.0
 
-Signed and notarized. No HeroUI account or license is needed to run the app. [Release notes and checksums](https://github.com/adalloul0928/rndevtools/releases/tag/desktop-v0.2.0).
+Signed and notarized. No HeroUI account or license is needed to run the app. [Release notes and checksums](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.0).
 
 ![RN Devtools Simulator fleet and worktree lanes](docs/images/simulator-fleet.png)
 
@@ -41,7 +41,7 @@ Local Supabase uses separate databases with shared default signing keys. Enable 
 The [Expo example](examples/expo-demo/README.md) includes diagnostic plugins, the desktop connection, native build caching, and a local Supabase project. Use Node.js 24, pnpm 12.4.1, and Xcode:
 
 ```sh
-git clone https://github.com/adalloul0928/rndevtools.git
+git clone https://github.com/avad-technologies/rndevtools.git
 cd rndevtools
 pnpm install
 pnpm --dir examples/expo-demo exec expo run:ios
