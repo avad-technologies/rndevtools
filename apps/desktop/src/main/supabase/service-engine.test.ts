@@ -3,6 +3,7 @@ import {
 	readdir,
 	readFile,
 	realpath,
+	rm,
 	stat,
 	writeFile,
 } from 'node:fs/promises';
@@ -1463,6 +1464,61 @@ describe('SupabaseEngine cadence', () => {
 });
 
 describe('SupabaseEngine state', () => {
+	it('retains managed worktree facts when the bounded lane listing drops them', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('managed');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		// A lane can end while its backend stays held. The UI's bounded
+		// worktree list must not become the backend's ownership registry.
+		h.lanes.worktrees = [];
+		h.lanes.repositories = [];
+		await h.engine.refreshRepositories({ fresh: true });
+		expect(h.engine.factsForStack(stackId)).toMatchObject({
+			worktreePath: repo,
+			expectedStackId: stackId,
+			mode: { value: 'managed' },
+		});
+	});
+
+	it('recovers managed worktree facts from durable records after desktop restart', async () => {
+		const before = await createEngineHarness({ enabled: true, start: false });
+		const repo = await before.repository('managed');
+		await before.engine.start();
+		await before.settle();
+		const stackId = await startStack(before, repo);
+		const record = before.engine.stackStore.record(stackId);
+		if (!record) throw new Error('Managed stack was not recorded.');
+		await before.engine.stop();
+
+		const after = await createEngineHarness({ enabled: true, start: false });
+		await after.engine.stackStore.load();
+		await after.engine.stackStore.upsertRecord(record);
+		await after.engine.start();
+		await after.settle();
+		expect(after.engine.factsForStack(stackId)).toMatchObject({
+			worktreePath: repo,
+			expectedStackId: stackId,
+			mode: { value: 'managed' },
+		});
+	});
+
+	it('does not replace a removed managed checkout with an ancestor repository', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		await h.repository('parent');
+		const repo = await h.repository('parent/child');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		await rm(path.join(repo, '.git'), { recursive: true });
+		h.lanes.worktrees = [];
+		h.lanes.repositories = [];
+		await h.engine.refreshRepositories({ fresh: true });
+		expect(h.engine.factsForStack(stackId)).toBeUndefined();
+		expect(h.engine.allFacts()).toEqual([]);
+	});
+
 	it('bumps the revision only when the visible state changes', async () => {
 		const h = await createEngineHarness({ enabled: true, start: false });
 		const repo = await h.repository('repo');

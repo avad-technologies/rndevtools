@@ -1400,23 +1400,42 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			const extras = [...this.#extraWorktrees.values()].filter(
 				(extra) => !tracked.has(extra.path)
 			);
+			// The lane list is a bounded UI inventory, and explicit agent
+			// worktrees live only in memory. Recover our durable stacks' roots
+			// even when no lane remains or the desktop has just restarted.
+			const known = new Set([...tracked, ...extras.map((extra) => extra.path)]);
+			const recorded = [];
+			for (const record of this.stackStore.records()) {
+				const target = record.worktreePath;
+				if (
+					record.origin === 'external' ||
+					target === undefined ||
+					known.has(target)
+				)
+					continue;
+				known.add(target);
+				const extra = await this.#inspectExtraWorktree(target);
+				// A deleted checkout must not be replaced by an ancestor's repo.
+				if (extra?.path === target) recorded.push(extra);
+			}
+			const active = new Set(this.#lanes().map((lane) => lane.worktreePath));
+			const scanWorktrees = [
+				...worktrees.filter((worktree) => active.has(worktree.path)),
+				...[...recorded, ...extras].map((extra) => ({
+					...extra,
+					dirty: false,
+				})),
+				...worktrees.filter((worktree) => !active.has(worktree.path)),
+			];
 			const facts = await inspectSupabaseRepositories(
 				{
 					repositories: [
 						...new Set([
+							...scanWorktrees.map((worktree) => worktree.repositoryRoot),
 							...repositories,
-							...extras.map((extra) => extra.repositoryRoot),
 						]),
 					],
-					worktrees: [
-						...worktrees,
-						...extras.map((extra) => ({
-							path: extra.path,
-							branch: extra.branch,
-							repositoryRoot: extra.repositoryRoot,
-							dirty: false,
-						})),
-					],
+					worktrees: scanWorktrees,
 					lanes: this.#lanes(),
 					appPaths: [
 						...this.#requestedApps.values(),
@@ -1528,18 +1547,22 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		return facts;
 	}
 
-	/** Records an untracked git worktree so the next scan includes it. */
-	async #addExtraWorktree(target: string): Promise<boolean> {
+	async #inspectExtraWorktree(
+		target: string
+	): Promise<
+		| Readonly<{ path: string; repositoryRoot: string; branch: string }>
+		| undefined
+	> {
 		let current = target;
 		for (let depth = 0; ; depth += 1) {
 			const kind = await this.#fs.kind(path.join(current, '.git'));
 			if (kind === 'file' || kind === 'directory') break;
 			const parent = path.dirname(current);
-			if (parent === current || depth >= 32) return false;
+			if (parent === current || depth >= 32) return undefined;
 			current = parent;
 		}
 		const head = await this.#readHead(current);
-		if (head.status !== 'ok') return false;
+		if (head.status !== 'ok') return undefined;
 		const repositoryRoot =
 			path.basename(head.commonDir) === '.git'
 				? path.dirname(head.commonDir)
@@ -1547,11 +1570,18 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		const branch = head.branchContext.startsWith('refs/heads/')
 			? head.branchContext.slice('refs/heads/'.length)
 			: head.branchContext;
-		this.#extraWorktrees.set(current, {
+		return {
 			path: current,
 			repositoryRoot,
 			branch: branch.slice(0, 256) || 'detached',
-		});
+		};
+	}
+
+	/** Records an untracked git worktree so the next scan includes it. */
+	async #addExtraWorktree(target: string): Promise<boolean> {
+		const extra = await this.#inspectExtraWorktree(target);
+		if (!extra) return false;
+		this.#extraWorktrees.set(extra.path, extra);
 		while (this.#extraWorktrees.size > MAX_EXTRA_WORKTREES) {
 			const oldest = this.#extraWorktrees.keys().next().value;
 			if (oldest === undefined) break;
