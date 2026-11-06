@@ -14,8 +14,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { supabaseDesktopError } from '../../shared/supabase-protocol';
 import { realisticSecrets, SECRET_SHAPED } from './cli-fixtures.test-support';
+import * as storeFiles from './policy-store';
 import {
 	SUPABASE_MAX_ACTIVITY,
+	SUPABASE_MAX_RELEASED_HOLDERS,
 	SUPABASE_MAX_STACK_RECORDS,
 	type SupabaseRequestRecord,
 	type SupabaseStackRecord,
@@ -308,10 +310,12 @@ describe('SupabaseStackStore', () => {
 		expect(stacks.record(hex(1))?.holds).toHaveLength(2);
 		expect(stacks.record(hex(2))?.holds).toEqual([]);
 		expect(stacks.record(hex(2))?.releasedAt).toBe(NOW);
-		expect(stacks.record(hex(2))?.releasedBy).toEqual({
-			holder: { kind: 'codex', sessionId: 'mcp-codex-mcp-client' },
-			sessionCwd: '/Users/example/code/example-app-wt/other/apps/mobile',
-		});
+		expect(stacks.record(hex(2))?.releasedHolders).toEqual([
+			{
+				holder: { kind: 'codex', sessionId: 'mcp-codex-mcp-client' },
+				sessionCwd: '/Users/example/code/example-app-wt/other/apps/mobile',
+			},
+		]);
 		// Holding it again ends the release period.
 		await stacks.addHold(hex(2), session);
 		expect(stacks.record(hex(2))?.releasedAt).toBeUndefined();
@@ -370,7 +374,7 @@ describe('SupabaseStackStore', () => {
 		).toEqual([hex(1)]);
 		const restarted = stackStore(directory);
 		await restarted.load();
-		expect(restarted.record(hex(1))?.releasedBy).toEqual({ holder });
+		expect(restarted.record(hex(1))?.releasedHolders).toEqual([{ holder }]);
 		expect(restarted.record(hex(2))?.releasedBy).toBeUndefined();
 	});
 
@@ -623,5 +627,193 @@ describe('SupabaseStackStore', () => {
 		unsubscribe();
 		await stacks.upsertRecord(record(2));
 		expect(calls).toBe(1);
+	});
+});
+
+describe('independent Supabase cwd releases', () => {
+	const actorA = { kind: 'codex', sessionId: 'child-a' } as const;
+	const actorB = { kind: 'codex', sessionId: 'child-b' } as const;
+	const rootActor = { kind: 'codex', sessionId: 'root' } as const;
+	const hold = (agent: typeof actorA | typeof actorB | typeof rootActor) => ({
+		holder: 'session' as const,
+		agent: { ...agent, synthetic: false },
+		since: NOW,
+	});
+	it('retains every release across another actor up/down, pins, linger clearing and reload', async () => {
+		const directory = await root();
+		const stacks = stackStore(directory);
+		await stacks.load();
+		await stacks.upsertRecord(
+			record(1, { holds: [hold(actorA), hold(actorB), hold(rootActor)] })
+		);
+		await stacks.releaseHolder(actorA);
+		await stacks.releaseHolder(actorB);
+		expect(stacks.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: actorA },
+			{ holder: actorB },
+		]);
+		expect(stacks.record(hex(1))?.releasedAt).toBeUndefined();
+		await stacks.applyRelease(hex(1), 'clear');
+		await stacks.setPinned(hex(1), true);
+		await stacks.addHold(hex(1), hold(rootActor));
+		await stacks.releaseHolder(rootActor);
+		expect(stacks.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: actorA },
+			{ holder: actorB },
+			{ holder: rootActor },
+		]);
+		await stacks.addHold(hex(1), hold(actorA));
+		expect(stacks.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: actorB },
+			{ holder: rootActor },
+		]);
+		const restarted = stackStore(directory);
+		await restarted.load();
+		expect(restarted.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: actorB },
+			{ holder: rootActor },
+		]);
+		expect(restarted.record(hex(1))?.holds).toEqual([hold(actorA)]);
+	});
+	it('keeps the legacy exclusion after another holder clears its linger', async () => {
+		const directory = await root();
+		const stacks = stackStore(directory);
+		await stacks.load();
+		await stacks.upsertRecord(
+			record(1, { releasedAt: NOW - MINUTE, releasedBy: { holder: actorA } })
+		);
+		await stacks.addHold(hex(1), hold(actorB));
+		await stacks.applyRelease(hex(1), 'clear');
+		expect(stacks.record(hex(1))?.releasedAt).toBeUndefined();
+		const restarted = stackStore(directory);
+		await restarted.load();
+		expect(restarted.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: actorA },
+		]);
+	});
+	it('clears only the exact synthetic actor and normalized caller scope', async () => {
+		const directory = await root();
+		const stacks = stackStore(directory);
+		await stacks.load();
+		const synthetic = { kind: 'codex', sessionId: 'mcp-codex' } as const;
+		const base = record(1);
+		const src = `${base.projectRoot}/src`;
+		const docs = `${base.projectRoot}/docs`;
+		await stacks.upsertRecord({
+			...base,
+			releasedHolders: [
+				{ holder: synthetic, sessionCwd: src },
+				{ holder: synthetic, sessionCwd: docs },
+				{ holder: actorB },
+			],
+		});
+		const syntheticHold = {
+			holder: 'worktree' as const,
+			agent: { ...synthetic, synthetic: true },
+			since: NOW,
+		};
+		await stacks.addHold(hex(1), syntheticHold);
+		expect(stacks.record(hex(1))?.releasedHolders).toHaveLength(3);
+		await stacks.addHold(hex(1), hold(rootActor), { sessionCwd: src });
+		expect(stacks.record(hex(1))?.releasedHolders).toHaveLength(3);
+		await stacks.addHold(hex(1), syntheticHold, { sessionCwd: `${src}/` });
+		expect(stacks.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: synthetic, sessionCwd: docs },
+			{ holder: actorB },
+		]);
+	});
+	it('refuses overflow without evicting an earlier release or changing ownership', async () => {
+		const directory = await root();
+		const stacks = stackStore(directory);
+		await stacks.load();
+		const releasedHolders = Array.from(
+			{ length: SUPABASE_MAX_RELEASED_HOLDERS },
+			(_, i) => ({
+				holder: { kind: 'codex' as const, sessionId: `released-${i}` },
+			})
+		);
+		await stacks.upsertRecord(
+			record(1, { releasedHolders, holds: [hold(actorA)] })
+		);
+		const before = stacks.record(hex(1));
+		await expect(stacks.releaseHolder(actorA)).rejects.toThrow(
+			'existing releases were preserved'
+		);
+		expect(stacks.record(hex(1))).toEqual(before);
+	});
+	it('preserves the latest queued ownership in both release and own-up directions', async () => {
+		const directory = await root();
+		const stacks = stackStore(directory);
+		await stacks.load();
+		await stacks.upsertRecord(record(1, { holds: [hold(actorA)] }));
+		const blockedWrite = () => {
+			let release = () => {};
+			let entered = () => {};
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const ready = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const original = storeFiles.writeSupabaseStoreFile;
+			const spy = vi
+				.spyOn(storeFiles, 'writeSupabaseStoreFile')
+				.mockImplementationOnce(async (...args) => {
+					entered();
+					await gate;
+					return original(...args);
+				});
+			return { release, ready, restore: () => spy.mockRestore() };
+		};
+		let blocked = blockedWrite();
+		try {
+			const down = stacks.releaseHolder(actorA);
+			await blocked.ready;
+			const stale = stacks.record(hex(1));
+			if (!stale) throw new Error('missing stack');
+			const metadata = stacks.upsertRecord(
+				{ ...stale, lastStartedAt: NOW },
+				{ preserveOwnership: true }
+			);
+			blocked.release();
+			await down;
+			await metadata;
+		} finally {
+			blocked.release();
+			blocked.restore();
+		}
+		expect(stacks.record(hex(1))?.holds).toEqual([]);
+		expect(stacks.record(hex(1))?.releasedHolders).toEqual([
+			{ holder: actorA },
+		]);
+		blocked = blockedWrite();
+		try {
+			const up = stacks.addHold(hex(1), hold(actorA));
+			await blocked.ready;
+			const stale = stacks.record(hex(1));
+			if (!stale) throw new Error('missing stack');
+			const pin = stacks.setPinned(hex(1), true);
+			const clocks = stacks.setClocks(hex(1), {
+				'codex:root': { missingSince: NOW },
+			});
+			const metadata = stacks.upsertRecord(
+				{ ...stale, lastStartedAt: NOW + 1 },
+				{ preserveOwnership: true }
+			);
+			blocked.release();
+			await Promise.all([up, pin, clocks, metadata]);
+		} finally {
+			blocked.release();
+			blocked.restore();
+		}
+		expect(stacks.record(hex(1))).toMatchObject({
+			holds: [hold(actorA)],
+			pinned: true,
+			pinnedAt: NOW,
+			clocks: { 'codex:root': { missingSince: NOW } },
+			lastStartedAt: NOW + 1,
+		});
+		expect(stacks.record(hex(1))?.releasedHolders).toBeUndefined();
+		expect(stacks.record(hex(1))?.releasedAt).toBeUndefined();
 	});
 });

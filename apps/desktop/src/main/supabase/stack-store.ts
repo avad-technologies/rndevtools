@@ -44,6 +44,8 @@ const MAX_REQUESTS = 32;
 /** The activity ring kept for local stats and doctor. */
 export const SUPABASE_MAX_ACTIVITY = 200;
 const MAX_HOLDS = 16;
+/** Explicit cwd releases remain independent; never evict one to revive its actor. */
+export const SUPABASE_MAX_RELEASED_HOLDERS = 64;
 const MAX_CLOCKS = 32;
 const MAX_APP_PATHS = 16;
 /** Simulators remembered per stack, for the carried-over session warning. */
@@ -112,6 +114,11 @@ const agentSchema = z.strictObject({
 	kind: agentKindSchema,
 	sessionId: identifierSchema,
 });
+const releasedHolderSchema = z.strictObject({
+	holder: agentSchema,
+	sessionCwd: absolutePathSchema.optional(),
+});
+export type SupabaseReleasedHolder = z.infer<typeof releasedHolderSchema>;
 
 /**
  * An agent's hold: `session` from an attributed `supabase up`, `worktree`
@@ -197,15 +204,12 @@ const recordSchema = z.strictObject({
 	holds: z.array(storedHoldSchema).max(MAX_HOLDS),
 	/** When the last hold went away; the unheld stop linger counts from here. */
 	releasedAt: timestampSchema.optional(),
-	/**
-	 * The session whose own release started that period: its cwd keeps
-	 * nothing running until something holds the stack again.
-	 */
-	releasedBy: z
-		.strictObject({
-			holder: agentSchema,
-			sessionCwd: absolutePathSchema.optional(),
-		})
+	/** Legacy single-actor cwd release; merged into releasedHolders on a write. */
+	releasedBy: releasedHolderSchema.optional(),
+	/** Cwd keepalives explicitly released until that actor asks for up again. */
+	releasedHolders: z
+		.array(releasedHolderSchema)
+		.max(SUPABASE_MAX_RELEASED_HOLDERS)
 		.optional(),
 	/** Abandonment clocks by holderClockKey, kept across desktop restarts. */
 	clocks: z
@@ -410,10 +414,50 @@ function holdBelongsTo(
 	);
 }
 
-/** The record without its release period: something holds it again. */
-function withoutRelease(record: SupabaseStackRecord): SupabaseStackRecord {
+function releasedHolderScope(directory: string): string {
+	const normalized = path.normalize(directory);
+	return normalized.replace(/\/+$/, '') || path.parse(normalized).root;
+}
+
+function releasedHolderKey(release: SupabaseReleasedHolder): string {
+	return JSON.stringify([
+		release.holder.kind,
+		release.holder.sessionId,
+		isSyntheticHolder(release.holder) && release.sessionCwd !== undefined
+			? releasedHolderScope(release.sessionCwd)
+			: undefined,
+	]);
+}
+
+/** Old and new records share the same independently scoped cwd exclusions. */
+export function supabaseReleasedHolders(
+	record: Readonly<{
+		releasedBy?: SupabaseReleasedHolder | undefined;
+		releasedHolders?: readonly SupabaseReleasedHolder[] | undefined;
+	}>
+): readonly SupabaseReleasedHolder[] {
+	const releases = new Map<string, SupabaseReleasedHolder>();
+	for (const release of [
+		...(record.releasedHolders ?? []),
+		...(record.releasedBy ? [record.releasedBy] : []),
+	]) {
+		releases.set(releasedHolderKey(release), release);
+	}
+	return [...releases.values()];
+}
+
+/** A new hold ends the linger, while other actors' explicit releases persist. */
+function withoutReleasePeriod(
+	record: SupabaseStackRecord
+): SupabaseStackRecord {
 	const { releasedAt: _releasedAt, releasedBy: _releasedBy, ...rest } = record;
-	return rest;
+	const releasedHolders = supabaseReleasedHolders(record);
+	return {
+		...rest,
+		...(releasedHolders.length
+			? { releasedHolders: [...releasedHolders] }
+			: {}),
+	};
 }
 
 /** How readily a record is evicted, lowest first; pinned or held ones never are. */
@@ -571,15 +615,59 @@ export class SupabaseStackStore {
 	 * active unpinned, unheld record goes, external ones first; when every
 	 * record is pinned or held, the add is refused.
 	 */
-	async upsertRecord(record: SupabaseStackRecord): Promise<void> {
-		await this.upsertRecords([record]);
+	async upsertRecord(
+		record: SupabaseStackRecord,
+		options: Readonly<{ preserveOwnership?: boolean }> = {}
+	): Promise<void> {
+		await this.upsertRecords([record], options);
 	}
 
 	/** Adds or replaces several records in one write, in order. */
-	async upsertRecords(records: readonly SupabaseStackRecord[]): Promise<void> {
+	async upsertRecords(
+		records: readonly SupabaseStackRecord[],
+		options: Readonly<{ preserveOwnership?: boolean }> = {}
+	): Promise<void> {
 		const validated = records.map((record) => recordSchema.parse(record));
 		await this.#update((draft) => {
-			for (const record of validated) upsertInto(draft, record);
+			for (const record of validated) {
+				const current = options.preserveOwnership
+					? draft.records.find((candidate) => candidate.id === record.id)
+					: undefined;
+				if (!current) {
+					upsertInto(draft, record);
+					continue;
+				}
+				// Lifecycle metadata was read before this queued write. Its ownership
+				// snapshot must not undo a release, up, pin or clock update ahead of it.
+				const {
+					holds: _holds,
+					clocks: _clocks,
+					pinned: _pinned,
+					pinnedAt: _pinnedAt,
+					releasedAt: _releasedAt,
+					releasedBy: _releasedBy,
+					releasedHolders: _releasedHolders,
+					...metadata
+				} = record;
+				upsertInto(draft, {
+					...metadata,
+					holds: current.holds,
+					clocks: current.clocks,
+					pinned: current.pinned,
+					...(current.pinnedAt === undefined
+						? {}
+						: { pinnedAt: current.pinnedAt }),
+					...(current.releasedAt === undefined
+						? {}
+						: { releasedAt: current.releasedAt }),
+					...(current.releasedBy === undefined
+						? {}
+						: { releasedBy: current.releasedBy }),
+					...(current.releasedHolders === undefined
+						? {}
+						: { releasedHolders: current.releasedHolders }),
+				});
+			}
 		});
 	}
 
@@ -632,7 +720,8 @@ export class SupabaseStackStore {
 	 */
 	async addHold(
 		stackId: string,
-		hold: SupabaseStoredHold
+		hold: SupabaseStoredHold,
+		options: Readonly<{ sessionCwd?: string }> = {}
 	): Promise<SupabaseStackRecord | undefined> {
 		const validated = storedHoldSchema.parse(hold);
 		return this.updateRecord(stackId, (record) => {
@@ -645,16 +734,34 @@ export class SupabaseStackStore {
 					)
 			);
 			if (others.length >= MAX_HOLDS) others.shift();
-			return { ...withoutRelease(record), holds: [...others, validated] };
+			const resumed = releasedHolderKey({
+				holder: validated.agent,
+				...(options.sessionCwd ? { sessionCwd: options.sessionCwd } : {}),
+			});
+			const releasedHolders = supabaseReleasedHolders(record).filter(
+				(release) =>
+					(isSyntheticHolder(validated.agent) &&
+						options.sessionCwd === undefined) ||
+					releasedHolderKey(release) !== resumed
+			);
+			const next = withoutReleasePeriod(record);
+			delete next.releasedHolders;
+			return {
+				...next,
+				holds: [...others, validated],
+				...(releasedHolders.length
+					? { releasedHolders: [...releasedHolders] }
+					: {}),
+			};
 		});
 	}
 
 	/**
 	 * Drops every hold `holder` has (only the ones where `sessionCwd` works,
 	 * for a synthetic holder) and returns the stacks it released. Stacks left
-	 * with no stored hold get `releasedAt` and `releasedBy`: the linger starts
-	 * (holds.ts clears it again while a lane still holds the stack) and the
-	 * releasing session's own cwd no longer keeps the stack running.
+	 * remember each releasing actor's cwd exclusion even while others hold the
+	 * stack. With no stored hold left the linger starts; another lane/holder
+	 * clears only that period, preserving every actor's explicit cwd release.
 	 */
 	async releaseHolder(
 		holder: DeviceHolder,
@@ -674,31 +781,36 @@ export class SupabaseStackStore {
 				const kept = record.holds.filter(
 					(hold) => !holdBelongsTo(hold, record, holder, options.sessionCwd)
 				);
+				const exclusion = releasedHolderSchema.parse({
+					holder: { kind: holder.kind, sessionId: holder.sessionId },
+					...(options.sessionCwd === undefined || !isSyntheticHolder(holder)
+						? {}
+						: { sessionCwd: releasedHolderScope(options.sessionCwd) }),
+				});
+				const exclusions = supabaseReleasedHolders(record);
+				const alreadyReleased = exclusions.some(
+					(entry) => releasedHolderKey(entry) === releasedHolderKey(exclusion)
+				);
 				if (kept.length === record.holds.length) {
-					if (
-						!options.releaseUnheldTargets ||
-						!only?.has(record.id) ||
-						kept.length > 0
-					)
-						continue;
+					if (!options.releaseUnheldTargets || !only?.has(record.id)) continue;
 					// Repeating down must not keep moving the stop deadline.
-					if (
-						record.releasedAt !== undefined &&
-						record.releasedBy?.holder.kind === holder.kind &&
-						record.releasedBy.holder.sessionId === holder.sessionId &&
-						record.releasedBy.sessionCwd === options.sessionCwd
-					)
-						continue;
+					if (alreadyReleased) continue;
+				}
+				if (
+					!alreadyReleased &&
+					exclusions.length >= SUPABASE_MAX_RELEASED_HOLDERS
+				) {
+					throw new RangeError(
+						'Too many released holders for this stack; existing releases were preserved.'
+					);
 				}
 				record.holds = kept;
+				record.releasedHolders = alreadyReleased
+					? [...exclusions]
+					: [...exclusions, exclusion];
+				delete record.releasedBy;
 				if (kept.length === 0) {
 					record.releasedAt = now;
-					record.releasedBy = {
-						holder: { kind: holder.kind, sessionId: holder.sessionId },
-						...(options.sessionCwd === undefined
-							? {}
-							: { sessionCwd: options.sessionCwd }),
-					};
 				}
 				released.push(record.id);
 			}
@@ -715,7 +827,7 @@ export class SupabaseStackStore {
 		const now = this.#now();
 		return this.updateRecord(stackId, (record) => {
 			if (pinned) {
-				return { ...withoutRelease(record), pinned: true, pinnedAt: now };
+				return { ...withoutReleasePeriod(record), pinned: true, pinnedAt: now };
 			}
 			const { pinnedAt: _pinnedAt, ...rest } = record;
 			return {
@@ -737,7 +849,7 @@ export class SupabaseStackStore {
 		if (release === undefined) return this.record(stackId);
 		return this.updateRecord(stackId, (record) =>
 			release === 'clear'
-				? withoutRelease(record)
+				? withoutReleasePeriod(record)
 				: { ...record, releasedAt: release.at }
 		);
 	}

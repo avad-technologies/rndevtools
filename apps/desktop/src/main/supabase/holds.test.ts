@@ -556,3 +556,79 @@ describe('holder keys and clocks', () => {
 		expect(sameSupabaseClocks({}, { a: { missingSince: 1 } })).toBe(false);
 	});
 });
+
+describe('independent cwd release exclusions', () => {
+	it('unions prior releases with the current requester while another lane holds the stack', () => {
+		const current = { kind: 'codex', sessionId: 'current-down' } as const;
+		const unrelated = { kind: 'codex', sessionId: 'unrelated' } as const;
+		const resolved = resolveSupabaseHolds(
+			input({
+				stack: { releasedHolders: [{ holder: CLAUDE }, { holder: CODEX }] },
+				sessions: [
+					session(CLAUDE, WORKTREE),
+					session(CODEX, WORKTREE),
+					session(current, WORKTREE),
+					session(unrelated, WORKTREE),
+				],
+				ignore: { holder: current },
+				lanes: [{ laneId: LANE, worktreePath: WORKTREE, since: NOW }],
+			})
+		);
+		expect(resolved.cwdKeepers.map((keeper) => keeper.agent.sessionId)).toEqual(
+			[unrelated.sessionId]
+		);
+		expect(resolved.held).toBe(true);
+		expect(resolved.release).toBeUndefined();
+		expect(resolved.autoStopAt).toBeUndefined();
+	});
+	it('never suppresses an actual unrelated hold even when that identity released its cwd', () => {
+		const resolved = resolveSupabaseHolds(
+			input({
+				stack: {
+					holds: [stored('session', CLAUDE)],
+					releasedHolders: [{ holder: CLAUDE }, { holder: CODEX }],
+				},
+				sessions: [session(CLAUDE, WORKTREE), session(CODEX, WORKTREE)],
+			})
+		);
+		expect(resolved.held).toBe(true);
+		expect(resolved.holds[0]?.live).toBe(true);
+		expect(resolved.cwdKeepers).toEqual([]);
+		expect(resolved.autoStopAt).toBeUndefined();
+	});
+	it('preserves synthetic scope and agent kind while matching released cwd keepers', () => {
+		const outside = { kind: 'codex', sessionId: 'outside' } as const;
+		const resolved = resolveSupabaseHolds(
+			input({
+				stack: {
+					releasedHolders: [
+						{ holder: SYNTHETIC, sessionCwd: `${WORKTREE}/src` },
+					],
+				},
+				sessions: [
+					session(CODEX, `${WORKTREE}/src/nested`),
+					session(outside, `${WORKTREE}/docs`),
+					session(CLAUDE, `${WORKTREE}/src`),
+				],
+			})
+		);
+		expect(resolved.cwdKeepers.map((keeper) => keeper.agent.sessionId)).toEqual(
+			[outside.sessionId, CLAUDE.sessionId]
+		);
+	});
+});
+
+it('does not let a shared synthetic session id bypass its released cwd scope', () => {
+	const resolved = resolveSupabaseHolds(
+		input({
+			stack: {
+				releasedHolders: [{ holder: SYNTHETIC, sessionCwd: `${WORKTREE}/src` }],
+			},
+			sessions: [session(SYNTHETIC, `${WORKTREE}/docs`)],
+		})
+	);
+	expect(resolved.cwdKeepers.map((keeper) => keeper.cwd)).toEqual([
+		`${WORKTREE}/docs`,
+	]);
+	expect(resolved.held).toBe(true);
+});

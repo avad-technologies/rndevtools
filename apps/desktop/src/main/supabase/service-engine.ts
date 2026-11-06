@@ -399,6 +399,8 @@ type SupabaseEnsureRequest = Readonly<{
 	createdBy: SupabaseStackRecord['createdBy'];
 	/** An agent's session or worktree hold, added once the stack runs. */
 	hold?: SupabaseStoredHold | undefined;
+	/** Caller scope for an explicit agent up, never inferred from lane attachments. */
+	holdSessionCwd?: string | undefined;
 	/** The operator's start pins the stack (always, or only when unheld). */
 	pin?: 'always' | 'if-unheld' | undefined;
 	lane?: Readonly<{ laneId: string; port?: number | undefined }> | undefined;
@@ -3839,22 +3841,25 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			keyFingerprints: _keyFingerprints,
 			...rest
 		} = base;
-		await this.stackStore.upsertRecord({
-			...rest,
-			origin: rest.origin === 'external' ? 'adopted' : rest.origin,
-			projectRoot: detection.projectRoot,
-			worktreePath: facts.worktreePath,
-			appPaths: [...new Set([...rest.appPaths, facts.appPath])].slice(-16),
-			repositoryId: facts.repositoryId,
-			branchContext,
-			lastStartedAt: now,
-			lastUsedAt: now,
-			cliVersion: cli.version,
-			binaryPath: cli.binaryPath,
-			runtime: 'native',
-			exclusions: [...input.exclusions],
-			flags,
-		});
+		await this.stackStore.upsertRecord(
+			{
+				...rest,
+				origin: rest.origin === 'external' ? 'adopted' : rest.origin,
+				projectRoot: detection.projectRoot,
+				worktreePath: facts.worktreePath,
+				appPaths: [...new Set([...rest.appPaths, facts.appPath])].slice(-16),
+				repositoryId: facts.repositoryId,
+				branchContext,
+				lastStartedAt: now,
+				lastUsedAt: now,
+				cliVersion: cli.version,
+				binaryPath: cli.binaryPath,
+				runtime: 'native',
+				exclusions: [...input.exclusions],
+				flags,
+			},
+			{ preserveOwnership: true }
+		);
 	}
 
 	async #recordStartFailure(
@@ -3906,20 +3911,23 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			: existing
 				? supabaseRecreateError(existing)
 				: undefined;
-		await this.stackStore.upsertRecord({
-			...kept,
-			lastError: error,
-			...(recreateError ? { recreateError } : {}),
-			flags: {
-				...base.flags,
-				...(recreate ? { needsRecreate: true as const } : {}),
-				...(interrupted ? { interrupted: true as const } : {}),
-				// The first start failed but still registered an empty stack.
-				...(input.mode === 'create' && !interrupted && !recreate && !started
-					? { failedStart: true as const }
-					: {}),
+		await this.stackStore.upsertRecord(
+			{
+				...kept,
+				lastError: error,
+				...(recreateError ? { recreateError } : {}),
+				flags: {
+					...base.flags,
+					...(recreate ? { needsRecreate: true as const } : {}),
+					...(interrupted ? { interrupted: true as const } : {}),
+					// The first start failed but still registered an empty stack.
+					...(input.mode === 'create' && !interrupted && !recreate && !started
+						? { failedStart: true as const }
+						: {}),
+				},
 			},
-		});
+			{ preserveOwnership: true }
+		);
 	}
 
 	/** lsof after a start; then a status read so the row shows Running. */
@@ -4459,7 +4467,13 @@ export class SupabaseEngine implements SupabaseServiceApi {
 	): Promise<void> {
 		const record = this.stackStore.record(stackId);
 		if (!record) return;
-		if (request.hold) await this.stackStore.addHold(stackId, request.hold);
+		if (request.hold) {
+			await this.stackStore.addHold(stackId, request.hold, {
+				...(request.holdSessionCwd === undefined
+					? {}
+					: { sessionCwd: request.holdSessionCwd }),
+			});
+		}
 		if (request.pin === 'always') {
 			await this.stackStore.setPinned(stackId, true);
 		} else if (

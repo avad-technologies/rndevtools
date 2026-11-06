@@ -15,10 +15,12 @@ import type {
 	SupabasePolicy,
 } from '../../shared/supabase-protocol';
 import type { SupabaseHolderKey } from './service-ports';
-import type {
-	SupabaseHolderClock,
-	SupabaseStackRecord,
-	SupabaseStoredHold,
+import {
+	type SupabaseHolderClock,
+	type SupabaseReleasedHolder,
+	type SupabaseStackRecord,
+	type SupabaseStoredHold,
+	supabaseReleasedHolders,
 } from './stack-store';
 
 /**
@@ -84,6 +86,8 @@ export type SupabaseHoldsInput = Readonly<{
 		releasedBy?:
 			| Readonly<{ holder: DeviceHolder; sessionCwd?: string | undefined }>
 			| undefined;
+		/** Independent explicit cwd releases; live holds remain authoritative. */
+		releasedHolders?: readonly SupabaseReleasedHolder[] | undefined;
 		/** A branch follow moved its holds to another stack at this time. */
 		supersededAt?: number | undefined;
 		/** The project root was missing on two consecutive checks. */
@@ -97,7 +101,7 @@ export type SupabaseHoldsInput = Readonly<{
 	discovery: SupabaseSessionDiscovery;
 	/**
 	 * A down or release being decided now ignores its own session as a cwd
-	 * keeper; afterwards the record's `releasedBy` keeps ignoring it.
+	 * keeper, in addition to every previously persisted actor release.
 	 */
 	ignore?: Readonly<{ holder: DeviceHolder; sessionCwd?: string | undefined }>;
 }>;
@@ -129,7 +133,7 @@ export type SupabaseHoldsResult = Readonly<{
 	autoStopReason?: SupabaseAutoStopReason;
 	/**
 	 * How the record's release period changes: `clear` while something holds
-	 * the stack (dropping `releasedAt` and `releasedBy`), or the time an
+	 * the stack (dropping `releasedAt` only), or the time an
 	 * unheld period began when none is recorded yet. The linger always counts
 	 * from the last release, never from an older one.
 	 */
@@ -241,7 +245,9 @@ function isIgnored(
 	ignore: SupabaseHoldsInput['ignore']
 ): boolean {
 	if (!ignore) return false;
-	if (agentSessionKey(session) === agentSessionKey(ignore.holder)) return true;
+	if (!isSyntheticHolder(ignore.holder)) {
+		return agentSessionKey(session) === agentSessionKey(ignore.holder);
+	}
 	// A synthetic requester stands for every session of its kind; the one
 	// working where the request came from is the requester.
 	return (
@@ -341,12 +347,13 @@ export function resolveSupabaseHolds(
 		)
 	);
 	const keepers = new Map<string, SupabaseCwdKeeper>();
-	const ignore = input.ignore ?? stack.releasedBy;
+	const releases = supabaseReleasedHolders(stack);
 	for (const session of input.sessions) {
 		if (
 			session.cwd === undefined ||
 			!isPathInside(session.cwd, stack.directory) ||
-			isIgnored(session, ignore) ||
+			isIgnored(session, input.ignore) ||
+			releases.some((release) => isIgnored(session, release)) ||
 			liveHolders.has(agentSessionKey(session)) ||
 			syntheticKinds.has(session.kind)
 		) {
@@ -362,8 +369,7 @@ export function resolveSupabaseHolds(
 	// Any hold, even an abandoned one, or a keeper means the stack is not in
 	// an unheld period: a later release starts a fresh linger.
 	const occupied = holds.length > 0 || cwdKeepers.length > 0;
-	const recorded =
-		stack.releasedAt !== undefined || stack.releasedBy !== undefined;
+	const recorded = stack.releasedAt !== undefined;
 	const base = {
 		holds: holds.slice(0, MAX_HOLDS),
 		cwdKeepers,
@@ -435,6 +441,7 @@ export function supabaseHoldsStack(
 		| 'holds'
 		| 'releasedAt'
 		| 'releasedBy'
+		| 'releasedHolders'
 		| 'flags'
 		| 'clocks'
 	>,
@@ -464,6 +471,9 @@ export function supabaseHoldsStack(
 							: { sessionCwd: record.releasedBy.sessionCwd }),
 					},
 				}),
+		...(record.releasedHolders === undefined
+			? {}
+			: { releasedHolders: record.releasedHolders }),
 		...(record.flags.supersededAt === undefined
 			? {}
 			: { supersededAt: record.flags.supersededAt }),
