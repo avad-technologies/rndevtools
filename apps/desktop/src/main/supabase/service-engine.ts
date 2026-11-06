@@ -1382,6 +1382,7 @@ export class SupabaseEngine implements SupabaseServiceApi {
 
 	refreshRepositories(options: { fresh?: boolean } = {}): Promise<void> {
 		const scan = async () => {
+			if (!this.#active) return;
 			this.#repositoriesDirty = false;
 			let repositories: readonly string[] = [];
 			let worktrees: readonly Readonly<{
@@ -1406,11 +1407,16 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			const known = new Set([...tracked, ...extras.map((extra) => extra.path)]);
 			const recorded = [];
 			for (const record of this.stackStore.records()) {
+				if (!this.#active) return;
 				const target = record.worktreePath;
 				if (
 					record.origin === 'external' ||
 					target === undefined ||
-					known.has(target)
+					known.has(target) ||
+					this.policySnapshot().policy.repositories.some(
+						(repository) =>
+							repository.id === record.repositoryId && repository.mode === 'off'
+					)
 				)
 					continue;
 				known.add(target);
@@ -1418,15 +1424,25 @@ export class SupabaseEngine implements SupabaseServiceApi {
 				// A deleted checkout must not be replaced by an ancestor's repo.
 				if (extra?.path === target) recorded.push(extra);
 			}
+			if (!this.#active) return;
 			const active = new Set(this.#lanes().map((lane) => lane.worktreePath));
+			const requested = new Set(this.#extraWorktrees.keys());
+			const saved = new Set(recorded.map((worktree) => worktree.path));
+			const priority = (worktree: { path: string }) =>
+				active.has(worktree.path)
+					? 0
+					: requested.has(worktree.path)
+						? 1
+						: saved.has(worktree.path)
+							? 2
+							: 3;
 			const scanWorktrees = [
-				...worktrees.filter((worktree) => active.has(worktree.path)),
-				...[...recorded, ...extras].map((extra) => ({
+				...worktrees,
+				...[...extras, ...recorded].map((extra) => ({
 					...extra,
 					dirty: false,
 				})),
-				...worktrees.filter((worktree) => !active.has(worktree.path)),
-			];
+			].sort((left, right) => priority(left) - priority(right));
 			const facts = await inspectSupabaseRepositories(
 				{
 					repositories: [
@@ -1449,11 +1465,15 @@ export class SupabaseEngine implements SupabaseServiceApi {
 					policy: this.policySnapshot().policy,
 					featureEnabled: true,
 					platformSupported: this.platform.supported,
-					resolveCli: (input) => this.resolver.resolve(input),
+					resolveCli: async (input) => {
+						if (!this.#active) throw new Error('Local Supabase is off.');
+						return this.resolver.resolve(input);
+					},
 					now: this.now(),
 				},
 				this.#seams.repositoryScan ?? {}
 			);
+			if (!this.#active) return;
 			this.#facts = facts;
 			this.#heads = observeSupabaseHeads(
 				this.#heads,
@@ -1555,12 +1575,14 @@ export class SupabaseEngine implements SupabaseServiceApi {
 	> {
 		let current = target;
 		for (let depth = 0; ; depth += 1) {
+			if (!this.#active) return undefined;
 			const kind = await this.#fs.kind(path.join(current, '.git'));
 			if (kind === 'file' || kind === 'directory') break;
 			const parent = path.dirname(current);
 			if (parent === current || depth >= 32) return undefined;
 			current = parent;
 		}
+		if (!this.#active) return undefined;
 		const head = await this.#readHead(current);
 		if (head.status !== 'ok') return undefined;
 		const repositoryRoot =

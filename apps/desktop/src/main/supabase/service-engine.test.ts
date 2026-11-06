@@ -27,6 +27,7 @@ import {
 	fakeResolvedCli,
 	fakeSession,
 } from './engine.test-support';
+import * as gitHead from './git-head';
 import { SupabaseJobStore, supabaseArgvDigest } from './job-store';
 import type { SupabaseOperationContext } from './service-ports';
 
@@ -1517,6 +1518,108 @@ describe('SupabaseEngine state', () => {
 		await h.engine.refreshRepositories({ fresh: true });
 		expect(h.engine.factsForStack(stackId)).toBeUndefined();
 		expect(h.engine.allFacts()).toEqual([]);
+	});
+
+	it('prioritizes an explicitly requested worktree over dormant saved repositories', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('saved-0');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		const template = h.engine.stackStore.record(stackId);
+		if (!template) throw new Error('Managed stack was not recorded.');
+		const records = [template];
+		for (let index = 1; index < 32; index++) {
+			const worktreePath = await h.repository(`saved-${index}`);
+			records.push({
+				...template,
+				id: await h.identity(worktreePath),
+				worktreePath,
+				projectRoot: path.join(worktreePath, 'supabase'),
+				appPaths: [worktreePath],
+			});
+		}
+		await h.engine.stackStore.upsertRecords(records);
+		const requested = await h.repository('requested');
+		h.lanes.worktrees = [];
+		h.lanes.repositories = [];
+		expect(await h.engine.worktreeFacts(requested)).toMatchObject({
+			worktreePath: requested,
+			expectedStackId: await h.identity(requested),
+			mode: { value: 'managed' },
+		});
+		// A recovered active lane receives the same priority even when absent
+		// from the UI worktree listing and preceded by 32 dormant records.
+		const requestedRecord = {
+			...template,
+			id: await h.identity(requested),
+			worktreePath: requested,
+			projectRoot: path.join(requested, 'supabase'),
+			appPaths: [requested],
+		};
+		const restarted = await createEngineHarness({
+			enabled: true,
+			start: false,
+		});
+		await restarted.engine.stackStore.load();
+		await restarted.engine.stackStore.upsertRecords([
+			...records,
+			requestedRecord,
+		]);
+		restarted.lanes.lanes = [fakeLane({ worktreePath: requested })];
+		await restarted.engine.start();
+		await restarted.settle();
+		expect(restarted.engine.factsForStack(requestedRecord.id)).toMatchObject({
+			worktreePath: requested,
+			mode: { value: 'managed' },
+		});
+	});
+
+	it('does not recover Git metadata for a disabled recorded repository', async () => {
+		const readHead = vi.spyOn(gitHead, 'readGitHead');
+		try {
+			const h = await createEngineHarness({ enabled: true, start: false });
+			const repo = await h.repository('managed');
+			await h.engine.start();
+			await h.settle();
+			const stackId = await startStack(h, repo);
+			const repositoryId = h.engine.stackStore.record(stackId)?.repositoryId;
+			if (!repositoryId)
+				throw new Error('Repository identity was not recorded.');
+			await h.engine.policyStore.setRepositoryMode(repositoryId, 'off');
+			h.lanes.worktrees = [];
+			h.lanes.repositories = [];
+			readHead.mockClear();
+			await h.engine.refreshRepositories({ fresh: true });
+			expect(readHead).not.toHaveBeenCalled();
+		} finally {
+			readHead.mockRestore();
+		}
+	});
+
+	it('does not resolve CLIs when disabled during recorded worktree recovery', async () => {
+		const original = gitHead.readGitHead;
+		const readHead = vi.spyOn(gitHead, 'readGitHead');
+		try {
+			const h = await createEngineHarness({ enabled: true, start: false });
+			const repo = await h.repository('managed');
+			await h.engine.start();
+			await h.settle();
+			await startStack(h, repo);
+			h.lanes.worktrees = [];
+			h.lanes.repositories = [];
+			const held = holdFirst(original);
+			readHead.mockImplementation(held.call);
+			const refresh = h.engine.refreshRepositories({ fresh: true });
+			await h.until(held.held);
+			await turnOff(h);
+			const calls = h.resolver.resolveCalls;
+			held.release();
+			await refresh;
+			expect(h.resolver.resolveCalls).toBe(calls);
+		} finally {
+			readHead.mockRestore();
+		}
 	});
 
 	it('bumps the revision only when the visible state changes', async () => {
