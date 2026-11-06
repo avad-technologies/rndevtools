@@ -47,7 +47,7 @@ if (!simulatorHelperTeamFlag) {
 const packageManifest = JSON.parse(
 	readFileSync(join(desktopDirectory, 'package.json'), 'utf8')
 );
-const catalogVersion = 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3';
+const catalogVersion = 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3';
 verifyVendoredSimSlim(goPackage);
 // The Go helpers take the version through -ldflags below; the Swift host
 // compiles it from a committed generated source. Regenerate that source before
@@ -126,7 +126,7 @@ for (const architecture of architectures) {
 		'./cmd/rndevtools',
 		cliDestination,
 		goEnvironment,
-		'readonly'
+		'vendor'
 	);
 	helpers.cli = helperManifest(cliDestination, 'rndevtools');
 

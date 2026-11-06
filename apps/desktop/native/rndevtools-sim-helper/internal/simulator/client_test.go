@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -419,6 +420,240 @@ func TestCaptureRunningServiceProcessesRejectsAmbiguousRunningJobIdentity(t *tes
 	}
 }
 
+func TestCaptureRunningServiceProcessesWaitsForLauncherToExec(t *testing.T) {
+	delays := processMappingRetryDelays
+	processMappingRetryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { processMappingRetryDelays = delays })
+	for _, settles := range []bool{true, false} {
+		calls := 0
+		client := &Client{
+			runner: runnerFunc(func(_ context.Context, _ time.Duration, _ string, args ...string) (commandResult, error) {
+				if args[5] == "system" {
+					return commandResult{stdout: launchdSnapshot("")}, nil
+				}
+				return commandResult{stdout: launchdSnapshot("42 (jt) com.apple.apsd\n")}, nil
+			}),
+			measureProcesses: func(context.Context, string) ([]simslim.Process, error) {
+				calls++
+				command := "xpcproxy_sim"
+				if settles && calls > 1 {
+					command = "apsd"
+				}
+				return []simslim.Process{{PID: 42, Command: command}}, nil
+			},
+		}
+		names, err := client.CaptureRunningServiceProcesses(context.Background(), testUDID, []string{"com.apple.apsd"})
+		if settles && (err != nil || calls != 2 || !slices.Equal(names, []string{"apsd"})) {
+			t.Fatalf("did not bind the settled executable: names=%v calls=%d err=%v", names, calls, err)
+		}
+		if !settles && (!errors.Is(err, errProcessLaunching) || calls != 3 || len(names) != 0) {
+			t.Fatalf("accepted a launcher or retried without a bound: names=%v calls=%d err=%v", names, calls, err)
+		}
+	}
+}
+
+func TestCaptureRunningServiceProcessesRechecksUnresolvedNames(t *testing.T) {
+	delays := processMappingRetryDelays
+	processMappingRetryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { processMappingRetryDelays = delays })
+	for _, mode := range []string{"settles", "persistent", "cancelled", "invalid-pid"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls, domainReads := 0, 0
+			client := &Client{
+				runner: runnerFunc(func(_ context.Context, _ time.Duration, _ string, args ...string) (commandResult, error) {
+					domainReads++
+					if args[5] == "system" {
+						return commandResult{stdout: launchdSnapshot("")}, nil
+					}
+					return commandResult{stdout: launchdSnapshot("42 (jt) com.apple.apsd\n")}, nil
+				}),
+				measureProcesses: func(context.Context, string) ([]simslim.Process, error) {
+					calls++
+					processes := []simslim.Process{{PID: 42, Command: "apsd"}}
+					if mode == "settles" && calls > 1 {
+						return processes, nil
+					}
+					if mode == "invalid-pid" {
+						return append(processes, simslim.Process{PID: -1, Command: "invalid"}), nil
+					}
+					if mode == "cancelled" {
+						cancel()
+					}
+					return append(processes, simslim.Process{PID: 99, Command: "<exiting>"}), nil
+				},
+			}
+			names, err := client.CaptureRunningServiceProcesses(ctx, testUDID, []string{"com.apple.apsd"})
+			if mode == "settles" {
+				if err != nil || calls != 2 || domainReads != 4 || !slices.Equal(names, []string{"apsd"}) {
+					t.Fatalf("did not bind a fresh complete snapshot: names=%v calls=%d reads=%d err=%v", names, calls, domainReads, err)
+				}
+				return
+			}
+			if err == nil || len(names) != 0 {
+				t.Fatalf("accepted unresolved identity data: names=%v err=%v", names, err)
+			}
+			if mode == "persistent" && (!errors.Is(err, errProcessNameChanging) || calls != 3 || domainReads != 6) {
+				t.Fatalf("unbounded retry: calls=%d reads=%d err=%v", calls, domainReads, err)
+			}
+			if mode == "cancelled" && (!errors.Is(err, context.Canceled) || calls != 1) {
+				t.Fatalf("retried after cancellation: calls=%d err=%v", calls, err)
+			}
+			if mode == "invalid-pid" && calls != 1 {
+				t.Fatal("retried structurally invalid PID data")
+			}
+		})
+	}
+}
+
+func TestProcessIdentitySnapshotIsBoundedAndExcludesOtherSimulators(t *testing.T) {
+	client := NewClient("test", strings.Repeat("a", 40))
+	rootOutput := "42\n"
+	rootCommand := "/sbin/launchd_sim"
+	changeRoot := false
+	rootReads := 0
+	client.runner = runnerFunc(func(_ context.Context, timeout time.Duration, executable string, args ...string) (commandResult, error) {
+		if timeout != commandTimeout {
+			t.Fatalf("unbounded identity command: %v", timeout)
+		}
+		switch executable {
+		case pgrepExecutable:
+			if !slices.Equal(args, []string{"-f", testUDID + "/data/var/run/launchd_bootstrap"}) {
+				t.Fatalf("wrong root selector: %v", args)
+			}
+			rootReads++
+			if changeRoot && rootReads > 1 {
+				return commandResult{stdout: []byte("99\n")}, nil
+			}
+			return commandResult{stdout: []byte(rootOutput)}, nil
+		case psExecutable:
+			if !slices.Equal(args, []string{"-axo", "pid,ppid,%cpu,comm"}) {
+				t.Fatalf("unexpected process fields: %v", args)
+			}
+			return commandResult{stdout: []byte("PID PPID %CPU COMM\n42 1 0 " + rootCommand + "\n43 42 0 /path with spaces/apsd\n99 1 0 /other/apsd\n")}, nil
+		default:
+			t.Fatalf("unexpected identity command: %s", executable)
+			return commandResult{}, errors.New("unexpected")
+		}
+	})
+	processes, err := client.measureProcesses(context.Background(), testUDID)
+	if err != nil || len(processes) != 2 || processes[1].PID != 43 || processes[1].Command != "apsd" {
+		t.Fatalf("wrong exact-device projection: %v %v", processes, err)
+	}
+	rootOutput = "42\n99\n"
+	if _, err := client.measureProcesses(context.Background(), testUDID); err == nil {
+		t.Fatal("accepted an ambiguous launchd root")
+	}
+	rootOutput = "42\n"
+	rootCommand = "/unrelated/reused-pid"
+	if _, err := client.measureProcesses(context.Background(), testUDID); err == nil {
+		t.Fatal("accepted a reused root PID")
+	}
+	rootCommand = "launchd_sim"
+	changeRoot, rootReads = true, 0
+	if _, err := client.measureProcesses(context.Background(), testUDID); err == nil {
+		t.Fatal("accepted a root that changed during the snapshot")
+	}
+}
+
+func TestCaptureBindsSharedLaunchersToExactJobLabels(t *testing.T) {
+	delays := processMappingRetryDelays
+	processMappingRetryDelays = nil
+	t.Cleanup(func() { processMappingRetryDelays = delays })
+	client := NewClient("test", strings.Repeat("a", 40))
+	launcherOutput := "42 xpcproxy_sim com.apple.apsd\n43 xpcproxy_sim com.apple.swcd\n"
+	client.runner = runnerFunc(func(_ context.Context, timeout time.Duration, executable string, args ...string) (commandResult, error) {
+		if timeout != commandTimeout {
+			t.Fatal("unbounded launcher command")
+		}
+		switch executable {
+		case xcrunExecutable:
+			if args[5] == "system" {
+				return commandResult{stdout: launchdSnapshot("")}, nil
+			}
+			return commandResult{stdout: launchdSnapshot("42 (jt) com.apple.apsd\n43 (jt) com.apple.swcd\n")}, nil
+		case pgrepExecutable:
+			return commandResult{stdout: []byte("40\n")}, nil
+		case psExecutable:
+			if slices.Equal(args, []string{"-axo", "pid,ppid,%cpu,comm"}) {
+				return commandResult{stdout: []byte("40 1 0 launchd_sim\n42 40 0 xpcproxy_sim\n43 40 0 xpcproxy_sim\n99 1 0 xpcproxy_sim\n")}, nil
+			}
+			if !slices.Equal(args, []string{"-p", "42,43", "-o", "pid=,args="}) {
+				t.Fatalf("read argv outside the exact Simulator launcher PIDs: %v", args)
+			}
+			return commandResult{stdout: []byte(launcherOutput)}, nil
+		default:
+			t.Fatalf("unexpected command: %s", executable)
+			return commandResult{}, errors.New("unexpected")
+		}
+	})
+	services := []string{"com.apple.apsd", "com.apple.swcd"}
+	names, err := client.CaptureRunningServiceProcesses(context.Background(), testUDID, services)
+	if err != nil || !slices.Equal(names, []string{"xpcproxy_sim+com.apple.apsd", "xpcproxy_sim+com.apple.swcd"}) {
+		t.Fatalf("shared launchers were not bound separately: %v %v", names, err)
+	}
+	for _, invalid := range []string{
+		"42 xpcproxy_sim com.apple.swcd\n43 xpcproxy_sim com.apple.apsd\n",
+		"42 xpcproxy_sim com.apple.apsd extra-argument\n43 xpcproxy_sim com.apple.swcd\n",
+		"42 xpcproxy_sim com.apple.apsd\n42 xpcproxy_sim com.apple.swcd\n",
+		"99 xpcproxy_sim com.apple.apsd\n43 xpcproxy_sim com.apple.swcd\n",
+	} {
+		launcherOutput = invalid
+		if _, err := client.CaptureRunningServiceProcesses(context.Background(), testUDID, services); err == nil {
+			t.Fatal("accepted ambiguous, changed, or out-of-tree launcher identity")
+		}
+	}
+}
+
+func TestVerificationRejectsSurvivingOrUnresolvedLaunchers(t *testing.T) {
+	for _, command := range []string{"xpcproxy_sim+com.apple.apsd", "xpcproxy_sim", "xpcproxy_sim+com.apple.swcd"} {
+		client := &Client{
+			runner: runnerFunc(func(_ context.Context, _ time.Duration, _ string, args ...string) (commandResult, error) {
+				switch {
+				case slices.Equal(args, []string{"simctl", "list", "devices", "available", "--json"}):
+					return commandResult{stdout: []byte(`{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-5":[{"udid":"` + testUDID + `","name":"iPhone","state":"Booted","isAvailable":true}]}}`)}, nil
+				case slices.Equal(args, []string{"simctl", "spawn", testUDID, "launchctl", "print-disabled", "system"}):
+					return commandResult{stdout: []byte(`"com.apple.apsd" => true`)}, nil
+				default:
+					return commandResult{stdout: launchdSnapshot("")}, nil
+				}
+			}),
+			measureProcesses: func(context.Context, string) ([]simslim.Process, error) {
+				return []simslim.Process{{PID: 42, Command: command}}, nil
+			},
+		}
+		proof, err := client.VerifyManagedState(context.Background(), testUDID, []string{"com.apple.apsd"}, []string{"xpcproxy_sim+com.apple.apsd"})
+		if command == "xpcproxy_sim+com.apple.swcd" {
+			if err != nil || !proof.Verified {
+				t.Fatalf("unrelated proven launcher blocked verification: %v %v", proof, err)
+			}
+		} else if proof.Verified {
+			t.Fatalf("surviving or unresolved launcher was accepted: %s", command)
+		}
+	}
+}
+
+func TestFixedRunnerPermitsBoundedProcessIdentityCommands(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS process tools")
+	}
+	runner := fixedRunner{}
+	result, err := runner.Run(context.Background(), commandTimeout, psExecutable, "-p", strconv.Itoa(os.Getpid()), "-o", "pid,ppid,%cpu,comm")
+	if err != nil || result.exitCode != 0 || !strings.Contains(string(result.stdout), strconv.Itoa(os.Getpid())) {
+		t.Fatalf("fixed runner could not sample process identities: exit=%d err=%v", result.exitCode, err)
+	}
+	// An impossible process selector must reach pgrep and return its documented
+	// no-match status, rather than being rejected by our executable allowlist.
+	result, err = runner.Run(context.Background(), commandTimeout, pgrepExecutable, "-f", "rndevtools-impossible-process-"+testUDID)
+	if err != nil || result.exitCode != 1 {
+		t.Fatalf("fixed runner could not resolve process roots: exit=%d err=%v", result.exitCode, err)
+	}
+	if _, err := runner.Run(context.Background(), commandTimeout, "/bin/sh", "-c", "true"); err == nil {
+		t.Fatal("fixed runner accepted an arbitrary executable")
+	}
+}
+
 func TestParseLaunchdServicesRequiresOneBoundedUnambiguousBlock(t *testing.T) {
 	services, err := parseLaunchdServices(launchdSnapshot(
 		"42 (jt) com.apple.apsd\n0 - com.apple.swcd\n",
@@ -538,11 +773,84 @@ func runWithOrphanHoldingOutput(t *testing.T, timeout time.Duration, script stri
 
 func TestBoundedCommandTimesOutWhileAnOrphanHoldsItsOutput(t *testing.T) {
 	elapsed, err := runWithOrphanHoldingOutput(t, 200*time.Millisecond, "wait")
-	if err == nil || err.Error() != "native command timed out" {
+	if !errors.Is(err, errCommandTimeout) {
 		t.Fatalf("timed-out command returned %v", err)
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("timed-out command waited %s for the orphan holding its output", elapsed)
+	}
+}
+
+func TestLaunchctlReadsRetryOnlyTimeoutsWithinABoundedBudget(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		first  commandResult
+		err    error
+		cancel bool
+		calls  int
+	}{
+		{name: "deadline", err: errCommandTimeout, calls: 2},
+		{name: "simctl timeout", first: commandResult{exitCode: 60}, calls: 2},
+		{name: "success", first: commandResult{stdout: launchdSnapshot("")}, calls: 1},
+		{name: "permission denied", first: commandResult{exitCode: 1}, calls: 1},
+		{name: "output limit", err: errors.New("native command output exceeded its safety limit"), calls: 1},
+		{name: "cancelled timeout", err: errCommandTimeout, cancel: true, calls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			client := &Client{runner: runnerFunc(func(_ context.Context, budget time.Duration, executable string, args ...string) (commandResult, error) {
+				calls++
+				if executable != xcrunExecutable || !slices.Equal(args, []string{"simctl", "spawn", testUDID, "launchctl", "print", "system"}) {
+					t.Fatalf("retry changed target or command: %s %v", executable, args)
+				}
+				if budget != time.Duration(calls)*commandTimeout {
+					t.Fatalf("unexpected bounded attempt budget: %s", budget)
+				}
+				if calls == 1 {
+					if test.cancel {
+						cancel()
+					}
+					return test.first, test.err
+				}
+				return commandResult{stdout: launchdSnapshot("")}, nil
+			})}
+			result, err := client.readLaunchctl(ctx, testUDID, "print", "system")
+			if calls != test.calls {
+				t.Fatalf("got %d calls, want %d", calls, test.calls)
+			}
+			if test.calls == 2 && (err != nil || string(result.stdout) != string(launchdSnapshot(""))) {
+				t.Fatalf("fresh retry evidence was not returned: %#v %v", result, err)
+			}
+			if test.cancel && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestLaunchctlReadRetryExhaustionAndInvalidRequestsFailClosed(t *testing.T) {
+	calls := 0
+	client := &Client{runner: runnerFunc(func(context.Context, time.Duration, string, ...string) (commandResult, error) {
+		calls++
+		return commandResult{}, errCommandTimeout
+	})}
+	if _, err := client.readLaunchctl(context.Background(), testUDID, "print-disabled", "system"); !errors.Is(err, errCommandTimeout) || calls != 2 {
+		t.Fatalf("read did not stop after two failed attempts: calls=%d err=%v", calls, err)
+	}
+	for _, args := range [][3]string{{testUDID, "disable", "system"}, {testUDID, "print", "system/arbitrary"}, {"-invalid", "print", "system"}} {
+		if _, err := client.readLaunchctl(context.Background(), args[0], args[1], args[2]); err == nil {
+			t.Fatal("accepted non-read or unbound launchctl request")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.readLaunchctl(ctx, testUDID, "print", "system"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled read started: %v", err)
+	}
+	if calls != 2 {
+		t.Fatal("invalid or cancelled request reached runner")
 	}
 }
 

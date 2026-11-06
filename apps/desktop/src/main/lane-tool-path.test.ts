@@ -83,6 +83,37 @@ describe('createToolPathResolver', () => {
 		expect(await resolve(empty)).toBe(`${tools}${path.delimiter}${empty}`);
 		expect(reads).toBe(2);
 	});
+
+	it('finds Node installed after the first setup attempt without restarting the desktop', async () => {
+		const answers = [empty, tools];
+		let reads = 0;
+		const resolve = createToolPathResolver({
+			readShellPath: async () => {
+				reads += 1;
+				return answers.shift();
+			},
+		});
+		expect(await resolve(empty)).toBe(empty);
+		expect(await resolve(empty)).toBe(`${tools}${path.delimiter}${empty}`);
+		expect(reads).toBe(2);
+	});
+
+	it('refreshes a cached shell PATH after a Node version manager removes its old runtime', async () => {
+		const replacement = path.join(root, 'replacement');
+		await mkdir(replacement);
+		await writeFile(path.join(replacement, 'node'), '#!/bin/sh\n', {
+			mode: 0o755,
+		});
+		const answers = [tools, replacement];
+		const resolve = createToolPathResolver({
+			readShellPath: async () => answers.shift(),
+		});
+		expect(await resolve(empty)).toBe(`${tools}${path.delimiter}${empty}`);
+		await rm(path.join(tools, 'node'));
+		expect(await resolve(empty)).toBe(
+			`${replacement}${path.delimiter}${empty}`
+		);
+	});
 });
 
 describe('readLoginShellPath', () => {

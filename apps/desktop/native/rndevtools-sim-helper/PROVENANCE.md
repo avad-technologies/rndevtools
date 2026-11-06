@@ -7,15 +7,15 @@ accept arbitrary launchd labels from Electron or the renderer.
 Base source:
 
 - Repository: <https://github.com/MobAI-App/simslim>
-- Release: `v0.12.2`
-- Commit: `6518ba7eab1123d7e1d7797b0e05f51043b42a5b`
+- Release: `v0.14.0`
+- Commit: `7e374b3839d49608a681d1f8b9ca0dd83d35189e`
 - License: MIT, reproduced in `apps/desktop/THIRD_PARTY_NOTICES.md`
 - Clean-base manifest: `UPSTREAM_SOURCE_SHA256SUMS`
 - Reviewed patch: `RNDEVTOOLS_PATCHSET_rndevtools.1.patch`
 - Final vendored-tree manifest: `VENDORED_SOURCE_SHA256SUMS`
 
-The vendored package contains all 17 non-test root Go files and `LICENSE` from
-that commit. Fourteen Go files and the license remain byte-identical to
+The vendored package contains all 21 non-test root Go files and `LICENSE` from
+that commit. Eighteen Go files and the license remain byte-identical to
 upstream. Patch set `rndevtools.1` changes exactly three files:
 
 - `clone.go` replaces upstream's same-user `ps eww` environment scan with an
@@ -30,7 +30,7 @@ The build-time verifier hard-codes and checks the SHA-256 of the clean-base
 manifest, the deterministic patch artifact, and the final vendored manifest.
 It proves unchanged files still match the pinned base, only the three disclosed
 files differ, every final vendored byte matches the reviewed snapshot, and the
-module graph contains only this helper plus `github.com/mobai-app/simslim v0.12.2`.
+module graph contains only this helper plus `github.com/mobai-app/simslim v0.14.0`.
 Changing source and merely regenerating an editable checksum file therefore
 does not pass the build.
 
@@ -48,7 +48,7 @@ Preset revision `presets.3` uses upstream `Profile.Keep` to preserve
 `com.apple.siri.context.service` in the two bundled presets. These jobs remained
 registered after reboot in real iOS 26.5 apply attempts, which correctly failed
 verification and rolled back. They remain in the managed universe for legacy
-override repair. The upstream source and patch set remain unchanged; Maximum
+override repair. The preset exceptions remain unchanged; Maximum
 Density still projects the complete upstream desired set. Profile responses
 disclose these exceptions through optional `preservedServiceIds`.
 
@@ -56,18 +56,38 @@ disclose these exceptions through optional `preservedServiceIds`.
 moved `com.apple.assistantd` (dictation host; Spotlight leaks memory without it)
 and `com.apple.gamed` (XCUITest launch latency) from slimmable labels to
 restore-only `AlwaysEnabled` services, next to `com.apple.sharingd`, and listed
-`com.apple.navd` under widgets as well as connectivity. The slimmable universe is
-168 labels and the managed universe 171. Upstream also added
-`EnableSlimNoReboot`, an offline override store that applies profiles to a shut
-down Simulator in seconds, and `Watch`; this helper does not call them yet, and
-the compatibility matrix remains empty until the disposable-Simulator suite is
-rerun against this base.
+`com.apple.navd` under widgets as well as connectivity.
+
+The v0.14.0 update adds five slimmable labels (three device-management jobs,
+App Clips, and accessibility assets): 173 slimmable and 176 managed labels.
+It preserves installed app bundles during disk cleanup and bounds/retries
+launchd reads while a boot session settles. The complete root package also
+includes live service toggles, profile saving, and a kqueue watcher that can
+seed shutdown devices before their first boot. This adapter does not invoke
+those new mutation entry points or the watcher; all changes still use its
+exact-device, checkpointed transition flow. The upstream release commit's
+GitHub signature was verified, the MIT license is unchanged, and the three
+local patches rebased without conflicts. The compatibility matrix remains
+empty until the disposable-Simulator suite is rerun against this base.
 
 Verification proves exact managed override equality and the absence of
 disabled launchd job registrations through `launchctl print`. Immediately
 before a transition, the helper also binds each running to-disable label's single
-launchd PID/program to a unique executable basename in SimSlim's exact-UDID
-process tree, then requires those observed roots to be absent after reboot.
+launchd PID/program to a unique executable basename in an exact-UDID process
+tree projected by SimSlim's parser. Bounded `pgrep` and PID/PPID/CPU/comm-only
+`ps` reads require one stable `launchd_sim` root across the snapshot and never
+read process environments. iOS can leave jobs in `xpcproxy_sim` indefinitely;
+only launcher PIDs already proven in that tree get a bounded argv read. The
+adapter retains only the exact launcher-name/launchd-label pair, represented
+as `xpcproxy_sim+com.apple.label`, and requires it to match the launchd PID's
+label. Arbitrary argv is discarded. Unresolved launchers are retried with
+bounded backoff and fail closed. Verification then requires the observed
+executables and qualified launcher identities to be absent after reboot;
+unresolved launchers cannot prove that absence.
+Read-only launchctl snapshots retry a command timeout or Darwin ETIMEDOUT once,
+with 15- then 30-second command budgets inside the operation deadline. Other
+failures and malformed output remain inconclusive, and cancellation prevents
+retry. This handles slow post-boot reads without weakening the required proof.
 Missing or ambiguous mappings fail before mutation. This conservative process
 proof covers managed jobs observed running at commit; a job that was already
 not running is covered by launchd-registration absence rather than a historical
@@ -77,7 +97,7 @@ macOS/Xcode/CoreSimulator/runtime/helper/catalog tuple.
 
 ## Hermetic module pin
 
-`go.mod` names `github.com/mobai-app/simslim v0.12.2`; `vendor/modules.txt`
+`go.mod` names `github.com/mobai-app/simslim v0.14.0`; `vendor/modules.txt`
 binds the checked-in package to that identity. Checks force vendor mode with
 network and workspace resolution disabled. Builds use a minimal allowlisted
 environment, `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOWORK=off`, and explicit

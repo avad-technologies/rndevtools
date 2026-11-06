@@ -17,7 +17,8 @@ import {
  *
  * Codex keeps threads in a SQLite database (`~/.codex/state_N.sqlite`). Its
  * desktop threads share one app-server process, so there is no PID to check;
- * a thread updated in the last 30 minutes is treated as live. The database is
+ * a thread updated in the last 30 minutes is displayed as recent. Absence is
+ * not proof of termination and must not trigger resource cleanup. The database is
  * opened read-only through `node:sqlite`, which Electron's Node provides; if
  * it does not, Codex discovery reports unavailable rather than failing.
  */

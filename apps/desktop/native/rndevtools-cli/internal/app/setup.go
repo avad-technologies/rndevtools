@@ -52,6 +52,7 @@ Flags:
   --no-hook                          Do not install the agent hooks.
   --executable <path>                Register this binary instead of the
                                      running one (for packaged installs).
+  --config-home <dir>                Absolute configuration home (for testing).
 `
 
 func runSetup(config Config) int {
@@ -63,6 +64,7 @@ func runSetup(config Config) int {
 	noLink := flags.Bool("no-link", false, "")
 	noHook := flags.Bool("no-hook", false, "")
 	executable := flags.String("executable", "", "")
+	configHome := flags.String("config-home", "", "")
 	help := flags.Bool("help", false, "")
 	if err := flags.Parse(config.Arguments[1:]); err != nil || flags.NArg() > 0 {
 		if err == flag.ErrHelp || *help {
@@ -76,7 +78,11 @@ func runSetup(config Config) int {
 		fmt.Fprint(config.Stdout, setupUsage)
 		return ExitSuccess
 	}
-	options := setup.Options{SkipLink: *noLink, SkipHook: *noHook}
+	options := setup.Options{Home: *configHome, SkipLink: *noLink, SkipHook: *noHook}
+	if *configHome != "" && !filepath.IsAbs(*configHome) {
+		writeLocalError(config.Stderr, "invalid_arguments", "config-home must be absolute", false, "", "")
+		return ExitUsage
+	}
 	if *agents != "" {
 		for _, name := range strings.Split(*agents, ",") {
 			options.Agents = append(options.Agents, setup.Agent(strings.TrimSpace(name)))
@@ -103,6 +109,8 @@ func runSetup(config Config) int {
 		resolved = path
 	}
 	options.Executable = resolved
+	checkOptions := setup.HealthOptions{Home: options.Home, Project: options.Project, Executable: resolved}
+	before, _ := setup.CheckAgents(checkOptions)
 
 	var report setup.Report
 	var err error
@@ -116,6 +124,7 @@ func runSetup(config Config) int {
 		return ExitInternal
 	}
 	health := setupDoctor(config)
+	after, _ := setup.CheckAgents(checkOptions)
 	writeJSON(config.Stdout, map[string]any{
 		"dryRun":              *dryRun,
 		"executable":          report.Executable,
@@ -123,6 +132,8 @@ func runSetup(config Config) int {
 		"agentsBlock":         report.AgentsBlock,
 		"codexHooksNeedTrust": report.CodexHooksNeedTrust,
 		"doctor":              health,
+		"agentCheckBefore":    before,
+		"agentCheck":          after,
 	})
 	return ExitSuccess
 }

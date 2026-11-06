@@ -509,6 +509,7 @@ async function down(
 	const released = holder
 		? await engine.stackStore.releaseHolder(holder, {
 				stackIds,
+				releaseUnheldTargets: true,
 				...(context.sessionCwd ? { sessionCwd: context.sessionCwd } : {}),
 			})
 		: [];

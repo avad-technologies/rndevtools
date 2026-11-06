@@ -299,6 +299,48 @@ describe('supabase up', () => {
 });
 
 describe('supabase down, ls, status, env, log', () => {
+	it('stops a lane-only stack after explicit down even while the releasing Codex chat stays in its worktree', async () => {
+		const { h, repo, stackId } = await setup();
+		h.agents.sessions = [fakeSession(CODEX.sessionId, repo, 'codex')];
+		h.lanes.lanes = [
+			fakeLane({
+				id: LANE_ID,
+				worktreePath: repo,
+				agent: { ...CODEX, lastSeenAt: h.clock.now },
+			}),
+		];
+		await h.engine.ensureForLane({
+			laneId: LANE_ID,
+			worktreePath: repo,
+			branch: 'main',
+			environmentId: 'development',
+			policy: 'auto',
+		});
+		await h.settle();
+		expect(h.engine.stackStore.record(stackId)?.holds).toEqual([]);
+		h.lanes.lanes = [];
+		h.engine.detachLane(LANE_ID);
+		await h.settle();
+		const down = await agent(
+			h,
+			{ operation: 'down', target: { worktreePath: repo } },
+			context(CODEX)
+		);
+		expect(down).toMatchObject({ released: true, stopping: true, keptBy: [] });
+		expect(h.engine.stackStore.record(stackId)?.releasedBy?.holder).toEqual(
+			CODEX
+		);
+		await h.advance(30_000);
+		const deadline = h.engine.stackStore.record(stackId)?.releasedAt;
+		await agent(
+			h,
+			{ operation: 'down', target: { worktreePath: repo } },
+			context(CODEX)
+		);
+		expect(h.engine.stackStore.record(stackId)?.releasedAt).toBe(deadline);
+		await h.advance(31_000);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
+	});
 	it('drops the session hold; the stack stops after the linger unless others hold it', async () => {
 		const { h, repo, stackId } = await setup();
 		await agent(h, up(repo));

@@ -8,7 +8,7 @@ export const TERMINAL_JOB_STATUSES = new Set([
 
 type Job = { id: string; status: string };
 
-type JobService<T extends Job> = {
+export type JobService<T extends Job> = {
 	getState: () => { jobs: readonly T[] };
 	subscribe: (listener: (state: { jobs: readonly T[] }) => void) => () => void;
 	cancelJob: (jobId: string) => boolean;

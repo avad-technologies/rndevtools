@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/adalloul0928/rndevtools-sim-helper/internal/compatibility"
@@ -71,10 +72,36 @@ func New(reader io.Reader, attestor ParentAttestor, expectedBuildCommit string) 
 
 func NewInheritedFDAuthorizer(attestor ParentAttestor, expectedBuildCommit string) *Authorizer {
 	return New(
-		inheritedFDReader(os.NewFile(InheritedFD, "rndevtools-mutation-authorization"), time.Now().Add(5*time.Second)),
+		inheritedDescriptorReader(InheritedFD, time.Now().Add(5*time.Second)),
 		attestor,
 		expectedBuildCommit,
 	)
+}
+
+// A standalone read-only helper has no authorization FD. Never create an
+// os.File for an absent or unrelated descriptor: its finalizer could close a
+// descriptor later reused by Go's poller or a directory walk. A valid pipe is
+// duplicated first so this reader owns only its duplicate, not the inherited FD.
+func inheritedDescriptorReader(descriptor int, deadline time.Time) io.Reader {
+	var metadata syscall.Stat_t
+	if syscall.Fstat(descriptor, &metadata) != nil || metadata.Mode&syscall.S_IFMT != syscall.S_IFIFO {
+		return nil
+	}
+	syscall.ForkLock.RLock()
+	duplicate, err := syscall.Dup(descriptor)
+	if err == nil {
+		syscall.CloseOnExec(duplicate)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		return nil
+	}
+	file := os.NewFile(uintptr(duplicate), "rndevtools-mutation-authorization")
+	reader := inheritedFDReader(file, deadline)
+	if reader == nil {
+		_ = file.Close()
+	}
+	return reader
 }
 
 func inheritedFDReader(file *os.File, deadline time.Time) io.Reader {

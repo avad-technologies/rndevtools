@@ -27,7 +27,7 @@ const MAX_DEVICES = 200;
 const MAX_AGENTS_PER_DEVICE = 32;
 
 export const AGENT_TOUCH_TTL_MS = 30 * 60 * 1_000;
-/** Codex threads share one app-server process; recency is their liveness. */
+/** Recent activity for display; absence is not evidence that a thread exited. */
 export const CODEX_ACTIVE_WINDOW_MS = 30 * 60 * 1_000;
 
 const identifierSchema = z

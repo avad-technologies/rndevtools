@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-const LOGIN_SHELL_TIMEOUT_MS = 5_000;
+// Version-manager initialization can take several seconds on a busy Mac.
+const LOGIN_SHELL_TIMEOUT_MS = 15_000;
 const MAX_LOGIN_SHELL_OUTPUT_BYTES = 64 * 1024;
 const MAX_TOOL_PATH_LENGTH = 16 * 1024;
 /** Shells that take `-ilc` and print "$PATH" as one colon-separated value. */
@@ -145,9 +146,9 @@ export function readLoginShellPath({
  * (`/usr/bin:/bin:/usr/sbin:/sbin`), which holds no Node that Homebrew, a
  * version manager, or the Node installer put anywhere. When the inherited
  * PATH finds no `node`, the login shell's PATH goes ahead of it; one that
- * already does (a desktop started from a terminal) is used as it is. Once the
- * shell has given a PATH it is not asked again; after an answer without one,
- * the next call asks again.
+ * already does (a desktop started from a terminal) is used as it is. Cache a
+ * shell PATH only while it finds Node, so installing Node during setup or
+ * replacing a version-manager runtime takes effect without an app restart.
  */
 export function createToolPathResolver({
 	readShellPath = readLoginShellPath,
@@ -158,12 +159,16 @@ export function createToolPathResolver({
 	let reading: Promise<string[] | undefined> | undefined;
 	return async (inheritedPath) => {
 		if (findsNode(inheritedPath)) return inheritedPath;
+		if (shellPath && !findsNode(shellPath.join(path.delimiter))) {
+			shellPath = undefined;
+		}
 		if (shellPath === undefined) {
 			reading ??= readShellPath()
 				.then((value) => {
 					const entries = pathEntries(value);
-					return entries.length > 0 &&
-						entries.join(path.delimiter).length <= MAX_TOOL_PATH_LENGTH
+					const candidate = entries.join(path.delimiter);
+					return candidate.length <= MAX_TOOL_PATH_LENGTH &&
+						findsNode(candidate)
 						? entries
 						: undefined;
 				})

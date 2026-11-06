@@ -366,11 +366,16 @@ private struct StubMutationBroker: SimulatorMutationBrokering {
   let parent = LockedParentPID(42)
   let helperProcess = LockedParentPID(-1)
   let startedAt = Date()
-  #expect(throws: NativeHostError.self) {
-    try SystemSimulatorMutationProcessRunner(
+  do {
+    _ = try SystemSimulatorMutationProcessRunner(
       spawnedHelperVerifier: StubSpawnedHelperVerifier(inspection: { processID in
         helperProcess.set(processID)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { parent.set(1) }
+        // These synchronous process tests occupy Swift Testing's shared pool.
+        // Deliver the simulated parent exit independently of that pool.
+        Thread.detachNewThread {
+          Thread.sleep(forTimeInterval: 0.05)
+          parent.set(1)
+        }
       }),
       currentParentPID: parent.get
     ).run(
@@ -382,6 +387,10 @@ private struct StubMutationBroker: SimulatorMutationBrokering {
       terminationGraceSeconds: 0.05,
       cancellation: NeverCancelled()
     )
+    Issue.record("Expected the missing parent to cancel the helper")
+  } catch let error as NativeHostError {
+    #expect(error.code == "mutation_authorization_required")
+    #expect(error.message.contains("desktop parent exited"))
   }
   #expect(Date().timeIntervalSince(startedAt) < 1)
   let processID = helperProcess.get()

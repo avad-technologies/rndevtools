@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { isProductDesktopProcess } from './packaged-process-identity.mjs';
 import {
 	assertCompiledTeam,
 	assertNoBuildHome,
@@ -8,6 +9,51 @@ import {
 } from './release-macos.mjs';
 
 const team = 'ABCDE12345';
+
+test('cold launch permits persistent MCP bridges but refuses desktop/helper processes', () => {
+	const name = 'RN Devtools';
+	const userData = '/Users/example/Library/Application Support/RN Devtools';
+	const bundle = '/Applications/RN Devtools.app/Contents/';
+	for (const command of [
+		`${bundle}Resources/native/rndevtools mcp`,
+		`${bundle}Resources/native/rndevtools doctor`,
+		`${bundle}Resources/native/rndevtools`,
+		'/usr/bin/other-app',
+	])
+		assert.equal(
+			isProductDesktopProcess(command, command.split(' --')[0], name, userData),
+			false
+		);
+	for (const command of [
+		`${bundle}MacOS/RN Devtools`,
+		`${bundle}Resources/native/rndevtools-sim-helper`,
+		`${bundle}Resources/native/rndevtools-native-host`,
+		`${bundle}Frameworks/RN Devtools Helper.app/Contents/MacOS/RN Devtools Helper --type=renderer`,
+		`/tmp/Electron --user-data-dir=${userData}`,
+	])
+		assert.equal(
+			isProductDesktopProcess(command, command.split(' --')[0], name, userData),
+			true
+		);
+	assert.equal(
+		isProductDesktopProcess(
+			`/bin/zsh -c 'test ${bundle}MacOS/RN Devtools'`,
+			'/bin/zsh',
+			name,
+			userData
+		),
+		false
+	);
+	assert.equal(
+		isProductDesktopProcess(
+			`/bin/zsh -c 'echo --user-data-dir=${userData}'`,
+			'/bin/zsh',
+			name,
+			userData
+		),
+		false
+	);
+});
 const environment = {
 	APPLE_TEAM_ID: team,
 	CSC_NAME: '0123456789ABCDEF0123456789ABCDEF01234567',
@@ -80,6 +126,9 @@ for (const [name, details] of [
 }
 
 test('local signature gate accepts Apple Development while enforcing team and runtime', () => {
+	assert.doesNotThrow(() => assertSignature(signature, team, true));
+	assert.throws(() => assertSignature(signature, 'OTHER12345', true));
+	assert.throws(() => assertSignature('Signature=adhoc', team, true));
 	const local = signature.replace(
 		'Developer ID Application:',
 		'Apple Development:'

@@ -93,7 +93,7 @@ var Categories = []Category{
 		ID:             "search",
 		Name:           "Spotlight & Search",
 		Description:    "On-device Spotlight and in-Settings search services.",
-		Downside:       "Spotlight and Settings search return no results.",
+		Downside:       "Spotlight and Settings search return no results, and Recents in Files and the document picker fails to load.",
 		ApproxMemoryMB: 50,
 		Labels: []string{
 			"com.apple.searchd",
@@ -342,11 +342,23 @@ var Categories = []Category{
 		},
 	},
 	{
+		ID:             "mdm",
+		Name:           "Device Management",
+		Description:    "Declarative device management and managed asset services.",
+		Downside:       "Declarative device management, and MDM or configuration-profile workflows that use it, will not work.",
+		ApproxMemoryMB: 10,
+		Labels: []string{
+			"com.apple.remotemanagementd",
+			"com.apple.RemoteManagementAgent",
+			"com.apple.managedassetsd",
+		},
+	},
+	{
 		ID:             "other",
 		Name:           "Other Background Services",
-		Description:    "Wallet, business services, assets, and miscellaneous background daemons.",
-		Downside:       "Wallet, merchant, business, asset, and miscellaneous background services are unavailable.",
-		ApproxMemoryMB: 195,
+		Description:    "Wallet, App Clips, business services, assets, and miscellaneous background daemons.",
+		Downside:       "Wallet, App Clips, accessibility asset downloads, merchant, business, and miscellaneous background services are unavailable.",
+		ApproxMemoryMB: 225,
 		Labels: []string{
 			"com.apple.financed",
 			"com.apple.passd",
@@ -362,6 +374,8 @@ var Categories = []Category{
 			"com.apple.countryd",
 			"com.apple.mobileassetd",
 			"com.apple.managedconfiguration.passcodenagd",
+			"com.apple.accessibility.axassetsd",
+			"com.apple.ClipServices.clipserviced",
 		},
 	},
 }

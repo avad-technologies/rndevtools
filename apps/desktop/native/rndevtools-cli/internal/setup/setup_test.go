@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/adalloul0928/rndevtools-cli/internal/mcp"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func readJSON(t *testing.T, path string) map[string]any {
@@ -98,7 +99,7 @@ func TestApplyInstallsEverythingAndIsIdempotent(t *testing.T) {
 		t.Fatal("existing Stop hook was lost")
 	}
 	pre := hooks["PreToolUse"].([]any)
-	if len(pre) != 1 || pre[0].(map[string]any)["matcher"] != "Bash" {
+	if len(pre) != 1 || pre[0].(map[string]any)["matcher"] != `Bash|exec_command|functions\.exec_command` {
 		t.Fatalf("PreToolUse hook: %v", pre)
 	}
 	if !strings.Contains(pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"].(string), "hook pre-tool-use") {
@@ -250,7 +251,7 @@ func TestInvalidJSONIsSkippedNotClobbered(t *testing.T) {
 	}
 }
 
-func TestCodexBlockIsReplacedInPlace(t *testing.T) {
+func TestCodexRegistrationPreservesOperatorSettings(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".codex", "config.toml")
 	write(t, path, "[mcp_servers.rndevtools]\ncommand = \"/stale/rndevtools\"\nargs = [\"mcp\"]\n\n[mcp_servers.rndevtools.env]\nA = \"b\"\n\n[other]\nkeep = true\n")
@@ -263,8 +264,8 @@ func TestCodexBlockIsReplacedInPlace(t *testing.T) {
 	}
 	content, _ := os.ReadFile(path)
 	text := string(content)
-	if strings.Contains(text, "/stale/") || strings.Contains(text, "A = \"b\"") {
-		t.Fatalf("stale rndevtools tables survived:\n%s", text)
+	if strings.Contains(text, "/stale/") || !strings.Contains(text, "A = \"b\"") {
+		t.Fatalf("command was not updated or operator environment was lost:\n%s", text)
 	}
 	if !strings.Contains(text, "[other]\nkeep = true") || strings.Count(text, "[mcp_servers.rndevtools]") != 1 {
 		t.Fatalf("unexpected codex config:\n%s", text)
@@ -796,14 +797,85 @@ func TestCodexTableLastInTheFileWithoutAFinalNewline(t *testing.T) {
 		}
 		text := string(mustRead(t, path))
 		before, _, found := strings.Cut(text, "[mcp_servers.rndevtools]")
-		if !found || strings.Count(text, "[mcp_servers.rndevtools") != 1 {
+		if !found || strings.Count(text, "[mcp_servers.rndevtools]") != 1 {
 			t.Fatalf("%s: want exactly our one table:\n%s", name, text)
 		}
 		if strings.Contains(before, "args") || strings.Contains(before, "FOO") || strings.Contains(text, "/old") {
 			t.Fatalf("%s: the old table left keys behind:\n%s", name, text)
 		}
-		if !strings.HasSuffix(text, "command = \"/fresh/rndevtools\"\nargs = [\"mcp\"]\ntool_timeout_sec = 240\n") {
-			t.Fatalf("%s: block:\n%s", name, text)
+		var parsed map[string]any
+		if err := toml.Unmarshal([]byte(text), &parsed); err != nil {
+			t.Fatalf("%s: invalid TOML: %v", name, err)
+		}
+		server := parsed["mcp_servers"].(map[string]any)["rndevtools"].(map[string]any)
+		if server["command"] != "/fresh/rndevtools" || server["tool_timeout_sec"] != int64(240) {
+			t.Fatalf("%s: block: %v", name, server)
+		}
+	}
+}
+
+func TestJSONRegistrationPreservesPermissionsAndEnvironment(t *testing.T) {
+	for _, agent := range []Agent{AgentClaude, AgentCursor, AgentKiro} {
+		t.Run(string(agent), func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, ".claude.json")
+			if agent == AgentCursor {
+				path = filepath.Join(home, ".cursor", "mcp.json")
+			}
+			if agent == AgentKiro {
+				path = filepath.Join(home, ".kiro", "settings", "mcp.json")
+			}
+			write(t, path, `{"mcpServers":{"rndevtools":{"command":"/old","args":["mcp"],"disabled":true,"autoApprove":["lane","input"],"env":{"EXAMPLE":"kept"},"customSetting":42}},"other":true}`)
+			options := Options{Home: home, Executable: "/new/rndevtools", Agents: []Agent{agent}, SkipHook: true, SkipLink: true}
+			if _, err := Apply(options); err != nil {
+				t.Fatal(err)
+			}
+			server := readJSON(t, path)["mcpServers"].(map[string]any)["rndevtools"].(map[string]any)
+			if server["command"] != "/new/rndevtools" || server["disabled"] != true || server["customSetting"] != float64(42) || !jsonEqual(server["autoApprove"], []string{"lane", "input"}) || !jsonEqual(server["env"], map[string]string{"EXAMPLE": "kept"}) {
+				t.Fatalf("operator settings changed: %v", server)
+			}
+			again, err := Apply(options)
+			if err != nil || again.Changes[0].Action != "unchanged" {
+				t.Fatalf("second setup: %+v, %v", again, err)
+			}
+		})
+	}
+}
+
+func TestCodexRegistrationKeepsCustomPermissionsAndComplexTOML(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".codex", "config.toml")
+	before := "# user comment\r\nmodel = 'example'\r\nnotes = '''\r\n[mcp_servers.rndevtools]\r\ncommand = \"example, not configuration\"\r\n'''\r\n\r\n[ mcp_servers . \"rndevtools\" ] # my server\r\ncommand = '/old' # keep this comment\r\nargs = [\r\n  'mcp',\r\n]\r\ntool_timeout_sec = 600.0\r\nenabled = false\r\nenabled_tools = ['doctor', 'lane']\r\n[mcp_servers.rndevtools.env]\r\nEXAMPLE = 'kept'\r\n[mcp_servers.rndevtools.tools.lane]\r\napproval_mode = 'approve'\r\n[mcp_servers.other]\r\ncommand = 'other'\r\n"
+	write(t, path, before)
+	options := Options{Home: home, Executable: "/new/rndevtools", Agents: []Agent{AgentCodex}, SkipHook: true, SkipLink: true}
+	if _, err := Apply(options); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(before, "command = '/old'", "command = \"/new/rndevtools\"", 1)
+	if got := string(mustRead(t, path)); got != want {
+		t.Fatalf("setup must edit only the outdated command:\n%s", got)
+	}
+	again, err := Apply(options)
+	if err != nil || again.Changes[0].Action != "unchanged" {
+		t.Fatalf("second setup: %+v, %v", again, err)
+	}
+}
+
+func TestCodexInvalidConfigurationIsSkipped(t *testing.T) {
+	for _, content := range []string{
+		"[mcp_servers.rndevtools]\ncommand = \"unterminated\n",
+		"[mcp_servers.rndevtools]\ncommand = 'a'\ncommand = 'b'\n",
+		"[mcp_servers.rndevtools]\nurl = 'https://example.com/mcp'\n",
+	} {
+		home := t.TempDir()
+		path := filepath.Join(home, ".codex", "config.toml")
+		write(t, path, content)
+		report, err := Apply(Options{Home: home, Executable: "/new/rndevtools", Agents: []Agent{AgentCodex}, SkipHook: true, SkipLink: true})
+		if err != nil || report.Changes[0].Action != "skip" {
+			t.Fatalf("want a visible skip: %+v, %v", report, err)
+		}
+		if got := string(mustRead(t, path)); got != content {
+			t.Fatal("invalid or custom remote configuration was overwritten")
 		}
 	}
 }

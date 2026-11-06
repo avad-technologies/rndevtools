@@ -114,9 +114,28 @@ describe('resolveSupabaseHolds', () => {
 		expect(result.clocks).toEqual({});
 	});
 
+	it('retains idle Codex stacks across restarts and clears obsolete cleanup clocks', () => {
+		for (const elapsed of [40 * MINUTE, DAY_MS]) {
+			const result = resolveSupabaseHolds(
+				input({
+					now: NOW + elapsed,
+					stack: {
+						holds: [stored('session', CODEX)],
+						clocks: {
+							[`codex:${CODEX.sessionId}`]: { missingSince: NOW },
+						},
+					},
+				})
+			);
+			expect(result.autoStopAt).toBeUndefined();
+			expect(result.holds[0]?.releaseAt).toBeUndefined();
+			expect(result.clocks).toEqual({});
+		}
+	});
+
 	it('starts an abandonment clock and stops after the grace', () => {
 		const first = resolveSupabaseHolds(
-			input({ stack: { holds: [stored('session', CODEX)] } })
+			input({ stack: { holds: [stored('session', CLAUDE)] } })
 		);
 		expect(first.held).toBe(false);
 		expect(first.holds[0]).toMatchObject({
@@ -126,7 +145,7 @@ describe('resolveSupabaseHolds', () => {
 			releaseAt: NOW + DEVICE_HOLD_GRACE_MS,
 		});
 		expect(first.clocks).toEqual({
-			[`codex:${CODEX.sessionId}`]: { missingSince: NOW },
+			[`claude:${CLAUDE.sessionId}`]: { missingSince: NOW },
 		});
 		expect(first).toMatchObject({
 			autoStopAt: NOW + DEVICE_HOLD_GRACE_MS,
@@ -138,7 +157,7 @@ describe('resolveSupabaseHolds', () => {
 		const later = resolveSupabaseHolds(
 			input({
 				now: NOW + 4 * MINUTE,
-				stack: { holds: [stored('session', CODEX)], clocks: first.clocks },
+				stack: { holds: [stored('session', CLAUDE)], clocks: first.clocks },
 			})
 		);
 		expect(later.autoStopAt).toBe(NOW + DEVICE_HOLD_GRACE_MS);
@@ -147,8 +166,8 @@ describe('resolveSupabaseHolds', () => {
 		// The holder came back: its clock is dropped.
 		const back = resolveSupabaseHolds(
 			input({
-				stack: { holds: [stored('session', CODEX)], clocks: first.clocks },
-				sessions: [session(CODEX)],
+				stack: { holds: [stored('session', CLAUDE)], clocks: first.clocks },
+				sessions: [session(CLAUDE)],
 			})
 		);
 		expect(back.held).toBe(true);
@@ -156,12 +175,13 @@ describe('resolveSupabaseHolds', () => {
 	});
 
 	it('stops when the last of several abandoned holders runs out', () => {
+		const SECOND = { kind: 'claude' as const, sessionId: 'second-session' };
 		const result = resolveSupabaseHolds(
 			input({
 				stack: {
-					holds: [stored('session', CODEX), stored('session', CLAUDE)],
+					holds: [stored('session', SECOND), stored('session', CLAUDE)],
 					clocks: {
-						[`codex:${CODEX.sessionId}`]: { missingSince: NOW - 8 * MINUTE },
+						[`claude:${SECOND.sessionId}`]: { missingSince: NOW - 8 * MINUTE },
 						[`claude:${CLAUDE.sessionId}`]: { missingSince: NOW - 2 * MINUTE },
 					},
 				},
@@ -172,12 +192,12 @@ describe('resolveSupabaseHolds', () => {
 
 	it('pauses clocks while an agent kind cannot be seen, then resumes them', () => {
 		const running = {
-			[`codex:${CODEX.sessionId}`]: { missingSince: NOW - 4 * MINUTE },
+			[`claude:${CLAUDE.sessionId}`]: { missingSince: NOW - 4 * MINUTE },
 		};
 		const paused = resolveSupabaseHolds(
 			input({
-				stack: { holds: [stored('session', CODEX)], clocks: running },
-				discovery: { claude: 'ok', codex: 'unavailable' },
+				stack: { holds: [stored('session', CLAUDE)], clocks: running },
+				discovery: { claude: 'unavailable', codex: 'ok' },
 			})
 		);
 		expect(paused.clocksPaused).toBe(true);
@@ -185,18 +205,18 @@ describe('resolveSupabaseHolds', () => {
 		expect(paused.holds[0]).toMatchObject({ live: false });
 		expect(paused.holds[0]?.releaseAt).toBeUndefined();
 		expect(paused.clocks).toEqual({
-			[`codex:${CODEX.sessionId}`]: { pausedElapsedMs: 4 * MINUTE },
+			[`claude:${CLAUDE.sessionId}`]: { pausedElapsedMs: 4 * MINUTE },
 		});
 
 		// Twenty minutes later the kind is visible again: four minutes had run.
 		const resumed = resolveSupabaseHolds(
 			input({
 				now: NOW + 20 * MINUTE,
-				stack: { holds: [stored('session', CODEX)], clocks: paused.clocks },
+				stack: { holds: [stored('session', CLAUDE)], clocks: paused.clocks },
 			})
 		);
 		expect(resumed.clocks).toEqual({
-			[`codex:${CODEX.sessionId}`]: { missingSince: NOW + 16 * MINUTE },
+			[`claude:${CLAUDE.sessionId}`]: { missingSince: NOW + 16 * MINUTE },
 		});
 		expect(resumed.autoStopAt).toBe(NOW + 16 * MINUTE + DEVICE_HOLD_GRACE_MS);
 	});
@@ -247,9 +267,8 @@ describe('resolveSupabaseHolds', () => {
 			})
 		);
 		expect(gone.holds[0]).toMatchObject({ live: false });
-		expect(Object.keys(gone.clocks)).toEqual([
-			`codex:${SYNTHETIC.sessionId}@${WORKTREE}`,
-		]);
+		expect(gone.clocks).toEqual({});
+		expect(gone.autoStopAt).toBeUndefined();
 	});
 
 	it('keeps an unheld stack running for a live session in its worktree', () => {
@@ -447,9 +466,8 @@ describe('resolveSupabaseHolds', () => {
 			input({ lanes, sessions: [session(CODEX, `${WORKTREE}-2`)] })
 		);
 		expect(sibling.holds[0]).toMatchObject({ holder: 'lane', live: false });
-		expect(Object.keys(sibling.clocks)).toEqual([
-			`codex:${SYNTHETIC.sessionId}@${WORKTREE}`,
-		]);
+		expect(sibling.clocks).toEqual({});
+		expect(sibling.autoStopAt).toBeUndefined();
 	});
 
 	it('bounds the holds it reports to 16', () => {

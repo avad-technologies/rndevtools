@@ -31,20 +31,24 @@ const (
 	maximumManagedIDs  = 256
 	maxLaunchdServices = 4096
 	xcrunExecutable    = "/usr/bin/xcrun"
+	psExecutable       = "/bin/ps"
+	pgrepExecutable    = "/usr/bin/pgrep"
 	swVersExecutable   = "/usr/bin/sw_vers"
 	sysctlExecutable   = "/usr/sbin/sysctl"
 )
 
 var (
-	bootTimeout          = simslim.BootTimeout
-	commandWaitDelay     = 2 * time.Second
-	UDIDPattern          = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
-	runtimePattern       = regexp.MustCompile(`^com\.apple\.CoreSimulator\.SimRuntime\.iOS-[A-Za-z0-9.-]{1,80}$`)
-	deviceTypePattern    = regexp.MustCompile(`^com\.apple\.CoreSimulator\.SimDeviceType\.[A-Za-z0-9.-]{1,96}$`)
-	buildLinePattern     = regexp.MustCompile(`(?m)^Build version ([A-Za-z0-9.]{2,32})\s*$`)
-	coreSimulatorPattern = regexp.MustCompile(`(?m)PROJECT:CoreSimulator-([A-Za-z0-9.]{2,32})\s*$`)
-	launchdLabelPattern  = regexp.MustCompile(`^[^\s]{1,512}$`)
-	ProcessNamePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	bootTimeout               = simslim.BootTimeout
+	commandWaitDelay          = 2 * time.Second
+	UDIDPattern               = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+	runtimePattern            = regexp.MustCompile(`^com\.apple\.CoreSimulator\.SimRuntime\.iOS-[A-Za-z0-9.-]{1,80}$`)
+	deviceTypePattern         = regexp.MustCompile(`^com\.apple\.CoreSimulator\.SimDeviceType\.[A-Za-z0-9.-]{1,96}$`)
+	buildLinePattern          = regexp.MustCompile(`(?m)^Build version ([A-Za-z0-9.]{2,32})\s*$`)
+	coreSimulatorPattern      = regexp.MustCompile(`(?m)PROJECT:CoreSimulator-([A-Za-z0-9.]{2,32})\s*$`)
+	launchdLabelPattern       = regexp.MustCompile(`^[^\s]{1,512}$`)
+	ProcessNamePattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	processMappingRetryDelays = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	errCommandTimeout         = errors.New("native command timed out")
 )
 
 type Device struct {
@@ -143,12 +147,126 @@ type commandRunner interface {
 type fixedRunner struct{}
 
 func NewClient(helperVersion, helperBuildCommit string) *Client {
-	return &Client{
+	client := &Client{
 		runner:            fixedRunner{},
 		helperVersion:     helperVersion,
 		helperBuildCommit: helperBuildCommit,
-		measureProcesses:  simslim.MeasureProcesses,
 	}
+	client.measureProcesses = client.captureProcessTree
+	return client
+}
+
+// Identity checks need PID/PPID/comm, not a global `top` memory sample. Only
+// launcher PIDs in this tree get a bounded argv read, projected to their label.
+func (client *Client) captureProcessTree(ctx context.Context, simulatorID string) ([]simslim.Process, error) {
+	if !UDIDPattern.MatchString(simulatorID) {
+		return nil, errors.New("simulator ID is not a canonical UDID")
+	}
+	rootResult, err := client.runner.Run(ctx, commandTimeout, pgrepExecutable, "-f", simulatorID+"/data/var/run/launchd_bootstrap")
+	roots := strings.Fields(string(rootResult.stdout))
+	if err != nil || rootResult.exitCode != 0 || len(roots) != 1 {
+		return nil, errors.New("could not identify exactly one Simulator launchd root")
+	}
+	root, err := strconv.Atoi(roots[0])
+	if err != nil || root <= 0 {
+		return nil, errors.New("Simulator launchd root PID was invalid")
+	}
+	result, err := client.runner.Run(ctx, commandTimeout, psExecutable, "-axo", "pid,ppid,%cpu,comm")
+	if err != nil || result.exitCode != 0 {
+		return nil, errors.New("could not read Simulator process identities")
+	}
+	tree := make(map[int]bool)
+	for _, pid := range simslim.SimulatorProcessTreePIDsFromPS(root, string(result.stdout)) {
+		tree[pid] = true
+	}
+	processes := make([]simslim.Process, 0, len(tree))
+	foundRoot := false
+	for _, line := range strings.Split(string(result.stdout), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, parseErr := strconv.Atoi(fields[0])
+		if parseErr != nil || !tree[pid] {
+			continue
+		}
+		command := strings.Join(fields[3:], " ")
+		if i := strings.LastIndexByte(command, '/'); i >= 0 {
+			command = command[i+1:]
+		}
+		if pid == root && command != "launchd_sim" {
+			return nil, errors.New("Simulator root no longer identifies launchd_sim")
+		}
+		processes = append(processes, simslim.Process{PID: pid, Command: command})
+		foundRoot = foundRoot || pid == root
+	}
+	if !foundRoot {
+		return nil, errors.New("Simulator launchd root left the process snapshot")
+	}
+	if err := client.bindLauncherLabels(ctx, processes); err != nil {
+		return nil, err
+	}
+	rootAfter, err := client.runner.Run(ctx, commandTimeout, pgrepExecutable, "-f", simulatorID+"/data/var/run/launchd_bootstrap")
+	if err != nil || rootAfter.exitCode != 0 || !slices.Equal(strings.Fields(string(rootAfter.stdout)), roots) {
+		return nil, errors.New("Simulator launchd root changed during the process snapshot")
+	}
+	return processes, nil
+}
+
+func launcherName(command string) bool {
+	return command == "xpcproxy_sim" || command == "xpcproxy"
+}
+
+func launcherIdentity(command string) bool {
+	return strings.HasPrefix(command, "xpcproxy_sim+") || strings.HasPrefix(command, "xpcproxy+")
+}
+
+// iOS can keep a service in launchd's xpcproxy state indefinitely. The shared
+// executable basename is not its identity; the exact launcher argv is
+// "xpcproxy_sim <launchd-label>". Read only already-proven Simulator launcher
+// PIDs, retain no arbitrary argv, and qualify their names with the label.
+func (client *Client) bindLauncherLabels(ctx context.Context, processes []simslim.Process) error {
+	indices := make(map[int]int)
+	pids := make([]string, 0)
+	for index, process := range processes {
+		if launcherName(process.Command) {
+			indices[process.PID] = index
+			pids = append(pids, strconv.Itoa(process.PID))
+		}
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+	if len(pids) > maxLaunchdServices {
+		return errors.New("Simulator launcher count exceeded its safety limit")
+	}
+	result, err := client.runner.Run(ctx, commandTimeout, psExecutable, "-p", strings.Join(pids, ","), "-o", "pid=,args=")
+	if err != nil || result.exitCode != 0 {
+		return fmt.Errorf("%w: launcher snapshot changed", errProcessLaunching)
+	}
+	seen := make(map[int]bool)
+	for _, line := range strings.Split(string(result.stdout), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		pid, parseErr := strconv.Atoi(fields[0])
+		index, expected := indices[pid]
+		if parseErr != nil || !expected || seen[pid] {
+			return errors.New("Simulator launcher snapshot contained ambiguous PIDs")
+		}
+		seen[pid] = true
+		// Missing/changing/extra arguments stay unresolved and are never
+		// retained, logged, or mistaken for a disappeared observed launcher.
+		if len(fields) != 3 || fields[1] != processes[index].Command {
+			continue
+		}
+		identity := fields[1] + "+" + fields[2]
+		if ProcessNamePattern.MatchString(identity) {
+			processes[index].Command = identity
+		}
+	}
+	return nil
 }
 
 func (client *Client) List(ctx context.Context) ([]Device, error) {
@@ -320,6 +438,30 @@ func (client *Client) CaptureRunningServiceProcesses(ctx context.Context, simula
 	if len(serviceIDs) == 0 {
 		return []string{}, nil
 	}
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		names, err := client.captureRunningServiceProcessesOnce(ctx, simulatorID, serviceIDs)
+		retryable := errors.Is(err, errProcessLaunching) || errors.Is(err, errProcessNameChanging)
+		if !retryable || attempt == len(processMappingRetryDelays) {
+			return names, err
+		}
+		// Never accept an unresolved launcher or an invalid process name.
+		// A process can be exiting during the snapshot: re-read both launchd
+		// and the exact process tree, and fail closed if it never settles.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(processMappingRetryDelays[attempt]):
+		}
+	}
+}
+
+var errProcessLaunching = errors.New("Simulator service is still launching")
+var errProcessNameChanging = errors.New("Simulator process name is unresolved")
+
+func (client *Client) captureRunningServiceProcessesOnce(ctx context.Context, simulatorID string, serviceIDs []string) ([]string, error) {
 	services, err := client.launchdServices(ctx, simulatorID)
 	if err != nil {
 		return nil, errors.New("could not inspect the Simulator launchd service domains")
@@ -340,13 +482,16 @@ func (client *Client) CaptureRunningServiceProcesses(ctx context.Context, simula
 	}
 	processes, err := client.measureProcesses(ctx, simulatorID)
 	if err != nil {
-		return nil, errors.New("could not inspect the exact Simulator process tree")
+		return nil, fmt.Errorf("could not inspect the exact Simulator process tree: %w", err)
 	}
 	processByPID := make(map[int]string, len(processes))
 	processNameCounts := make(map[string]int, len(processes))
 	for _, process := range processes {
-		if process.PID <= 0 || !ProcessNamePattern.MatchString(process.Command) {
+		if process.PID <= 0 {
 			return nil, errors.New("the Simulator process tree contained invalid identity data")
+		}
+		if !ProcessNamePattern.MatchString(process.Command) {
+			return nil, fmt.Errorf("%w: the Simulator process tree contained invalid identity data", errProcessNameChanging)
 		}
 		if _, duplicatePID := processByPID[process.PID]; duplicatePID {
 			return nil, errors.New("the Simulator process tree contained a duplicate PID")
@@ -364,6 +509,12 @@ func (client *Client) CaptureRunningServiceProcesses(ctx context.Context, simula
 				job.label,
 				job.pid,
 			)
+		}
+		if launcherName(command) {
+			return nil, fmt.Errorf("%w: %s (pid %d)", errProcessLaunching, job.label, job.pid)
+		}
+		if launcherIdentity(command) && command != "xpcproxy_sim+"+job.label && command != "xpcproxy+"+job.label {
+			return nil, errors.New("Simulator launcher label did not match its launchd job")
 		}
 		// Naming the label and executable turns a transient fail-closed into
 		// something a person can act on instead of a sentence they can only retry.
@@ -484,6 +635,9 @@ func (client *Client) VerifyManagedState(ctx context.Context, simulatorID string
 		}
 		runningNames := make(map[string]bool, len(processes))
 		for _, process := range processes {
+			if launcherName(process.Command) && slices.ContainsFunc(observedProcessNames, launcherIdentity) {
+				return evidence, &VerificationError{Evidence: evidence, Reason: "could not bind every Simulator launcher identity after the transition"}
+			}
 			runningNames[process.Command] = true
 		}
 		for _, processName := range observedProcessNames {
@@ -504,16 +658,7 @@ func (client *Client) VerifyManagedState(ctx context.Context, simulatorID string
 func (client *Client) launchdServices(ctx context.Context, simulatorID string) (map[string]int, error) {
 	services := make(map[string]int)
 	for _, domain := range []string{"user/501", "system"} {
-		result, err := client.runXcrun(
-			ctx,
-			commandTimeout,
-			"simctl",
-			"spawn",
-			simulatorID,
-			"launchctl",
-			"print",
-			domain,
-		)
+		result, err := client.readLaunchctl(ctx, simulatorID, "print", domain)
 		if err != nil || result.exitCode != 0 {
 			return nil, errors.New("launchctl domain snapshot failed")
 		}
@@ -604,7 +749,7 @@ func (client *Client) RestoreBootState(ctx context.Context, simulatorID, desired
 }
 
 func (client *Client) statusForBootedDevice(ctx context.Context, device Device) (Status, error) {
-	result, err := client.runXcrun(ctx, commandTimeout, "simctl", "spawn", device.ID, "launchctl", "print-disabled", "system")
+	result, err := client.readLaunchctl(ctx, device.ID, "print-disabled", "system")
 	if err != nil || result.exitCode != 0 {
 		return Status{}, errors.New("read simulator service state: launchctl failed")
 	}
@@ -795,6 +940,30 @@ func (client *Client) runXcrun(ctx context.Context, timeout time.Duration, args 
 	return client.runner.Run(ctx, timeout, xcrunExecutable, args...)
 }
 
+// A busy Simulator can take longer than 15 seconds to answer a read immediately
+// after boot. Retry only a timed-out read, once, with a bounded 30-second budget.
+// Permission errors, malformed results, and cancellation never become absence.
+func (client *Client) readLaunchctl(ctx context.Context, simulatorID, operation, domain string) (commandResult, error) {
+	if !UDIDPattern.MatchString(simulatorID) ||
+		!((operation == "print" && (domain == "system" || domain == "user/501")) ||
+			(operation == "print-disabled" && domain == "system")) {
+		return commandResult{}, errors.New("launchctl read is not allowlisted")
+	}
+	if err := ctx.Err(); err != nil {
+		return commandResult{}, err
+	}
+	args := []string{"simctl", "spawn", simulatorID, "launchctl", operation, domain}
+	result, err := client.runXcrun(ctx, commandTimeout, args...)
+	if ctx.Err() != nil {
+		return commandResult{}, ctx.Err()
+	}
+	// Darwin ETIMEDOUT can be reported by simctl itself before our deadline.
+	if errors.Is(err, errCommandTimeout) || (err == nil && result.exitCode == 60) {
+		return client.runXcrun(ctx, 2*commandTimeout, args...)
+	}
+	return result, err
+}
+
 func validateManagedIDs(values []string) error {
 	if len(values) > maximumManagedIDs {
 		return errors.New("managed service set exceeds its safety limit")
@@ -885,7 +1054,7 @@ func normalizedState(value string) string {
 }
 
 func (fixedRunner) Run(parent context.Context, timeout time.Duration, executable string, args ...string) (commandResult, error) {
-	if executable != xcrunExecutable && executable != swVersExecutable && executable != sysctlExecutable {
+	if executable != xcrunExecutable && executable != swVersExecutable && executable != sysctlExecutable && executable != psExecutable && executable != pgrepExecutable {
 		return commandResult{}, errors.New("executable is not allowlisted")
 	}
 	return runBounded(parent, timeout, executable, args...)
@@ -908,7 +1077,7 @@ func runBounded(parent context.Context, timeout time.Duration, executable string
 	err := command.Run()
 	result := commandResult{stdout: stdout.Bytes(), stderr: stderr.Bytes(), exitCode: 0}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return commandResult{}, errors.New("native command timed out")
+		return commandResult{}, errCommandTimeout
 	}
 	if errors.Is(err, exec.ErrWaitDelay) {
 		return commandResult{}, errors.New("native command exited but a process it started kept its output open")

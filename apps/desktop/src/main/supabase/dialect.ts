@@ -1200,8 +1200,10 @@ function lifecycleBudget(timeoutMs: number): SupabaseOperationBudget {
 
 /**
  * The time budget and kill rule for each operation, from the measured
- * timings at 2.121.0 (4.5 s warm create, 42.6 s first-ever create, 1.0 s
- * resume, 3.2 s idle stop, 4.6 s reset) with headroom for cold caches.
+ * timings at 2.121.0. Cold native downloads can take far longer than a warm
+ * create: interrupting one after five minutes leaves a first-start stack
+ * without a recovery journal. Creation and preparation run as observable
+ * background jobs, with a bounded download budget independent of agent waits.
  */
 export function supabaseOperationBudget(
 	operation: SupabaseCliOperation
@@ -1230,7 +1232,7 @@ export function supabaseOperationBudget(
 			};
 		case 'stack.start':
 			return lifecycleBudget(
-				typeof operation.workdir === 'string' ? 300_000 : 120_000
+				typeof operation.workdir === 'string' ? 30 * 60_000 : 120_000
 			);
 		case 'stack.stop':
 			return lifecycleBudget(90_000);
@@ -1249,7 +1251,7 @@ export function supabaseOperationBudget(
 				)
 			);
 		case 'stack.prepare':
-			return lifecycleBudget(600_000);
+			return lifecycleBudget(30 * 60_000);
 		case 'db.reset':
 			return lifecycleBudget(180_000);
 		case 'migration.up':

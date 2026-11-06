@@ -209,26 +209,18 @@ describe('resolveHolderLiveness', () => {
 		now,
 	};
 
-	it('treats the operator and live sessions as live, and runs a clock for the rest', () => {
+	it('keeps inactive Codex owners unconfirmed even with an old cleanup clock', () => {
 		expect(resolveHolderLiveness(undefined, inputs)).toEqual({ live: true });
 		expect(resolveHolderLiveness(claude, inputs)).toEqual({ live: true });
-		const since = now - 60_000;
-		expect(
-			resolveHolderLiveness(codex, {
-				...inputs,
-				missingSince: new Map([['codex:t1', since]]),
-			})
-		).toEqual({
-			live: false,
-			abandonedSince: since,
-			releaseAt: since + DEVICE_HOLD_GRACE_MS,
-		});
-		// No clock yet: missing from now, so the release never comes closer.
-		expect(resolveHolderLiveness(codex, inputs)).toEqual({
-			live: false,
-			abandonedSince: now,
-			releaseAt: now + DEVICE_HOLD_GRACE_MS,
-		});
+		for (const elapsed of [0, 40 * 60_000, 24 * 60 * 60_000]) {
+			expect(
+				resolveHolderLiveness(codex, {
+					...inputs,
+					now: now + elapsed,
+					missingSince: new Map([['codex:t1', now - 60_000]]),
+				})
+			).toEqual({ live: false, unconfirmed: true });
+		}
 	});
 
 	it('keeps a synthetic holder live only while a session of its kind works inside the directory', () => {
@@ -271,7 +263,7 @@ describe('resolveHolderLiveness', () => {
 				},
 				'/Users/dev/other'
 			)
-		).toMatchObject({ abandonedSince: since });
+		).toEqual({ live: false, unconfirmed: true });
 	});
 
 	it('matches paths by whole segments', () => {
@@ -471,7 +463,7 @@ describe('holdCountdownLabel', () => {
 			'a gone holder with no clock yet',
 			{ live: false, holder: 'claim' },
 			{},
-			{ text: 'gone', tone: 'warning' },
+			{ text: 'unconfirmed · retained', tone: 'info' },
 		],
 		[
 			'a gone holder while clocks are paused',

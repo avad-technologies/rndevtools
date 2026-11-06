@@ -20,6 +20,13 @@ import {
 	buildInsightsOperationSchema,
 	buildInsightsStateSchema,
 } from '../shared/build-insights-protocol';
+import {
+	type FailureBridge,
+	type FailureRequest,
+	failureRequestSchema,
+	failureResultSchema,
+	failureStateSchema,
+} from '../shared/failure-protocol';
 import { IPC_CHANNELS } from '../shared/ipc';
 import {
 	type LaneBridge,
@@ -211,6 +218,7 @@ function subscribeToState<T>(
 }
 
 const bridge: DesktopBridge &
+	FailureBridge &
 	AppearanceBridge &
 	SimulatorBridge &
 	SlimmingBridge &
@@ -221,6 +229,17 @@ const bridge: DesktopBridge &
 	SimulatorInputBridge &
 	SimulatorStreamBridge &
 	SupabaseBridge = {
+	getFailureState: async () =>
+		failureStateSchema.parse(
+			await ipcRenderer.invoke(IPC_CHANNELS.getFailureState)
+		),
+	runFailureOperation: async (request: FailureRequest) =>
+		failureResultSchema.parse(
+			await ipcRenderer.invoke(
+				IPC_CHANNELS.runFailureOperation,
+				failureRequestSchema.parse(request)
+			)
+		),
 	getBootstrap: async () =>
 		desktopBootstrapSchema.parse(
 			await ipcRenderer.invoke(IPC_CHANNELS.getBootstrap)

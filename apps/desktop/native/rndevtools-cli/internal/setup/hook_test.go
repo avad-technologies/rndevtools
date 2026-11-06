@@ -457,6 +457,16 @@ func TestHookReadsThePayloadCwd(t *testing.T) {
 	}
 }
 
+func TestHookReadsCodexShellPayloads(t *testing.T) {
+	for _, name := range []string{"exec_command", "functions.exec_command"} {
+		payload := `{"tool_name":"` + name + `","cwd":"/worktree","tool_input":{"cmd":"xcrun simctl boot 727CE7B2-CCBA-47A5-8803-1D61DCEBCF44"}}`
+		call, ok := readPreToolUse(strings.NewReader(payload))
+		if !ok || call.cwd != "/worktree" || !EvaluateClaudePreToolUse(strings.NewReader(payload)).Block {
+			t.Fatalf("Codex shell bypassed steering: %s", name)
+		}
+	}
+}
+
 func TestHookReadsClaudePayloadAndFailsOpen(t *testing.T) {
 	blocked := EvaluateClaudePreToolUse(strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"xcrun simctl boot 727CE7B2-CCBA-47A5-8803-1D61DCEBCF44"}}`))
 	if !blocked.Block {

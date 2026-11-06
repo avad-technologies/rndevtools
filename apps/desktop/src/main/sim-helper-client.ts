@@ -409,13 +409,13 @@ const helperHandshakeSchema = z.strictObject({
 		profilesSha256: z.string().regex(/^[a-f0-9]{64}$/),
 		patchSet: z.literal('rndevtools.1'),
 		upstreamSourceManifestSha256: z.literal(
-			'bbd7640e2738197be54564d9f9926710a0dc5e13ee674d6e00e48bd5714b6172'
+			'cd8843eca8ac08e7b44fcab27582bc8d76ca29ee80a8334e6873c3c7dd568056'
 		),
 		patchSha256: z.literal(
-			'99703cfc6fa2bddf360f364b115edd0f235df82282e3e809daff543641a472f0'
+			'045c1b21248398f066d20766bf178dc307fdee3ca5ef5fcea11f889dcddc1063'
 		),
 		vendoredSourceManifestSha256: z.literal(
-			'887daa4543b0aecaefbdd9c7edb6e46e00205fecaba254c09527579dc84175d2'
+			'f5082751ccb44251861356158fce6a88a5c736dfe52844929db77bacf99af694'
 		),
 	}),
 	capabilities: z.strictObject({

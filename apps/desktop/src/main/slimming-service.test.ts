@@ -104,7 +104,7 @@ const COMPATIBILITY: SimHelperCompatibility = {
 		hostArchitecture: 'arm64',
 		helperVersion: '0.1.0',
 		helperBuildCommit: 'a'.repeat(40),
-		catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+		catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 	},
 	verifiedOperations: [],
 };
@@ -177,18 +177,18 @@ class FakeHelper implements SlimmingHelperProvider {
 			protocolVersion: 2 as const,
 			platform: 'darwin' as const,
 			architecture: 'arm64' as const,
-			catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+			catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 			catalogSource: {
 				repository: 'https://github.com/MobAI-App/simslim' as const,
 				commit: 'b'.repeat(40),
 				profilesSha256: 'c'.repeat(64),
 				patchSet: 'rndevtools.1' as const,
 				upstreamSourceManifestSha256:
-					'bbd7640e2738197be54564d9f9926710a0dc5e13ee674d6e00e48bd5714b6172' as const,
+					'cd8843eca8ac08e7b44fcab27582bc8d76ca29ee80a8334e6873c3c7dd568056' as const,
 				patchSha256:
-					'99703cfc6fa2bddf360f364b115edd0f235df82282e3e809daff543641a472f0' as const,
+					'045c1b21248398f066d20766bf178dc307fdee3ca5ef5fcea11f889dcddc1063' as const,
 				vendoredSourceManifestSha256:
-					'887daa4543b0aecaefbdd9c7edb6e46e00205fecaba254c09527579dc84175d2' as const,
+					'f5082751ccb44251861356158fce6a88a5c736dfe52844929db77bacf99af694' as const,
 			},
 			capabilities: {
 				operations: [
@@ -230,7 +230,7 @@ class FakeHelper implements SlimmingHelperProvider {
 		}))
 	);
 	listProfiles = vi.fn(async () => ({
-		catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+		catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 		categories: [
 			{
 				id: 'telemetry',

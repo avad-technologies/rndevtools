@@ -661,6 +661,8 @@ export class SupabaseStackStore {
 		options: Readonly<{
 			sessionCwd?: string;
 			stackIds?: readonly string[];
+			/** Explicit down also releases the caller's cwd keepalive on a lane-only stack. */
+			releaseUnheldTargets?: boolean;
 		}> = {}
 	): Promise<readonly string[]> {
 		const now = this.#now();
@@ -672,7 +674,22 @@ export class SupabaseStackStore {
 				const kept = record.holds.filter(
 					(hold) => !holdBelongsTo(hold, record, holder, options.sessionCwd)
 				);
-				if (kept.length === record.holds.length) continue;
+				if (kept.length === record.holds.length) {
+					if (
+						!options.releaseUnheldTargets ||
+						!only?.has(record.id) ||
+						kept.length > 0
+					)
+						continue;
+					// Repeating down must not keep moving the stop deadline.
+					if (
+						record.releasedAt !== undefined &&
+						record.releasedBy?.holder.kind === holder.kind &&
+						record.releasedBy.holder.sessionId === holder.sessionId &&
+						record.releasedBy.sessionCwd === options.sessionCwd
+					)
+						continue;
+				}
 				record.holds = kept;
 				if (kept.length === 0) {
 					record.releasedAt = now;

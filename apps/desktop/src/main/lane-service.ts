@@ -75,6 +75,7 @@ import {
 } from './supabase/service-ports';
 
 const HEALTH_POLL_INTERVAL_MS = 500;
+const DEV_CLIENT_OPEN_RETRY_DELAY_MS = 1_000;
 const RECONCILE_INTERVAL_MS = 5_000;
 /** How long a settled device request stays listed for the agent that made it. */
 const DEVICE_REQUEST_TTL_MS = 30 * 60_000;
@@ -348,6 +349,9 @@ export class LaneService {
 	readonly #maxWorkers: number;
 	readonly #backends: LaneBackendPort | undefined;
 	readonly #now: () => number;
+	readonly #onMetroStop:
+		| ((lane: Lane, reason: string) => Promise<void>)
+		| undefined;
 	readonly #listeners = new Set<LaneListener>();
 	/** The worktrees' Supabase projects as last published. */
 	#publishedBackendsKey = '';
@@ -383,6 +387,7 @@ export class LaneService {
 		backends,
 		holds,
 		deviceAccess,
+		onMetroStop,
 		now = Date.now,
 	}: {
 		store: LaneStore;
@@ -413,6 +418,8 @@ export class LaneService {
 		 * Metro or relaunches its dev client.
 		 */
 		deviceAccess?: LaneDeviceAccessPort;
+		/** Persist an intentional stop before signalling Metro. Logging failure cannot prevent cleanup. */
+		onMetroStop?: (lane: Lane, reason: string) => Promise<void>;
 		now?: () => number;
 	}) {
 		this.#store = store;
@@ -426,6 +433,7 @@ export class LaneService {
 		this.#backends = backends;
 		this.#holds = holds;
 		this.#deviceAccess = deviceAccess;
+		this.#onMetroStop = onMetroStop;
 		this.#now = now;
 		this.#updatedAt = now();
 	}
@@ -1381,6 +1389,10 @@ export class LaneService {
 		signal: AbortSignal
 	): Promise<Lane> {
 		let lane = existing;
+		// Retrying an existing lane must validate and honor --slim too.
+		const slimRequest = input.slimProfileId
+			? this.#slimRequest(input.slimProfileId)
+			: undefined;
 		// Only the lane's own Metro counts as alive: a packager answering on the
 		// port may be another worktree's, which is no reason to skip a respawn.
 		const metroAlive = this.#isMetroRunning(lane);
@@ -1395,6 +1407,40 @@ export class LaneService {
 				);
 			}
 			reservation.port = lane.port;
+		}
+		const inventory = await this.#simulator.refresh();
+		const device = inventory.devices.find(
+			(candidate) => candidate.udid === lane.simulatorUdid
+		);
+		if (!device?.isAvailable)
+			throw new Error(
+				'The Simulator is not available in the current inventory.'
+			);
+		if (device.state !== 'booted') {
+			await this.#runSimulatorAction(
+				{
+					actionId: `lane-boot-${randomUUID()}`,
+					kind: 'device.boot',
+					udid: lane.simulatorUdid,
+				},
+				signal
+			);
+		}
+		if (slimRequest) {
+			const slim = await this.#applySlim(
+				lane.simulatorUdid,
+				slimRequest,
+				input.agent,
+				signal
+			);
+			const current = this.#store.get(lane.id);
+			if (!current)
+				throw new Error(
+					`Lane ${lane.id} stopped while its Simulator was being slimmed.`
+				);
+			lane = { ...current, slim };
+			await this.#store.upsert(lane);
+			this.#touch();
 		}
 		const previous = this.#backendRecords.get(lane.id);
 		const policy = this.#backendPolicy(
@@ -1543,15 +1589,46 @@ export class LaneService {
 		// FBSOpenApplicationServiceErrorDomain error; check first and say what to
 		// build. The check only runs when the worktree told us its bundle id.
 		await this.#assertDevClientInstalled(lane, signal);
-		await this.#runSimulatorAction(
-			{
-				actionId: `lane-launch-${randomUUID()}`,
-				kind: 'url.open',
-				udid: lane.simulatorUdid,
-				url: target,
-			},
-			signal
-		);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			if (signal.aborted) throw new Error('Lane operation cancelled.');
+			try {
+				await this.#runSimulatorAction(
+					{
+						actionId: `lane-launch-${randomUUID()}`,
+						kind: 'url.open',
+						udid: lane.simulatorUdid,
+						url: target,
+					},
+					signal
+				);
+				break;
+			} catch (error) {
+				// CoreSimulator can time out immediately after a native install.
+				// Reopening our generated dev-client URL is safe; an arbitrary
+				// app deep link could repeat a user action, so never retry it.
+				if (
+					attempt !== 0 ||
+					url !== undefined ||
+					!(error instanceof Error) ||
+					error.message !== 'xcrun failed with exit code 60.'
+				) {
+					throw error;
+				}
+				if (signal.aborted) throw new Error('Lane operation cancelled.');
+				await sleep(DEV_CLIENT_OPEN_RETRY_DELAY_MS, signal);
+				const current = this.#store.get(laneId);
+				if (
+					!current ||
+					current.metroPid !== lane.metroPid ||
+					current.simulatorUdid !== lane.simulatorUdid ||
+					current.port !== lane.port
+				) {
+					throw new Error(
+						'The lane changed before its dev-client launch retry.'
+					);
+				}
+			}
+		}
 		// The checks and the open awaited, and a stop or a Metro restart may
 		// have run meanwhile: write onto the lane as it is now. A lane stopped
 		// mid-launch stays stopped, and a Metro that replaced the one that was
@@ -1590,8 +1667,12 @@ export class LaneService {
 		return launched;
 	}
 
-	async stopLane(laneId: string): Promise<void> {
+	async stopLane(
+		laneId: string,
+		reason = 'Explicit lane stop or session release'
+	): Promise<void> {
 		const lane = this.#requireLane(laneId);
+		await this.#onMetroStop?.(lane, reason).catch(() => undefined);
 		if (lane.metroPid !== undefined) {
 			try {
 				await this.#metro.stop(
@@ -1775,7 +1856,10 @@ export class LaneService {
 				hold.releaseAt !== undefined &&
 				now >= hold.releaseAt
 			) {
-				await this.stopLane(lane.id).catch(() => undefined);
+				await this.stopLane(
+					lane.id,
+					'Agent session exit grace period elapsed'
+				).catch(() => undefined);
 				changed = true;
 				continue;
 			}
@@ -1854,7 +1938,26 @@ export class LaneService {
 				errors.push(`${root}: ${safeErrorText(error)}`);
 			}
 		}
-		this.#worktreeCache = worktrees
+		// This bounded listing also drives backend discovery. Never let a large
+		// unrelated repository push active lanes or registered main checkouts
+		// out of it and make their existing stacks look untracked.
+		const activePaths = new Set(
+			this.#store.lanes().map((lane) => path.resolve(lane.worktreePath))
+		);
+		const priority = (worktree: LaneWorktree) =>
+			activePaths.has(path.resolve(worktree.path))
+				? 0
+				: roots.has(worktree.path)
+					? 1
+					: 2;
+		this.#worktreeCache = [
+			...new Map(worktrees.map((w) => [w.path, w])).values(),
+		]
+			.sort(
+				(left, right) =>
+					priority(left) - priority(right) ||
+					left.path.localeCompare(right.path)
+			)
 			.slice(0, 128)
 			.sort((left, right) => left.path.localeCompare(right.path));
 		this.#error = errors.length ? errors.join('\n').slice(0, 4_096) : undefined;
@@ -1940,6 +2043,10 @@ export class LaneService {
 	): Promise<Lane> {
 		const pid = lane.metroPid;
 		if (pid !== undefined && this.#metro.isProcessRunning(pid)) {
+			await this.#onMetroStop?.(
+				lane,
+				'Managed Metro restart to refresh its lane environment'
+			).catch(() => undefined);
 			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
 			await this.#waitForMetroExit(pid, lane.port);
 		}
@@ -2587,7 +2694,7 @@ export class LaneService {
 			return;
 		}
 		throw new Error(
-			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Build it once from the worktree with \`npx expo run:ios --device ${lane.simulatorUdid} --no-bundler\` (the RN Devtools build cache shares the result with other worktrees), then run lane launch again. Metro on port ${lane.port} is still running.`
+			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call native plan for this worktree and Simulator first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --port ${lane.port} --no-bundler\` from the worktree, then run lane launch again. Metro on port ${lane.port} is still running.`
 		);
 	}
 

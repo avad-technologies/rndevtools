@@ -2,16 +2,16 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const SIMSLIM_UPSTREAM_VERSION = 'v0.12.2';
+const SIMSLIM_UPSTREAM_VERSION = 'v0.14.0';
 export const SIMSLIM_UPSTREAM_COMMIT =
-	'6518ba7eab1123d7e1d7797b0e05f51043b42a5b';
+	'7e374b3839d49608a681d1f8b9ca0dd83d35189e';
 export const SIMSLIM_PATCH_SET = 'rndevtools.1';
 export const SIMSLIM_VENDORED_MANIFEST_SHA256 =
-	'887daa4543b0aecaefbdd9c7edb6e46e00205fecaba254c09527579dc84175d2';
+	'f5082751ccb44251861356158fce6a88a5c736dfe52844929db77bacf99af694';
 export const SIMSLIM_UPSTREAM_MANIFEST_SHA256 =
-	'bbd7640e2738197be54564d9f9926710a0dc5e13ee674d6e00e48bd5714b6172';
+	'cd8843eca8ac08e7b44fcab27582bc8d76ca29ee80a8334e6873c3c7dd568056';
 export const SIMSLIM_PATCH_SHA256 =
-	'99703cfc6fa2bddf360f364b115edd0f235df82282e3e809daff543641a472f0';
+	'045c1b21248398f066d20766bf178dc307fdee3ca5ef5fcea11f889dcddc1063';
 
 const PATCHED_UPSTREAM_FILES = new Set([
 	'clone.go',
@@ -23,9 +23,9 @@ const EXPECTED_MODULE_FILE = `module github.com/adalloul0928/rndevtools-sim-help
 
 go 1.27.0
 
-require github.com/mobai-app/simslim v0.12.2
+require github.com/mobai-app/simslim v0.14.0
 `;
-const EXPECTED_VENDOR_MODULES = `# github.com/mobai-app/simslim v0.12.2
+const EXPECTED_VENDOR_MODULES = `# github.com/mobai-app/simslim v0.14.0
 ## explicit; go 1.26
 github.com/mobai-app/simslim
 `;
@@ -127,7 +127,7 @@ export function verifyVendoredSimSlim(helperDirectory) {
 		}
 	}
 	if (
-		upstreamFiles.size !== 18 ||
+		upstreamFiles.size !== 22 ||
 		[...upstreamFiles.keys()].some(
 			(name) => !expected.has(`vendor/github.com/mobai-app/simslim/${name}`)
 		)

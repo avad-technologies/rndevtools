@@ -835,7 +835,7 @@ describe('supabaseOperationBudget', () => {
 				workdir: WORKDIR,
 				exclude: [],
 			}).timeoutMs
-		).toBe(300_000);
+		).toBe(30 * 60_000);
 		expect(
 			supabaseOperationBudget({
 				kind: 'stack.start',
@@ -849,7 +849,7 @@ describe('supabaseOperationBudget', () => {
 				stackId: STACK,
 				capabilities: [],
 			}).timeoutMs
-		).toBe(600_000);
+		).toBe(30 * 60_000);
 		expect(
 			supabaseOperationBudget({ kind: 'db.reset', workdir: WORKDIR }).timeoutMs
 		).toBe(180_000);

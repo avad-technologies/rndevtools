@@ -348,6 +348,32 @@ function recordingSimulator() {
 }
 
 describe('agent command router', () => {
+	it('includes the shared agent check in doctor without failing device diagnostics on scan errors', async () => {
+		const { dependencies } = fixture();
+		const agentSetup = vi.fn(async () => ({
+			version: 1 as const,
+			rulesVersion: 'test',
+			checkedAt: 1,
+			fingerprint: 'c'.repeat(64),
+			project: '',
+			clients: [],
+			findings: [],
+			repairs: [],
+			coverage: [],
+			limitations: [],
+		}));
+		const handler = createAgentCommandRouter({ ...dependencies, agentSetup });
+		await expect(handler({ kind: 'doctor' }, context)).resolves.toMatchObject({
+			agentSetup: { version: 1 },
+		});
+		agentSetup.mockRejectedValueOnce(new Error('private failure detail'));
+		const result = await handler({ kind: 'doctor' }, context);
+		expect(result).toMatchObject({
+			agentSetup: { status: 'not-checked' },
+			broker: { status: 'listening' },
+		});
+		expect(JSON.stringify(result)).not.toContain('private failure detail');
+	});
 	it('projects local doctor and simulator state without host paths', async () => {
 		const { handler } = fixture();
 		const doctor = await handler({ kind: 'doctor' }, context);
@@ -1225,6 +1251,177 @@ describe('agent command router', () => {
 		expect(slimmingActions.at(-1)).not.toHaveProperty('requester');
 	});
 
+	it('returns a durable handle for a slow SimSlim job without cancelling it or leaking its observer', async () => {
+		vi.useFakeTimers();
+		try {
+			const { dependencies, setSlimming } = fixture();
+			const unsubscribe = vi.fn();
+			const cancelJob = vi.fn(() => true);
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				slimming: {
+					...dependencies.slimming,
+					cancelJob,
+					subscribe: () => unsubscribe,
+					runAction: (action: SlimmingAction) => {
+						setSlimming(
+							slimmingStateSchema.parse({
+								...slimmingState(),
+								jobs: [
+									{
+										id: 'slow-slim',
+										actionId: action.actionId,
+										kind: action.kind,
+										status: 'running',
+										progressSequence: 1,
+										phase: 'running',
+										message: 'Rebooting the Simulator.',
+										createdAt: now,
+										currentIndex: 0,
+										total: 1,
+										targets: [
+											{
+												simulatorUdid: UDID,
+												status: 'running',
+												message: 'Rebooting.',
+											},
+										],
+									},
+								],
+							})
+						);
+						return {
+							actionId: action.actionId,
+							accepted: true,
+							jobId: 'slow-slim',
+						};
+					},
+				},
+			});
+			const pending = handler(
+				{
+					kind: 'slimming',
+					operation: 'apply',
+					udids: [UDID],
+					profileId: 'rndevtools-development',
+				},
+				context
+			);
+			await vi.advanceTimersByTimeAsync(20_000);
+			expect(await pending).toMatchObject({
+				completed: false,
+				jobId: 'slow-slim',
+				job: { status: 'running' },
+				next: expect.stringContaining('wait --condition job'),
+			});
+			expect(cancelJob).not.toHaveBeenCalled();
+			expect(unsubscribe).toHaveBeenCalledTimes(1);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['simulator', 'timeout'],
+		['simulator', 'complete'],
+		['simulator', 'cancelled'],
+		['slimming', 'timeout'],
+		['slimming', 'complete'],
+		['slimming', 'cancelled'],
+	] as const)(
+		'bounds %s job observation on %s without cancelling the job',
+		async (source, outcome) => {
+			vi.useFakeTimers();
+			try {
+				const { dependencies, setSimulator, setSlimming } = fixture();
+				const jobId = `${source}-bounded-wait`;
+				const update = (status: 'running' | 'complete') => {
+					const common = {
+						id: jobId,
+						actionId: 'bounded-wait',
+						status,
+						progressSequence: status === 'running' ? 1 : 2,
+						phase: status,
+						message: status,
+						createdAt: now,
+					};
+					if (source === 'simulator') {
+						setSimulator(
+							simulatorStateSchema.parse({
+								...simulatorState(),
+								jobs: [{ ...common, kind: 'device.boot', deviceUdid: UDID }],
+							})
+						);
+					} else {
+						setSlimming(
+							slimmingStateSchema.parse({
+								...slimmingState(),
+								jobs: [
+									{
+										...common,
+										kind: 'profile.apply',
+										currentIndex: 0,
+										total: 1,
+										targets: [{ simulatorUdid: UDID, status, message: status }],
+									},
+								],
+							})
+						);
+					}
+				};
+				update('running');
+				const unsubscribe = vi.fn();
+				const cancelJob = vi.fn(() => true);
+				let publish: () => void = () => undefined;
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: {
+						...dependencies.simulator,
+						cancelJob,
+						subscribe: (listener) => {
+							publish = () => listener(dependencies.simulator.getState());
+							return unsubscribe;
+						},
+					},
+					slimming: {
+						...dependencies.slimming,
+						cancelJob,
+						subscribe: (listener) => {
+							publish = () => listener(dependencies.slimming.getState());
+							return unsubscribe;
+						},
+					},
+				});
+				const controller = new AbortController();
+				const pending = handler(
+					{ kind: 'wait', condition: { kind: 'job', jobId }, timeoutMs: 1_000 },
+					{ ...context, signal: controller.signal }
+				);
+				if (outcome === 'cancelled') {
+					controller.abort();
+					await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+				} else {
+					if (outcome === 'complete') {
+						update('complete');
+						publish();
+					} else {
+						await vi.advanceTimersByTimeAsync(1_000);
+					}
+					expect(await pending).toMatchObject({
+						id: jobId,
+						status: outcome === 'complete' ? 'complete' : 'running',
+					});
+				}
+				expect(cancelJob).not.toHaveBeenCalled();
+				expect(unsubscribe).toHaveBeenCalledTimes(1);
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				vi.useRealTimers();
+			}
+		}
+	);
+
 	it('refuses slimming mutations on a device another session holds before reaching the service', async () => {
 		const { dependencies, slimmingActions } = fixture();
 		const handler = createAgentCommandRouter({
@@ -1433,6 +1630,38 @@ describe('agent command router', () => {
 			};
 			return { port, actions };
 		}
+		function buildLanes(appPath?: string) {
+			const state: LaneState = {
+				revision: 1,
+				updatedAt: now,
+				environments: [...DEFAULT_LANE_ENVIRONMENTS],
+				lanes: [
+					{
+						id: 'lane-11111111-2222-4333-8444-555555555555',
+						worktreePath: '/Users/dev/app',
+						...(appPath ? { appPath } : {}),
+						branch: 'main',
+						simulatorUdid: UDID,
+						environment: 'development',
+						port: 8107,
+						metro: 'ready',
+						logPath: '/Users/dev/lane.log',
+						startedAt: now,
+					},
+				],
+				worktrees: [],
+				repositories: [],
+				deviceRequests: [],
+			};
+			return {
+				getState: () => state,
+				refresh: async () => state,
+				runOperation: async (): Promise<LaneOperationReceipt> => {
+					throw new Error('unused');
+				},
+			};
+		}
+
 		const plan = (cache: 'hit' | 'miss' | 'no-provider') => async () => ({
 			projectRoot: '/Users/dev/app',
 			platform: 'ios' as const,
@@ -1499,9 +1728,7 @@ describe('agent command router', () => {
 			});
 			expect(result).not.toHaveProperty('installed');
 			expect(String(result.recommendation)).toMatch(/^build: /);
-			expect(String(result.recommendation)).toMatch(
-				/expo run:ios --no-bundler/
-			);
+			expect(String(result.recommendation)).toMatch(/lane with operation up/);
 			// Expo CLI starts its own Metro for an explicit Debug configuration,
 			// even with --no-bundler, so the Debug advice leaves the flag out.
 			expect(String(result.recommendation)).not.toMatch(/--configuration/);
@@ -1514,6 +1741,7 @@ describe('agent command router', () => {
 			const handler = createAgentCommandRouter({
 				...dependencies,
 				simulator: port,
+				lanes: buildLanes(),
 				nativePlan: async () => ({
 					...(await plan('miss')()),
 					configuration: 'Release',
@@ -1529,8 +1757,62 @@ describe('agent command router', () => {
 				context
 			)) as Record<string, unknown>;
 			expect(String(result.recommendation)).toMatch(
-				/expo run:ios --configuration Release --no-bundler/
+				/expo run:ios --configuration Release --device .* --port 8107 --no-bundler/
 			);
+		});
+
+		it.each([undefined, '/Users/dev/app/apps/mobile'])(
+			'uses only the target app lane Metro port (%s)',
+			async (appPath) => {
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(appPath),
+					nativePlan: async () => ({
+						...(await plan('miss')()),
+						projectRoot: appPath ?? '/Users/dev/app',
+					}),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: appPath ?? '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result.recommendation).toContain(
+					`expo run:ios --device ${UDID} --port 8107 --no-bundler`
+				);
+				expect(result.recommendation).not.toContain('--configuration Debug');
+			}
+		);
+
+		it('does not borrow a sibling app lane port in a monorepo', async () => {
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: port,
+				lanes: buildLanes('/Users/dev/app/other'),
+				nativePlan: plan('miss'),
+			});
+			const result = (await handler(
+				{
+					kind: 'native',
+					operation: 'plan',
+					configuration: 'Debug',
+					worktreePath: '/Users/dev/app',
+					udid: UDID,
+				},
+				context
+			)) as Record<string, unknown>;
+			expect(result.recommendation).toContain('launch=false');
+			expect(result.recommendation).not.toContain('expo run:ios');
 		});
 
 		it('plans with a device and reports installed state from the Simulator app list', async () => {
@@ -1556,7 +1838,7 @@ describe('agent command router', () => {
 				installed: true,
 				simulatorUdid: UDID,
 			});
-			expect(String(result.recommendation)).toMatch(/^installed: /);
+			expect(String(result.recommendation)).toMatch(/^install: /);
 		});
 
 		it('recommends install on a cache hit that is not yet on the device', async () => {
@@ -1634,7 +1916,7 @@ describe('agent command router', () => {
 			).rejects.toEqual(
 				expect.objectContaining<Partial<AgentCliError>>({
 					code: 'cache_miss',
-					recovery: expect.stringContaining(`--device ${UDID}`),
+					recovery: expect.stringContaining('launch=false'),
 				})
 			);
 			expect(actions.some(({ action }) => action.kind === 'app.install')).toBe(
@@ -1642,13 +1924,13 @@ describe('agent command router', () => {
 			);
 		});
 
-		it('does nothing when the bundle is already installed', async () => {
+		it('refreshes the cached native build even when its bundle is already installed', async () => {
 			const { dependencies } = fixture();
 			const { port, actions } = simulatorWithApps(['com.example.app']);
 			const handler = createAgentCommandRouter({
 				...dependencies,
 				simulator: port,
-				nativePlan: plan('miss'),
+				nativePlan: plan('hit'),
 			});
 			const result = await handler(
 				{
@@ -1660,9 +1942,9 @@ describe('agent command router', () => {
 				},
 				context
 			);
-			expect(result).toMatchObject({ action: 'already-installed' });
+			expect(result).toMatchObject({ action: 'installed-from-cache' });
 			expect(actions.some(({ action }) => action.kind === 'app.install')).toBe(
-				false
+				true
 			);
 		});
 

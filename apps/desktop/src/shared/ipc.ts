@@ -1,4 +1,6 @@
 export const IPC_CHANNELS = {
+	getFailureState: 'rndevtools-desktop:failures:get-state',
+	runFailureOperation: 'rndevtools-desktop:failures:run-operation',
 	getBootstrap: 'rndevtools-desktop:get-bootstrap',
 	stateChanged: 'rndevtools-desktop:state-changed',
 	runAction: 'rndevtools-desktop:run-action',

@@ -2815,6 +2815,34 @@ describe('SupabaseEngine lifecycle', () => {
 });
 
 describe('SupabaseEngine branch follow', () => {
+	it('follows once while the agent keeps working in the same checkout', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('repo');
+		h.agents.sessions = [fakeSession('session-a', repo)];
+		const lane = fakeLane({ worktreePath: repo });
+		h.lanes.lanes = [lane];
+		await h.engine.start();
+		await h.engine.settle();
+		await agentUp(h, repo);
+		const oldId = await h.identity(repo);
+		h.engine.attachLane({
+			laneId: lane.id,
+			stackId: oldId,
+			worktreePath: repo,
+		});
+		await h.checkout(repo, 'feat-x');
+		await h.advance(46_000);
+		const newId = await h.identity(repo);
+		expect(h.cli.stacks.get(newId)?.running).toBe(true);
+		expect(h.engine.attachment(lane.id)?.stackId).toBe(newId);
+		const restarts = h.lanes.metroRestarts.length;
+		const stops = h.cli.count('stack stop');
+		expect(restarts).toBeGreaterThan(0);
+		await h.advance(5 * 60_000);
+		expect(h.lanes.metroRestarts).toHaveLength(restarts);
+		expect(h.cli.count('stack stop')).toBe(stops);
+	});
+
 	it('follows a held worktree to its new branch once HEAD settles for 30 s', async () => {
 		const h = await createEngineHarness({ enabled: true, start: false });
 		const repo = await h.repository('repo');
@@ -3184,7 +3212,7 @@ describe('SupabaseEngine lane holds', () => {
 		expect(atRoot?.cwdKeepers).toEqual([]);
 		expect(atRoot?.clocks).toEqual({});
 
-		// From a sibling checkout the holder is gone, on a clock for that lane.
+		// A recent thread in a sibling checkout does not prove this holder exited.
 		h.agents.sessions = [fakeSession('5d1b8f40-codex', `${repo}-2`, 'codex')];
 		await h.engine.reconcileHolds();
 		const sibling = h.engine.holdsOf(stackId);
@@ -3193,9 +3221,15 @@ describe('SupabaseEngine lane holds', () => {
 				live: false,
 			}
 		);
-		expect(Object.keys(sibling?.clocks ?? {})).toEqual([
-			`codex:${synthetic.sessionId}@${repo}`,
-		]);
+		expect(sibling?.clocks).toEqual({});
+		expect(sibling?.autoStopAt).toBeUndefined();
+		h.agents.sessions = [];
+		h.clock.now += 24 * 60 * 60_000;
+		await h.engine.reconcileHolds();
+		expect(h.engine.holdsOf(stackId)?.clocksPaused).toBe(true);
+		expect(h.engine.holdsOf(stackId)?.autoStopAt).toBeUndefined();
+		expect(h.cli.stacks.get(stackId)?.running).toBe(true);
+		expect(h.cli.count('stack stop')).toBe(0);
 	});
 });
 

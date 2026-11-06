@@ -351,6 +351,28 @@ describe('SupabaseStackStore', () => {
 		const started = await stacks.applyRelease(hex(1), { at: NOW });
 		expect(started?.releasedAt).toBe(NOW);
 	});
+	it('persists an explicit cwd release only for named unheld targets', async () => {
+		const directory = await root();
+		const stacks = stackStore(directory);
+		await stacks.load();
+		await stacks.upsertRecord(record(1));
+		await stacks.upsertRecord(record(2));
+		const holder = { kind: 'codex', sessionId: 'thread-1' } as const;
+		expect(await stacks.releaseHolder(holder)).toEqual([]);
+		expect(
+			await stacks.releaseHolder(holder, { releaseUnheldTargets: true })
+		).toEqual([]);
+		expect(
+			await stacks.releaseHolder(holder, {
+				stackIds: [hex(1)],
+				releaseUnheldTargets: true,
+			})
+		).toEqual([hex(1)]);
+		const restarted = stackStore(directory);
+		await restarted.load();
+		expect(restarted.record(hex(1))?.releasedBy).toEqual({ holder });
+		expect(restarted.record(hex(2))?.releasedBy).toBeUndefined();
+	});
 
 	it('pins and unpins, starting the linger only when nothing else holds it', async () => {
 		const directory = await root();

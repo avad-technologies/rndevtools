@@ -3,6 +3,10 @@ import { access, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { IpcMainInvokeEvent } from 'electron';
 import type {
+	AgentSetupRequest,
+	AgentSetupResult,
+} from '../shared/agent-setup-protocol';
+import type {
 	SimulatorOnboardingOperation,
 	SimulatorOnboardingReceipt,
 } from '../shared/simulator-protocol';
@@ -98,6 +102,7 @@ type SimulatorOnboardingIpcDependencies = {
 	revealAgentCli: () => Promise<void>;
 	/** Runs `rndevtools setup` and returns its per-file outcome lines. */
 	setupAgentCli: () => Promise<string[]>;
+	checkAgentSetup?: (request: AgentSetupRequest) => Promise<AgentSetupResult>;
 };
 
 function failed(
@@ -119,6 +124,7 @@ export function createSimulatorOnboardingIpcHandlers({
 	openPrivacySettings,
 	revealAgentCli,
 	setupAgentCli,
+	checkAgentSetup,
 }: SimulatorOnboardingIpcDependencies) {
 	return {
 		runOperation: async (
@@ -128,6 +134,20 @@ export function createSimulatorOnboardingIpcHandlers({
 			assertTrustedRenderer(event);
 			const operation = simulatorOnboardingOperationSchema.parse(value);
 			try {
+				if (operation.kind === 'agentCli.check') {
+					if (!checkAgentSetup)
+						throw new Error(
+							'Agent setup checks are unavailable in this build.'
+						);
+					const agentCheck = await checkAgentSetup(operation.request);
+					return simulatorOnboardingReceiptSchema.parse({
+						actionId: operation.actionId,
+						kind: operation.kind,
+						completed: !agentCheck.cancelled,
+						cancelled: agentCheck.cancelled,
+						agentCheck,
+					});
+				}
 				if (operation.kind === 'toolchain.selectXcode') {
 					const applicationPath = await selectXcodeApplication(event);
 					if (!applicationPath) {

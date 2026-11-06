@@ -1217,6 +1217,88 @@ describe('LaneService', () => {
 			});
 		}
 
+		it.each([
+			{ failures: 1, code: 60, url: undefined, attempts: 2, completed: true },
+			{ failures: 2, code: 60, url: undefined, attempts: 2, completed: false },
+			{ failures: 1, code: 61, url: undefined, attempts: 1, completed: false },
+			{
+				failures: 1,
+				code: 60,
+				url: 'checkout/cart',
+				attempts: 1,
+				completed: false,
+			},
+		])(
+			'bounds default dev-client launch recovery: $code / $failures / $url',
+			async ({ failures, code, url, attempts, completed }) => {
+				const started = await startLane();
+				const run = simulator.runAction;
+				let opens = 0;
+				simulator.runAction = (action) => {
+					if (action.kind === 'url.open' && opens++ < failures) {
+						simulator.failNext = `xcrun failed with exit code ${code}.`;
+					}
+					return run(action);
+				};
+				const result = await service.runOperation({
+					actionId: 'recover-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+					...(url ? { url } : {}),
+				});
+				expect(result.completed).toBe(completed);
+				expect(opens).toBe(attempts);
+				expect(metro.started).toHaveLength(1);
+				expect(service.getState().lanes[0]?.metroPid).toBe(
+					started.lane?.metroPid
+				);
+				if (!completed)
+					expect(result.error).toBe(`xcrun failed with exit code ${code}.`);
+				const actions = simulator.actions.filter(
+					(action) => action.kind === 'url.open'
+				);
+				expect(new Set(actions.map((action) => action.actionId)).size).toBe(
+					attempts
+				);
+				expect(new Set(actions.map((action) => action.url)).size).toBe(1);
+			}
+		);
+
+		it.each(['stop', 'cancel'] as const)(
+			'does not retry a timed-out launch after %s',
+			async (operation) => {
+				const started = await startLane();
+				const laneId = started.lane?.id as string;
+				const controller = new AbortController();
+				const run = simulator.runAction;
+				simulator.runAction = (action) => {
+					if (action.kind === 'url.open')
+						simulator.failNext = 'xcrun failed with exit code 60.';
+					return run(action);
+				};
+				const result = service
+					.launchLane(laneId, undefined, undefined, controller.signal)
+					.then(
+						() => 'unexpected success',
+						(error: unknown) =>
+							error instanceof Error ? error.message : String(error)
+					);
+				await vi.waitFor(() =>
+					expect(
+						simulator.actions.some((action) => action.kind === 'url.open')
+					).toBe(true)
+				);
+				if (operation === 'stop') await service.stopLane(laneId);
+				else controller.abort();
+				expect(await result).toMatch(
+					operation === 'stop' ? /changed before.*retry/ : /cancelled/
+				);
+				expect(
+					simulator.actions.filter((action) => action.kind === 'url.open')
+				).toHaveLength(1);
+			}
+		);
+
 		it('does not bring back a lane stopped while its dev client opened', async () => {
 			const started = await startLane();
 			const laneId = started.lane?.id as string;
@@ -1499,6 +1581,41 @@ describe('LaneService', () => {
 		await service.refresh();
 		await service.runOperation({ actionId: 'op-r', kind: 'lane.refresh' });
 		expect(asked).toEqual([false, true]);
+	});
+
+	it('retains both active lanes and registered roots when discovery exceeds its bound', async () => {
+		for (const [worktreePath, simulatorUdid] of [
+			[WORKTREE, UDID],
+			[OTHER_WORKTREE, OTHER_UDID],
+		] as const) {
+			const receipt = await service.runOperation({
+				actionId: `op-bounded-${simulatorUdid}`,
+				kind: 'lane.start',
+				worktreePath,
+				simulatorUdid,
+				environment: 'development',
+				launch: false,
+			});
+			expect(receipt.completed).toBe(true);
+		}
+		const active = [...worktrees.worktrees];
+		worktrees.worktrees = [
+			...Array.from({ length: 140 }, (_, index) => ({
+				path: `/Users/dev/app/archive/${index}`,
+				branch: `archive-${index}`,
+				repositoryRoot: REPO,
+				dirty: false,
+			})),
+			...active,
+			...active,
+		];
+		const state = await service.refresh();
+		expect(state.worktrees).toHaveLength(128);
+		expect(new Set(state.worktrees.map((w) => w.path)).size).toBe(128);
+		for (const target of [REPO, WORKTREE, OTHER_WORKTREE]) {
+			expect(state.worktrees.some((w) => w.path === target)).toBe(true);
+		}
+		expect(metro.stopped).toEqual([]);
 	});
 
 	it('surfaces repository discovery errors without hiding the rest of the state', async () => {
@@ -2975,6 +3092,33 @@ describe('LaneService', () => {
 	});
 
 	describe('slimming on lane start', () => {
+		it('honors --slim on an existing lane and rejects an unknown profile before actions', async () => {
+			healthyMetro();
+			const first = await startWithSlim();
+			const second = await startWithSlim();
+			expect(second.completed).toBe(true);
+			expect(second.lane?.id).toBe(first.lane?.id);
+			expect(second.lane?.slim).toMatchObject({
+				status: 'applied',
+				jobId: 'slimming-2',
+			});
+			expect(slimming.actions).toHaveLength(2);
+			expect(metro.started).toHaveLength(1);
+			const previousActions = simulator.actions.length;
+			const bad = await service.runOperation({
+				actionId: 'retry-bad-profile',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+				slimProfileId: 'nope',
+			});
+			expect(bad.completed).toBe(false);
+			expect(bad.error).toMatch(/Unknown SimSlim profile/);
+			expect(simulator.actions).toHaveLength(previousActions);
+			expect(slimming.actions).toHaveLength(2);
+		});
 		it('applies the profile during start, boot then slim then Metro, with the lane agent as requester', async () => {
 			healthyMetro();
 			const receipt = await startWithSlim({
@@ -3118,7 +3262,7 @@ describe('LaneService', () => {
 			expect(receipt.completed).toBe(false);
 			expect(receipt.error).toMatch(/com\.example\.app is not installed/);
 			expect(receipt.error).toMatch(
-				new RegExp(`expo run:ios --device ${UDID} --no-bundler`)
+				new RegExp(`expo run:ios --device ${UDID} --port 8100 --no-bundler`)
 			);
 			expect(receipt.error).toMatch(/Metro on port 8100 is still running/);
 			expect(simulator.actions.map((action) => action.kind)).toEqual([

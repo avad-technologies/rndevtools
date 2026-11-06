@@ -337,13 +337,15 @@ describe('AgentService', () => {
 		expect(service.access(B, claude).allowed).toBe(false);
 		expect(service.getState().claims).toHaveLength(1);
 
-		// Once Codex can be seen and codex-9 is still missing, the clock starts
-		// and the hold opens up after the grace period.
+		// A readable recent-thread list still cannot prove this session exited.
 		codexDiscovery = 'ok';
 		await service.refresh();
 		expect(service.access(B, claude).allowed).toBe(false);
-		clock += DEVICE_HOLD_GRACE_MS;
-		expect(service.access(B, claude).allowed).toBe(true);
+		clock += 24 * 60 * 60_000;
+		await service.refresh();
+		expect(service.access(B, claude).allowed).toBe(false);
+		expect(service.holds().get(B)?.releaseAt).toBeUndefined();
+		expect(service.getState().claims).toHaveLength(1);
 	});
 
 	it('keeps clocks for holders other resources name, and answers their liveness', async () => {
@@ -670,22 +672,23 @@ describe('AgentService holds through the lane reconcile', () => {
 			holder: synthetic,
 			holderLive: true,
 		});
-		// The id is shared, but nobody works in the other app: its clock runs.
+		// No recent activity is an unknown session, not a terminated owner.
 		expect(agents.holds().get(B)).toMatchObject({
 			holderLive: false,
-			abandonedSince: now,
 		});
 
 		clock += DEVICE_HOLD_GRACE_MS;
 		await tick();
-		expect(laneIds()).toEqual([LANE_A]);
+		expect(laneIds()).toEqual([LANE_A, LANE_B]);
 
-		// Once the Codex thread works elsewhere, the remaining lane follows.
+		// Moving out of the activity window never releases either hold.
 		sessions = [session('codex', 'thread-1', '/Users/dev/elsewhere')];
 		await tick();
 		clock += DEVICE_HOLD_GRACE_MS;
 		await tick();
-		expect(laneIds()).toEqual([]);
+		expect(laneIds()).toEqual([LANE_A, LANE_B]);
+		expect(metro.stopped).toEqual([]);
+		expect(agents.holds().get(B)?.releaseAt).toBeUndefined();
 	});
 
 	it('keeps a monorepo app lane while a session of its synthetic holder works from the checkout root', async () => {
@@ -719,15 +722,15 @@ describe('AgentService holds through the lane reconcile', () => {
 
 	it('pauses the clocks of an agent kind while its discovery is unavailable', async () => {
 		await start([
-			lane(LANE_A, A, APP, { kind: 'codex', sessionId: 'thread-1' }),
+			lane(LANE_A, A, APP, { kind: 'claude', sessionId: 'thread-1' }),
 		]);
 		await tick();
 		const missingAt = clock;
 
-		// Four minutes in, Codex can no longer be seen: the clock pauses with six
+		// Four minutes in, Claude can no longer be seen: the clock pauses with six
 		// minutes of grace left, however long the outage lasts.
 		clock = missingAt + 4 * 60_000;
-		discovery = { claude: 'ok', codex: 'unavailable' };
+		discovery = { claude: 'unavailable', codex: 'ok' };
 		await tick();
 		clock += 3 * DEVICE_HOLD_GRACE_MS;
 		await tick();
@@ -737,7 +740,7 @@ describe('AgentService holds through the lane reconcile', () => {
 			releaseAt: clock + 6 * 60_000,
 		});
 
-		// Codex is visible again and the thread is still gone: the clock resumes.
+		// Claude is visible again and the thread is still gone: the clock resumes.
 		discovery = { claude: 'ok', codex: 'ok' };
 		await tick();
 		clock += 6 * 60_000 - 1;
@@ -768,10 +771,36 @@ describe('AgentService holds through the lane reconcile', () => {
 
 		discovery = { claude: 'ok', codex: 'ok' };
 		await tick();
-		expect(agents.holds().get(A)).toMatchObject({
-			abandonedSince: clock,
-			releaseAt: clock + DEVICE_HOLD_GRACE_MS,
-		});
+		expect(agents.holds().get(A)?.releaseAt).toBeUndefined();
+		clock += 24 * 60 * 60_000;
+		await tick();
+		expect(laneIds()).toEqual([LANE_A, LANE_B]);
+		expect(metro.stopped).toEqual([]);
+	});
+
+	it('retains both idle Codex lanes through 24 hours and two desktop restarts', async () => {
+		const owner = { kind: 'codex' as const, sessionId: 'idle-thread' };
+		sessions = [session('codex', owner.sessionId, APP)];
+		await start([
+			lane(LANE_A, A, APP, owner),
+			lane(LANE_B, B, OTHER_APP, owner, 8_101),
+		]);
+		await tick();
+		sessions = [];
+		for (const elapsed of [41 * 60_000, 24 * 60 * 60_000]) {
+			clock += elapsed;
+			await tick();
+			expect(laneIds()).toEqual([LANE_A, LANE_B]);
+			expect(metro.stopped).toEqual([]);
+			await agents.stop();
+			await lanes.stop();
+			await start([]);
+			await tick();
+			expect(laneIds()).toEqual([LANE_A, LANE_B]);
+			expect(agents.holds().get(A)?.releaseAt).toBeUndefined();
+			expect(agents.holds().get(B)?.releaseAt).toBeUndefined();
+			expect(metro.stopped).toEqual([]);
+		}
 	});
 
 	it('drops the clock of a holder nothing names any more', async () => {

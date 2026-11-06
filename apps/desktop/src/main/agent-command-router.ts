@@ -12,6 +12,7 @@ import type {
 	AgentOperation,
 	AgentState,
 } from '../shared/agent-protocol';
+import type { AgentSetupReport } from '../shared/agent-setup-protocol';
 import {
 	type DeviceAccessDecision,
 	isPathInside,
@@ -69,7 +70,7 @@ import {
 	supabaseDoctorInfoSchema,
 } from '../shared/supabase-protocol';
 import { AgentCliError, type AgentCliHandler } from './agent-cli-service';
-import { TERMINAL_JOB_STATUSES, waitForJob } from './job-wait';
+import { type JobService, TERMINAL_JOB_STATUSES, waitForJob } from './job-wait';
 import { NativeHostResponseError } from './native-host-client';
 import type { NativePlanResult } from './native-plan';
 import { sanitizeSupabaseText } from './supabase/cli-redact';
@@ -221,6 +222,7 @@ export type AgentSupabasePort = Pick<
 >;
 
 export type AgentCommandRouterDependencies = {
+	agentSetup?: () => Promise<AgentSetupReport>;
 	broker: BrokerPort;
 	simulator: SimulatorPort;
 	slimming: SlimmingPort;
@@ -471,7 +473,41 @@ async function runSlimmingAction(
 			retryable: true,
 		});
 	}
-	return await waitForJob(service, receipt.jobId, signal, { abortError });
+	// A mutation may reboot several devices and outlive the socket deadline.
+	// Return its durable job instead of losing the handle while it runs on.
+	return await waitForAgentJob(service, receipt.jobId, signal, 20_000);
+}
+
+/** A wait timeout ends observation, not the background operation. */
+async function waitForAgentJob<T extends SimulatorJob | SlimmingJob>(
+	service: JobService<T>,
+	jobId: string,
+	signal: AbortSignal,
+	timeoutMs: number
+): Promise<T> {
+	const observer = new AbortController();
+	try {
+		const settled = await settleBy(
+			waitForJob(service, jobId, AbortSignal.any([signal, observer.signal]), {
+				abortError,
+			}),
+			Date.now() + timeoutMs
+		);
+		if (signal.aborted) throw abortError();
+		if (settled && 'error' in settled) throw settled.error;
+		if (settled && 'value' in settled) return settled.value;
+		const job = service
+			.getState()
+			.jobs.find((candidate) => candidate.id === jobId);
+		if (job) return job;
+		throw new AgentCliError({
+			code: 'job_lost',
+			message: 'The requested job is no longer available.',
+			retryable: true,
+		});
+	} finally {
+		observer.abort();
+	}
 }
 
 function ensureComplete<T extends { status: string; message: string }>(
@@ -1435,6 +1471,7 @@ export function createAgentCommandRouter(
 }
 
 function createRoutes({
+	agentSetup,
 	broker,
 	simulator,
 	slimming,
@@ -1651,14 +1688,28 @@ function createRoutes({
 					plan.configuration === 'Debug'
 						? ''
 						: ` --configuration ${plan.configuration}`;
-				const buildCommand = `npx expo run:ios${configurationFlag}${target ? ` --device ${target.udid}` : ''} --no-bundler`;
+				// Even --no-bundler opens the dev client. Reserve a lane first so
+				// Expo never opens this app against another project's port 8081.
+				const buildLane = lanes
+					?.getState()
+					.lanes.find(
+						(lane) =>
+							laneAppDirectory(lane) === plan.projectRoot &&
+							(!target || lane.simulatorUdid === target.udid) &&
+							lane.metro === 'ready'
+					);
+				const buildCommand = buildLane
+					? `npx expo run:ios${configurationFlag} --device ${buildLane.simulatorUdid} --port ${buildLane.port} --no-bundler`
+					: undefined;
+				const startLaneAdvice =
+					'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.';
 				const recommendation =
-					installed === true
-						? 'installed: the Simulator already has this native build; start or launch a lane.'
-						: plan.cache === 'hit'
-							? target
-								? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
-								: 'cached: a binary for this fingerprint exists; pass --udid to install it.'
+					plan.cache === 'hit'
+						? target
+							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
+							: 'cached: a binary for this fingerprint exists; pass --udid to install it.'
+						: !buildCommand
+							? `build: ${startLaneAdvice}`
 							: plan.cache === 'miss'
 								? `build: no cached binary for this fingerprint; run \`${buildCommand}\` once (the build cache will store it for every other worktree).`
 								: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${buildCommand}\`.`;
@@ -1674,20 +1725,14 @@ function createRoutes({
 				// Installing can replace the dev client a lane runs, so only the
 				// device's holder may.
 				assertDeviceAccess(agents, target.udid, context.agent);
-				if (installed) {
-					return {
-						...plan,
-						simulatorUdid: target.udid,
-						installed: true,
-						action: 'already-installed',
-					};
-				}
+				// app.list proves a bundle exists, not its native fingerprint.
+				// An explicit install must refresh an older binary of that bundle.
 				if (plan.cache !== 'hit' || !plan.artifactPath) {
 					throw new AgentCliError({
 						code: 'cache_miss',
 						message: `No cached binary for fingerprint ${plan.fingerprintHash}; build it first.`,
 						retryable: false,
-						recovery: buildCommand,
+						recovery: buildCommand ?? startLaneAdvice,
 					});
 				}
 				const job = ensureComplete(
@@ -1712,6 +1757,13 @@ function createRoutes({
 				};
 			}
 			case 'doctor': {
+				const setupCheck = agentSetup
+					? await agentSetup().catch(() => ({
+							status: 'not-checked',
+							message:
+								'Agent configuration could not be checked. Open Agents → Setup checks to retry.',
+						}))
+					: undefined;
 				const [simulatorState, slimmingState] = await Promise.all([
 					simulator.refresh(),
 					slimming.refresh(),
@@ -1723,6 +1775,7 @@ function createRoutes({
 					.map(compactConnectedSession);
 				return {
 					broker: brokerSummary,
+					...(setupCheck ? { agentSetup: setupCheck } : {}),
 					connectedDevices: connectedSessions.length,
 					connectedSessions,
 					simulator: simulatorState.capability,
@@ -1827,17 +1880,23 @@ function createRoutes({
 						.getState()
 						.jobs.find((job) => job.id === jobId);
 					if (simulatorJob) {
-						return await waitForJob(simulator, jobId, context.signal, {
-							abortError,
-						});
+						return await waitForAgentJob(
+							simulator,
+							jobId,
+							context.signal,
+							command.timeoutMs
+						);
 					}
 					const slimmingJob = slimming
 						.getState()
 						.jobs.find((job) => job.id === jobId);
 					if (slimmingJob) {
-						return await waitForJob(slimming, jobId, context.signal, {
-							abortError,
-						});
+						return await waitForAgentJob(
+							slimming,
+							jobId,
+							context.signal,
+							command.timeoutMs
+						);
 					}
 					throw new AgentCliError({
 						code: 'target_not_found',
@@ -2074,11 +2133,17 @@ function createRoutes({
 						assertDeviceAccess(agents, udid, context.agent);
 					}
 				}
-				const job = ensureComplete(
-					await runSlimmingAction(slimming, action, context.signal)
-				);
+				const job = await runSlimmingAction(slimming, action, context.signal);
+				if (TERMINAL_JOB_STATUSES.has(job.status)) ensureComplete(job);
 				const state = slimming.getState();
 				return {
+					completed: job.status === 'complete',
+					...(job.status === 'complete'
+						? {}
+						: {
+								jobId: job.id,
+								next: `SimSlim is still running. Use wait --condition job --job-id ${job.id} to follow it; do not start another mutation.`,
+							}),
 					job,
 					statusBySimulator: Object.fromEntries(
 						canonicalUdids.map((udid) => [udid, state.statusBySimulator[udid]])

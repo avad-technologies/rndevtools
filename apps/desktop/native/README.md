@@ -5,7 +5,7 @@ downloads code, opens a network listener, or exposes a shell. Every protocol
 operation and CLI flag is explicitly allowlisted and bounded.
 
 - `rndevtools-sim-helper` is a first-party Go protocol adapter linked to an exact,
-  checked-in snapshot of SimSlim v0.12.2. It discovers the default iOS Simulator
+  checked-in snapshot of SimSlim v0.14.0. It discovers the default iOS Simulator
   device set, reads managed launchd overrides, projects the pinned service
   catalog, previews and verifies profiles, runs capability diagnostics, and
   performs compatibility-gated experimental apply, restore, and undo
@@ -31,7 +31,7 @@ operation and CLI flag is explicitly allowlisted and bounded.
   CodeDirectory identity before delivering an operation/UDID/exact-request-bound one-shot
   authorization on inherited FD 3. A separately marked private control pipe on FD 4
   requests graceful cancellation and gives helper rollback its full bounded grace period.
-- `rndevtools` is a standard-library-only Go command-line client for local
+- `rndevtools` is a Go command-line client for local
   agents and scripts. It connects only to the current user's private RN Devtools
   Devtools Unix socket, sends one bounded `rndevtools/1` command, receives
   one bounded response, and exits. It has no shell or network-discovery path.
@@ -108,9 +108,12 @@ pnpm --filter @rndevtools/desktop native:check
 
 Every check selection first fails when `HelperVersion.swift` does not declare
 the `package.json` version. The Go gate runs formatting, vet, race tests, a
-hermetic two-module dependency check for the Simulator helper,
-standard-library-only enforcement for the agent CLI, exact vendored-file
-SHA-256 verification, and `govulncheck` with module downloads disabled. The
+pinned vendored-module checks for both Go binaries, exact SimSlim vendored-file
+SHA-256 verification, and `govulncheck` with module downloads disabled.
+The agent CLI vendors go-toml v2.4.3; update it with `go get` and `go mod vendor`
+from `native/rndevtools-cli`, then update the module pin in the check script and
+its license notice. Packaging and validation use `-mod=vendor` with
+`GOPROXY=off`, including on a Mac without a populated Go module cache. The
 Swift gate runs strict formatting and package tests.
 
 Generated binaries live under `build/native/mac-{arm64,x64}` and are ignored by

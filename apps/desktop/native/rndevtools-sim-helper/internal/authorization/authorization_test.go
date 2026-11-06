@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -54,6 +55,77 @@ func TestInheritedAuthorizationAcceptsOnlyDeadlineBoundPipes(t *testing.T) {
 	defer writePipe.Close()
 	if reader := inheritedFDReader(readPipe, time.Now().Add(time.Second)); reader == nil {
 		t.Fatal("anonymous inherited pipe unexpectedly rejected")
+	}
+}
+
+func TestRejectedAuthorizationDescriptorDoesNotAcquireFileOwnership(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "unrelated-descriptor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	fd := int(file.Fd())
+	if inheritedDescriptorReader(fd, time.Now().Add(time.Second)) != nil {
+		t.Fatal("accepted a regular file")
+	}
+	if inheritedDescriptorReader(-1, time.Now().Add(time.Second)) != nil {
+		t.Fatal("accepted an absent descriptor")
+	}
+	// A discarded os.NewFile wrapper used to close the caller's descriptor
+	// during GC, or close another resource that subsequently reused its number.
+	for range 5 {
+		runtime.GC()
+		runtime.Gosched()
+	}
+	var metadata syscall.Stat_t
+	if err := syscall.Fstat(fd, &metadata); err != nil {
+		t.Fatalf("rejected reader closed an unrelated descriptor: %v", err)
+	}
+	runtime.KeepAlive(file)
+}
+
+func TestInheritedAuthorizationReaderOwnsOnlyItsDuplicate(t *testing.T) {
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readPipe.Close()
+	defer writePipe.Close()
+	inherited := int(readPipe.Fd())
+	if err := syscall.SetNonblock(inherited, true); err != nil {
+		t.Fatal(err)
+	}
+	reader := inheritedDescriptorReader(inherited, time.Now().Add(time.Second))
+	owned, ok := reader.(*os.File)
+	if !ok {
+		t.Fatal("valid pipe was not accepted")
+	}
+	raw, err := owned.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Control(func(fd uintptr) {
+		if int(fd) == inherited {
+			t.Error("reader took ownership of the inherited descriptor")
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writePipe.Write([]byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	var one [1]byte
+	if _, err := owned.Read(one[:]); err != nil || one[0] != 'a' {
+		t.Fatalf("duplicate cannot read authorization: %v", err)
+	}
+	if err := owned.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writePipe.Write([]byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPipe.Read(one[:]); err != nil || one[0] != 'b' {
+		t.Fatalf("closing duplicate affected inherited descriptor: %v", err)
 	}
 }
 

@@ -9,6 +9,7 @@ import {
 	Unlink,
 } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { AgentSetupCheck } from '@/components/agent-setup-check';
 import { AgentGlyph } from '@/components/lane-ui';
 import { HolderBadge } from '@/components/supabase-ui';
 import {
@@ -150,6 +151,9 @@ export function AgentsView({
 
 	return (
 		<div className="agents-view panel-scroll">
+			<Disclosure title="Agent setup checks" defaultOpen>
+				<AgentSetupCheck />
+			</Disclosure>
 			<div className="agents-toolbar">
 				<p className="sim-inline-note">
 					{backendsShown
@@ -271,7 +275,7 @@ export function AgentsView({
 														}
 													>
 														{viaLabel(attachment.via)}
-														{!attachment.live ? ' · session gone' : ''}
+														{!attachment.live ? ' · no recent activity' : ''}
 													</Badge>
 													{attachment.note ? (
 														<span className="agent-device-note">

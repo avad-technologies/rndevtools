@@ -89,7 +89,22 @@ type MetroChild = {
 	readonly pid?: number | undefined;
 	unref: () => void;
 	once: (event: 'spawn', listener: () => void) => unknown;
-	on: (event: 'error', listener: (error: Error) => void) => unknown;
+	on: {
+		(event: 'error', listener: (error: Error) => void): unknown;
+		(
+			event: 'exit',
+			listener: (code: number | null, signal: NodeJS.Signals | null) => void
+		): unknown;
+	};
+};
+
+export type MetroExit = {
+	logPath?: string;
+	pid: number;
+	port: number;
+	startedAt: number;
+	code: number | null;
+	signal: NodeJS.Signals | null;
 };
 
 type MetroSpawn = (
@@ -266,7 +281,8 @@ async function startMetro(
 	input: MetroLaunchInput,
 	spawnProcess: MetroSpawn,
 	inherited: NodeJS.ProcessEnv,
-	toolPath: ToolPathResolver
+	toolPath: ToolPathResolver,
+	onExit?: (event: MetroExit) => void
 ): Promise<number> {
 	const expoBinary = resolveExpoBinary(input.worktreePath);
 	if (!expoBinary) {
@@ -302,6 +318,18 @@ async function startMetro(
 				env,
 			}
 		);
+		const startedAt = Date.now();
+		child.on('exit', (code, signal) => {
+			if (child.pid)
+				onExit?.({
+					pid: child.pid,
+					logPath: input.logPath,
+					port: input.port,
+					startedAt,
+					code,
+					signal,
+				});
+		});
 		child.unref();
 		try {
 			await spawned(child);
@@ -724,7 +752,7 @@ async function stopMetro(
  * a secret whose name was cut off, which no redactor can recognise
  * afterwards. A tail that is all one line is returned as it is.
  */
-async function readLogTail(
+export async function readLogTail(
 	logPath: string,
 	maxCharacters: number
 ): Promise<string> {
@@ -759,6 +787,7 @@ export function createMetroSupervisor({
 	probe = fetch,
 	environment = process.env,
 	toolPath = resolveToolPath,
+	onExit,
 }: {
 	/** The bounded runner `ps` and `lsof` go through. */
 	runCommand?: CommandRunner;
@@ -768,10 +797,12 @@ export function createMetroSupervisor({
 	environment?: NodeJS.ProcessEnv;
 	/** The PATH Metro gets in place of the inherited one, so it finds Node. */
 	toolPath?: ToolPathResolver;
+	onExit?: (event: MetroExit) => void;
 } = {}): MetroSupervisorPort {
 	return {
 		isPortFree,
-		start: (input) => startMetro(input, spawnProcess, environment, toolPath),
+		start: (input) =>
+			startMetro(input, spawnProcess, environment, toolPath, onExit),
 		isHealthy: (port, pid) => isMetroHealthy(port, pid, probe, runCommand),
 		isProcessRunning,
 		stop: (pid, port, appDirectory) =>

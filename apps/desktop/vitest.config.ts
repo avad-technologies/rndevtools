@@ -12,6 +12,9 @@ export default defineConfig({
 		},
 	},
 	test: {
+		// Many suites create git repositories and child processes. Bound
+		// concurrency so real simulator/Metro work can continue on the same Mac.
+		maxWorkers: 4,
 		include: ['*.test.ts', 'src/**/*.test.ts', 'src/**/*.test.tsx'],
 	},
 });

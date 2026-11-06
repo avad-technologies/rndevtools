@@ -3,7 +3,9 @@ package simslim
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -27,9 +29,18 @@ func LoadSlimProfile(path string) (Profile, error) {
 	dec.DisallowUnknownFields()
 	var sp SlimProfile
 	if err := dec.Decode(&sp); err != nil {
-		return Profile{}, fmt.Errorf("parse profile %s: %w", path, err)
+		return Profile{}, parseProfileError(path, err)
 	}
 	return sp.resolve(path)
+}
+
+// parseProfileError explains a profile file that does not decode; an empty
+// file would otherwise only say "EOF".
+func parseProfileError(path string, err error) error {
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("profile %s is empty; write {} for the default profile", path)
+	}
+	return fmt.Errorf("parse profile %s: %w", path, err)
 }
 
 // resolve turns a parsed SlimProfile into the validated Profile it selects.

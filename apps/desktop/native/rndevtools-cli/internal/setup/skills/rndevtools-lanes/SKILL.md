@@ -30,12 +30,14 @@ a private local socket.
 ## Prerequisites
 
 - RN Devtools is running on this Mac (`rndevtools doctor` succeeds).
-- The worktree is a **checkout root** (output of `git worktree list`), has its
-  dependencies installed, and declares `expo.scheme` in `app.json`. Lanes read
+- Pass the absolute **app directory** containing `app.json`, inside a git
+  checkout (the checkout root for a single-app repository). Install its
+  dependencies and declare `expo.scheme` in `app.json`. Lanes read
   the scheme to deep-link the dev client; they never evaluate `app.config.js`.
 - The Expo development client is **already installed** on the Simulator. Lanes
   never trigger a native build. If `rndevtools apps --udid <UDID>` does not list
-  the app, build and install it once (`npx expo run:ios -d <UDID>`) and reuse it.
+  the app, follow `native plan`: reserve a lane first, then use its cached
+  install or its build command with the assigned Metro port.
 
 ## Rules
 
@@ -82,9 +84,11 @@ a private local socket.
   rndevtools release --all              # everything this session holds: lanes stopped, claims dropped
   ```
 
-  A hold whose session has exited is released by the desktop after 10 minutes;
-  the session-end hook that `rndevtools setup` installs releases it at once.
-  Run `release --all` yourself when you finish, so nobody waits those minutes.
+  A Claude hold with a confirmed dead session is released after 10 minutes.
+  Codex’s recent-thread list is not a process-liveness signal: an idle or
+  unlisted Codex chat keeps its lanes and databases until explicit release.
+  Supported session-end hooks release at once. Run `release --all` when the
+  task is finished unless the user wants the lanes left running.
 - **You may slim the devices you hold.** `rndevtools slimming --operation
   apply|undo|restore --udids <UDID>[,...] [--profile-id <id>]` applies a SimSlim
   profile, reverts the last managed change, or restores every managed service.
@@ -172,13 +176,14 @@ rndevtools native --operation plan --worktree "$PWD" --udid <UDID>
 
 The result carries `fingerprintHash`, `cache` (`hit` | `miss` | `no-provider`),
 `installed`, and a one-line `recommendation` that starts with the verb to act
-on:
+on. `installed` only means the bundle exists, not that its native fingerprint
+matches. An explicit cached install refreshes that binary. Expo still opens the
+app with `--no-bundler`, so keep the exact lane port in the build command:
 
 | `recommendation` starts with | Do |
 | --- | --- |
-| `installed:` | Nothing; launch the lane. |
 | `install:` | `rndevtools native --operation install --worktree "$PWD" --udid <UDID>` puts the cached binary on the Simulator in seconds. |
-| `build:` | Run the quoted `npx expo run:ios … --no-bundler` once. The build cache stores the result for every other worktree with the same fingerprint. A first native build compiles CocoaPods and React Native and commonly takes 5–15 minutes; tell the user it is running rather than waiting silently, and do not restart it. If the user asked you not to build, report the exact command instead. |
+| `build:` | If requested, start the lane with `launch=false` and call `native plan` again. Then run the quoted `npx expo run:ios … --port <lane-port> --no-bundler` once. The build cache stores the result for every other worktree with the same fingerprint. A first native build compiles CocoaPods and React Native and commonly takes 5–15 minutes; tell the user it is running rather than waiting silently, and do not restart it. If the user asked you not to build, report the exact command instead. |
 
 A JavaScript-only branch reports the same `fingerprintHash` as the branch it
 came from, so it is a cache hit, never a build. Then:
@@ -250,7 +255,9 @@ rndevtools release --all                               # when the whole task is 
 `lane down` ends one lane and frees its Simulator and port. `release --all`
 ends every lane this session owns, drops its claims, and releases its local
 Supabase stacks (they stop in the background, data kept); it is what the
-session-end hook runs, so a clean exit releases everything even if you forget.
+session-end hook runs when that client emits it. An idle Codex chat is never
+proof of exit; explicitly release when finished unless the user requests
+that the lanes remain running.
 
 ## Report
 

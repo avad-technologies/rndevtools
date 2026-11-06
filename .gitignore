@@ -12,6 +12,8 @@ apps/desktop/build/native/
 
 # Test output
 coverage/
+# Local QA reports, captures, and test binaries can contain host paths.
+/artifacts/
 
 # Local environment
 .env

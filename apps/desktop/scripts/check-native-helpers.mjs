@@ -11,16 +11,19 @@ const goPackages = [
 		directory: resolve(desktopDirectory, 'native', 'rndevtools-sim-helper'),
 		modules: [
 			'github.com/adalloul0928/rndevtools-sim-helper',
-			'github.com/mobai-app/simslim v0.12.2',
+			'github.com/mobai-app/simslim v0.14.0',
 		],
 		name: 'simulator helper',
 		vendored: true,
 	},
 	{
 		directory: resolve(desktopDirectory, 'native', 'rndevtools-cli'),
-		modules: ['github.com/adalloul0928/rndevtools-cli'],
+		modules: [
+			'github.com/adalloul0928/rndevtools-cli',
+			'github.com/pelletier/go-toml/v2 v2.4.3',
+		],
 		name: 'local agent CLI',
-		vendored: false,
+		vendored: true,
 	},
 ];
 const swiftPackage = resolve(
@@ -192,7 +195,7 @@ function allowlistedCheckEnvironment() {
 function declaredVendoredModules(directory, environment) {
 	// Modern Go intentionally rejects `go list -m all` in vendor mode. Read the
 	// main identity and the checked-in go.mod declarations without resolving the
-	// network; vendor/modules.txt is independently covered by the byte manifest.
+	// network. The Simulator helper also anchors every vendor byte in its manifest.
 	const mainModule = capture(
 		'go',
 		['list', '-m'],
@@ -208,7 +211,7 @@ function declaredVendoredModules(directory, environment) {
 		(moduleFile.Retract?.length ?? 0) !== 0
 	) {
 		fail(
-			'The vendored simulator helper cannot use replace, exclude, or retract rules.'
+			'Vendored native helpers cannot use replace, exclude, or retract rules.'
 		);
 	}
 	return [

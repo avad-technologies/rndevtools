@@ -221,7 +221,7 @@ export function createNativePlanRunner({
 		const node = resolveProjectNode(projectRoot, env);
 		if (!node) {
 			throw new Error(
-				'Node was not found for this worktree; install dependencies so @expo/fingerprint can run.'
+				"Node was not found for this worktree. Install the project's Node version and confirm `node --version` works in a new Terminal, then retry; RN Devtools reads your login shell PATH."
 			);
 		}
 		const result = await runProjectNode(

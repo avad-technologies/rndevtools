@@ -48,7 +48,8 @@ const EVERY_AGENT_KIND: ReadonlySet<AgentKind> = new Set([
 function unseenKinds(
 	discovery: Pick<SessionDiscoveryResult, 'claude' | 'codex'>
 ): Set<AgentKind> {
-	const kinds = new Set<AgentKind>(['other']);
+	// Codex reports recent activity only. Absence is never exit evidence.
+	const kinds = new Set<AgentKind>(['other', 'codex']);
 	if (discovery.claude === 'unavailable') kinds.add('claude');
 	if (discovery.codex === 'unavailable') kinds.add('codex');
 	return kinds;
@@ -509,7 +510,11 @@ export class AgentService {
 			);
 			// A claim is a hold; it expires on the same clock as every other hold
 			// so a device never stays claimed after its lane would have released.
-			return liveness.live || inputs.now < liveness.releaseAt;
+			return (
+				liveness.live ||
+				liveness.releaseAt === undefined ||
+				inputs.now < liveness.releaseAt
+			);
 		});
 		if (kept.length !== claims.length) await this.#store.set(kept);
 	}

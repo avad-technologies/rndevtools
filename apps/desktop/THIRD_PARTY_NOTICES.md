@@ -14,8 +14,8 @@ licensed package archive, source maps, or authentication tokens. See
 ## SimSlim
 
 The bundled simulator helper includes and links the complete non-test root Go
-package and license from SimSlim v0.12.2 commit
-`6518ba7eab1123d7e1d7797b0e05f51043b42a5b`, with the separately recorded
+package and license from SimSlim v0.14.0 commit
+`7e374b3839d49608a681d1f8b9ca0dd83d35189e`, with the separately recorded
 patch set `rndevtools.1`. That patch narrows clone process inspection, preserves boot
 state during cancelled disk cleanup, and exports SimSlim's existing launchd
 status parser for the bounded adapter. SimSlim's CLI, GUI, and their unrelated
@@ -50,8 +50,7 @@ SOFTWARE.
 ## Go runtime and standard library
 
 `rndevtools-sim-helper` and `rndevtools` target the Go 1.27 toolchain line and contain
-portions of the Go runtime and standard library. `rndevtools` is original
-first-party code and incorporates no additional third-party module.
+portions of the Go runtime and standard library.
 
 Copyright 2009 The Go Authors.
 
@@ -77,3 +76,32 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## go-toml
+
+`rndevtools` includes go-toml v2.4.3 to validate and edit Codex MCP configuration
+without discarding user settings or treating examples inside strings as tables.
+Source: https://github.com/pelletier/go-toml/tree/v2.4.3
+
+The MIT License (MIT)
+
+go-toml v2
+Copyright (c) 2021 - 2023 Thomas Pelletier
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

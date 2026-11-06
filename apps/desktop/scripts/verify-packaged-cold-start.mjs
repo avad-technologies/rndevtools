@@ -9,6 +9,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isProductDesktopProcess } from './packaged-process-identity.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const desktopDirectory = resolve(scriptDirectory, '..');
@@ -167,21 +168,33 @@ async function waitForRenderer(process_, processExit, timeoutMilliseconds) {
 }
 
 function appProcesses() {
-	return runningProcesses().filter(({ command }) =>
-		command.includes(`${appPath}/Contents/`)
+	return runningProcesses().filter(({ executable }) =>
+		executable.startsWith(`${appPath}/Contents/`)
 	);
 }
 
 function productProcesses() {
-	const bundledProcessMarker = `/${packageManifest.productName}.app/Contents/`;
-	const userDataMarker = `--user-data-dir=${productUserDataDirectory}`;
-	return runningProcesses().filter(
-		({ command }) =>
-			command.includes(bundledProcessMarker) || command.includes(userDataMarker)
+	return runningProcesses().filter(({ command, executable }) =>
+		isProductDesktopProcess(
+			command,
+			executable,
+			packageManifest.productName,
+			productUserDataDirectory
+		)
 	);
 }
 
 function runningProcesses() {
+	const names = spawnSync('/bin/ps', ['-axo', 'pid=,comm='], {
+		encoding: 'utf8',
+	});
+	if (names.status !== 0) fail('Could not inspect process executables.');
+	const executables = new Map(
+		names.stdout.split('\n').flatMap((line) => {
+			const match = line.match(/^\s*(\d+)\s+(.+)$/);
+			return match ? [[Number(match[1]), match[2]]] : [];
+		})
+	);
 	const result = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], {
 		encoding: 'utf8',
 	});
@@ -195,6 +208,7 @@ function runningProcesses() {
 		.map((match) => ({
 			pid: Number(match[1]),
 			ppid: Number(match[2]),
+			executable: executables.get(Number(match[1])) ?? '',
 			command: match[3],
 		}));
 }

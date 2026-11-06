@@ -169,10 +169,10 @@ var toolMeta = map[protocol.Command]meta{
 	protocol.CommandNative: {
 		title: "Plan or install the native app build",
 		description: "operation \"plan\" fingerprints an Expo worktree's native code and reports whether a matching dev-client " +
-			"build is already installed on the Simulator, cached, or must be built, with the exact command in " +
-			"its recommendation (installed: / install: / build:); it builds nothing and takes about two seconds. Call it when lane up reports the dev " +
+			"build is cached or must be built, and whether the bundle exists on the Simulator. A bundle ID alone does not verify its native fingerprint. Follow " +
+			"its recommendation (install: / cached: / build:); it builds nothing and takes about two seconds. Call it when lane up reports the dev " +
 			"client is missing, and before running expo run:ios yourself. operation \"install\" puts a cached " +
-			"build on the Simulator (udid). worktree is the absolute app directory; configuration Debug (default) " +
+			"build on the Simulator (udid), refreshing an older copy of the same bundle. Reserve a lane first when asked, and keep its --port in the build command: --no-bundler still opens the app. worktree is the absolute app directory; configuration Debug (default) " +
 			"or Release. A first native build takes 5-15 minutes; tell the user it is running rather than waiting " +
 			"silently, and do not restart it. If the user asked you not to build, report the command instead.",
 		readOnly: false,

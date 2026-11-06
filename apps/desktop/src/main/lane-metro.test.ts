@@ -126,6 +126,37 @@ describe('Metro launch', () => {
 		});
 	}
 
+	it.each([
+		['exit 17', 17, null],
+		['kill -TERM $$', null, 'SIGTERM'],
+	] as const)(
+		'observes a detached Metro exit from %s',
+		async (body, code, signal) => {
+			const binary = path.join(root, 'node_modules', '.bin', 'expo');
+			await writeFile(binary, `#!/bin/sh\n${body}\n`);
+			await chmod(binary, 0o700);
+			let resolveExit: (event: import('./lane-metro').MetroExit) => void = () =>
+				undefined;
+			const exited = new Promise<import('./lane-metro').MetroExit>(
+				(resolve) => {
+					resolveExit = resolve;
+				}
+			);
+			const metro = createMetroSupervisor({
+				toolPath: inheritedToolPath,
+				onExit: resolveExit,
+			});
+			const pid = await launch(metro);
+			expect(await exited).toMatchObject({
+				pid,
+				port: 8_100,
+				code,
+				signal,
+				startedAt: expect.any(Number),
+			});
+		}
+	);
+
 	it('gives Metro the stripped inherited env, then metroEnv, then laneEnv, then the fixed keys', async () => {
 		const { metro, spawned } = supervisor({
 			PATH: '/usr/bin:/bin',

@@ -196,6 +196,9 @@ function holderLiveness(
 		directory
 	);
 	if (liveness.live) return { live: true };
+	// A Codex thread falling out of the recent-activity list is not an exit.
+	// Do not retain a persisted abandonment clock from an older desktop build.
+	if (liveness.releaseAt === undefined) return { live: false, paused: true };
 	if (input.discovery[holder.kind] === 'unavailable') {
 		if (previous !== undefined) {
 			clocks[key] =

@@ -279,11 +279,31 @@ func writeJSONServers(path string, key string, executable string, extra map[stri
 	default:
 		return change, err
 	}
-	servers, _ := document[key].(map[string]any)
+	servers, valid := document[key].(map[string]any)
+	if _, exists := document[key]; exists && !valid {
+		change.Action = "skip"
+		change.Detail = "the MCP server collection is not an object; fix it by hand, then rerun setup"
+		return change, nil
+	}
 	if servers == nil {
 		servers = map[string]any{}
 	}
 	wanted := serverEntry(executable, extra)
+	if existing, exists := servers["rndevtools"]; exists {
+		previous, valid := existing.(map[string]any)
+		if !valid || previous["url"] != nil {
+			change.Action = "skip"
+			change.Detail = "rndevtools has a custom or invalid transport; keep it or remove that entry before rerunning setup"
+			return change, nil
+		}
+		// Setup owns the bundled executable and its transport, not the
+		// operator's approval lists, enabled state, environment, or extensions.
+		for key, value := range previous {
+			if key != "command" && key != "args" && key != "type" {
+				wanted[key] = value
+			}
+		}
+	}
 	if existing, ok := servers["rndevtools"]; ok && jsonEqual(existing, wanted) {
 		change.Action = "unchanged"
 		change.Detail = "rndevtools MCP server already registered"
@@ -305,48 +325,37 @@ func jsonEqual(a any, b any) bool {
 	return errA == nil && errB == nil && bytes.Equal(left, right)
 }
 
-var codexServerBlock = regexp.MustCompile(`(?ms)^\[mcp_servers\.rndevtools(?:\.[A-Za-z0-9_]+)?\]\n(?:[^\[\n][^\n]*\n|\n)*`)
-
 // codexToolTimeoutSeconds raises Codex's per-call MCP timeout (60 s by
 // default) to the CLI's lane budget, so a cold lane up or Supabase start over
 // MCP is not cut off while the desktop is still working.
 const codexToolTimeoutSeconds = 240
 
-// writeCodexServer edits ~/.codex/config.toml textually: it owns only the
-// `[mcp_servers.rndevtools]` table and leaves every other byte alone.
+// writeCodexServer edits only the managed transport fields. Approval settings,
+// environment, comments, and every other server remain intact across upgrades.
 func writeCodexServer(path string, executable string, write bool) (Change, error) {
 	change := Change{Path: path}
-	block := fmt.Sprintf("[mcp_servers.rndevtools]\ncommand = %s\nargs = [\"mcp\"]\ntool_timeout_sec = %d\n", tomlString(executable), codexToolTimeoutSeconds)
 	raw, err := os.ReadFile(path)
-	var content string
 	switch {
 	case err == nil:
-		content = string(raw)
-		// codexServerBlock matches whole lines. Without a final newline the
-		// table's last line would survive the strip as a stray key in
-		// whatever table comes before ours.
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
-		}
 		change.Action = "update"
 	case errors.Is(err, fs.ErrNotExist):
 		change.Action = "create"
 	default:
 		return change, err
 	}
-	stripped := codexServerBlock.ReplaceAllString(content, "")
-	if stripped != content && strings.Contains(content, block) {
+	next, err := mergeCodexServer(raw, executable)
+	if err != nil {
+		change.Action = "skip"
+		change.Detail = err.Error()
+		return change, nil
+	}
+	if bytes.Equal(next, raw) {
 		change.Action = "unchanged"
 		change.Detail = "rndevtools MCP server already registered"
 		return change, nil
 	}
 	change.Detail = "register the rndevtools MCP server (" + executable + " mcp)"
-	stripped = strings.TrimRight(stripped, "\n")
-	if stripped != "" {
-		stripped += "\n\n"
-	}
-	next := stripped + block
-	return commit(change, path, []byte(next), 0o600, write)
+	return commit(change, path, next, 0o600, write)
 }
 
 // tomlString quotes value as a TOML basic string. Go's %q is close but not
@@ -405,7 +414,7 @@ func quotePath(path string) string {
 // the shape both agents' hook files use.
 func hookDocument(executable string) (preToolUse map[string]any, sessionEnd map[string]any) {
 	preToolUse = map[string]any{
-		"matcher": "Bash",
+		"matcher": `Bash|exec_command|functions\.exec_command`,
 		"hooks": []any{map[string]any{
 			"type":    "command",
 			"command": hookCommand(executable, "pre-tool-use"),
