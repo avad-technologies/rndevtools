@@ -19,6 +19,9 @@ none”) is shown as a warning, not proof of a crash. A disappeared Metro adopte
 from an earlier desktop session has an unknown exit code/signal; the UI says so.
 An OS crash is evidence to investigate, not proof that application code is wrong.
 Reports are associated with a known lane only within its observed lifetime.
+Failed simulator operations use the operation's start time for association, even
+when they finish after the device has moved to another lane. Overlapping or
+unknown lane lifetimes remain unassigned; choose the project explicitly.
 
 ## Investigate or fix through a subscription
 
@@ -34,7 +37,10 @@ to the installed CLI. It does not call a model API or manage API credentials.
 Codex is constrained to ChatGPT login and the OpenAI provider; Claude Code uses
 Claude.ai login settings. Existing managed client policies remain authoritative.
 If subscription login cannot be verified, the action stops with instructions.
-Subscription usage limits still apply.
+Subscription usage limits still apply. If the app's inherited PATH has Node but
+not the selected agent CLI, discovery also checks the login-shell PATH. Terminal
+uses the same home and client configuration directories verified by the login
+check, rather than inheriting different credential locations from its session.
 
 Review findings, changes, and test results in the terminal. Mark the failure
 resolved only after verification. Up to 50 recent task/script pairs are kept in

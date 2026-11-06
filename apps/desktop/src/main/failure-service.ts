@@ -149,9 +149,18 @@ export class FailureService {
 		});
 		this.#contexts = [
 			context,
-			...this.#contexts.filter(
-				(value) => value.id !== lane.id || value.metroPid !== lane.metroPid
-			),
+			...this.#contexts
+				.filter(
+					(value) =>
+						value.id !== lane.id ||
+						value.metroPid !== lane.metroPid ||
+						value.startedAt !== lane.startedAt
+				)
+				.map((value) =>
+					value.id === lane.id && value.endedAt === undefined
+						? { ...value, endedAt: context.startedAt ?? this.#now() }
+						: value
+				),
 		].slice(0, 64);
 	}
 
@@ -167,15 +176,19 @@ export class FailureService {
 			: {};
 	}
 
-	#reportContext(record: FailureRecord): Partial<FailureRecord> {
-		return this.#context(
-			this.#contexts.find(
-				(value) =>
-					value.simulatorUdid === record.simulatorUdid &&
-					(value.startedAt === undefined || record.at >= value.startedAt) &&
-					(value.endedAt === undefined || record.at <= value.endedAt)
-			)
+	#reportContext(
+		record: Pick<FailureRecord, 'at' | 'simulatorUdid'>
+	): Partial<FailureRecord> {
+		// Context order is not evidence: a device can be reused by another project.
+		const matches = this.#contexts.filter(
+			(value) =>
+				value.simulatorUdid === record.simulatorUdid &&
+				value.startedAt !== undefined &&
+				record.at >= value.startedAt &&
+				(value.endedAt === undefined || record.at < value.endedAt)
 		);
+		if (new Set(matches.map((value) => value.id)).size !== 1) return {};
+		return this.#context(matches[0]);
 	}
 
 	#add(record: FailureRecord): boolean {
@@ -192,6 +205,7 @@ export class FailureService {
 			title: failureText(record.title, 240),
 			detail: failureText(record.detail),
 			source: failureText(record.source, 256),
+			...(record.process ? { process: failureText(record.process, 256) } : {}),
 		});
 		if (previous && JSON.stringify(previous) === JSON.stringify(clean))
 			return false;
@@ -289,6 +303,7 @@ export class FailureService {
 			if (
 				!previous ||
 				previous.metroPid !== lane.metroPid ||
+				previous.startedAt !== lane.startedAt ||
 				previous.endedAt !== undefined
 			) {
 				this.#remember(lane);
@@ -327,7 +342,12 @@ export class FailureService {
 			return { ...context, endedAt: this.#now() };
 		});
 		this.#records = this.#records.map((record) => {
-			if (record.project || !record.simulatorUdid) return record;
+			if (
+				record.project ||
+				!record.simulatorUdid ||
+				record.kind === 'operation-failed'
+			)
+				return record;
 			const context = this.#reportContext(record);
 			if (!context.project) return record;
 			changed = true;
@@ -340,14 +360,18 @@ export class FailureService {
 		let changed = false;
 		for (const job of state.jobs) {
 			if (job.status !== 'failed') continue;
-			const lane = this.#contexts.find(
-				(value) => value.simulatorUdid === job.deviceUdid
-			);
+			const at = job.finishedAt ?? this.#now();
+			const context = job.deviceUdid
+				? this.#reportContext({
+						simulatorUdid: job.deviceUdid,
+						at: job.startedAt ?? job.createdAt,
+					})
+				: {};
 			changed =
 				this.#add({
-					...this.#context(lane),
+					...context,
 					id: failureId(`simulator-job:${job.id}`),
-					at: job.finishedAt ?? this.#now(),
+					at,
 					kind: 'operation-failed',
 					severity: 'error',
 					title: 'Simulator operation failed',

@@ -7,13 +7,14 @@ import {
 	lstat,
 	readdir,
 	realpath,
+	stat,
 	unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { FailureRecord, FailureRequest } from '../shared/failure-protocol';
 import { failureText } from './failure-diagnostics';
-import { resolveToolPath } from './lane-tool-path';
+import { readLoginShellPath, resolveToolPath } from './lane-tool-path';
 import { ensurePrivateDirectory, writeFileAtomic } from './private-files';
 
 type HandoffRequest = Extract<FailureRequest, { operation: 'handoff' }>;
@@ -33,6 +34,13 @@ const STRIPPED = [
 	'CLAUDE_CODE_SESSION_ID',
 	'RNDEVTOOLS_AGENT_SESSION_ID',
 ];
+const CONFIG_ENVIRONMENT = [
+	'HOME',
+	'CODEX_HOME',
+	'CLAUDE_CONFIG_DIR',
+	'XDG_CONFIG_HOME',
+	'XDG_DATA_HOME',
+] as const;
 const CLAUDE_SUBSCRIPTION_SETTINGS = JSON.stringify({
 	forceLoginMethod: 'claudeai',
 	apiKeyHelper: '',
@@ -124,6 +132,7 @@ export class FailureHandoff {
 			}) => Promise<boolean>;
 			openTerminal: (script: string) => Promise<void>;
 			toolPath?: typeof resolveToolPath;
+			loginShellPath?: typeof readLoginShellPath;
 			checkLogin?: (
 				client: 'claude' | 'codex',
 				binary: string,
@@ -141,28 +150,44 @@ export class FailureHandoff {
 				'Choose a repository or worktree registered in RN Devtools.'
 			);
 		const project = await realpath(request.project);
-		const toolPath = await (this.dependencies.toolPath ?? resolveToolPath)(
+		let toolPath = await (this.dependencies.toolPath ?? resolveToolPath)(
 			process.env.PATH
 		);
-		let binary: string | undefined;
-		for (const directory of (toolPath ?? '')
-			.split(path.delimiter)
-			.slice(0, 100)) {
-			if (!path.isAbsolute(directory)) continue;
-			const candidate = path.join(directory, request.client);
-			try {
-				await access(candidate, constants.X_OK);
-				binary = await realpath(candidate);
-				break;
-			} catch {
-				/* Try the next PATH entry. */
+		const findBinary = async (searchPath: string | undefined) => {
+			for (const directory of (searchPath ?? '')
+				.split(path.delimiter)
+				.slice(0, 100)) {
+				if (!path.isAbsolute(directory) || /[\0\r\n]/.test(directory)) continue;
+				const candidate = path.join(directory, request.client);
+				try {
+					await access(candidate, constants.X_OK);
+					if ((await stat(candidate)).isFile())
+						return await realpath(candidate);
+				} catch {
+					/* Try the next PATH entry. */
+				}
+			}
+			return undefined;
+		};
+		let binary = await findBinary(toolPath);
+		if (!binary) {
+			// Finder may inherit a PATH containing Node but not the user's agent CLI.
+			const shellPath = await (
+				this.dependencies.loginShellPath ?? readLoginShellPath
+			)();
+			if (shellPath) {
+				toolPath = [shellPath, toolPath].filter(Boolean).join(path.delimiter);
+				binary = await findBinary(toolPath);
 			}
 		}
 		if (!binary)
 			throw new Error(
 				`Install ${request.client === 'claude' ? 'Claude Code' : 'Codex CLI'} and sign in with your subscription, then retry.`
 			);
-		const env = { ...subscriptionEnvironment(process.env), PATH: toolPath };
+		const env: NodeJS.ProcessEnv = {
+			...subscriptionEnvironment(process.env),
+			PATH: toolPath,
+		};
 		const checkLogin =
 			this.dependencies.checkLogin ??
 			(async (client, executable, environment) => {
@@ -231,7 +256,12 @@ export class FailureHandoff {
 				'#!/bin/zsh -f',
 				'set -e',
 				`cd -- ${quoteShell(project)}`,
-				`unset ${STRIPPED.join(' ')}`,
+				`unset ${[...STRIPPED, ...CONFIG_ENVIRONMENT].join(' ')}`,
+				...CONFIG_ENVIRONMENT.flatMap((key) =>
+					env[key] === undefined
+						? []
+						: [`export ${key}=${quoteShell(env[key])}`]
+				),
 				`export PATH=${quoteShell(toolPath ?? '/usr/bin:/bin')}`,
 				`exec ${[binary, ...handoffArguments(request.client, request.mode, prompt)].map(quoteShell).join(' ')}`,
 				'',

@@ -77,9 +77,19 @@ export function parseDiagnosticReport(
 			].some((identifier) => identifier.startsWith('com.apple.'));
 		const exception = object(body.exception);
 		const termination = object(body.termination);
-		diagnostic = !text(exception.type) && !text(termination.indicator);
+		const nonfatal =
+			body.isNonFatalCorpse === true || body.isNonFatalCorpse === 1;
+		const resource = text(exception.type) === 'EXC_RESOURCE';
+		const fatalSignal =
+			/^(SIGKILL|SIGABRT|SIGSEGV|SIGBUS|SIGILL|SIGTRAP)$/.test(
+				text(exception.signal)
+			);
+		diagnostic =
+			nonfatal ||
+			(resource && !fatalSignal && !text(termination.indicator)) ||
+			(!text(exception.type) && !text(termination.indicator));
 		const captured = Date.parse(text(body.captureTime));
-		if (Number.isFinite(captured)) at = captured;
+		if (Number.isFinite(captured) && captured >= 0) at = captured;
 		const threads = Array.isArray(body.threads) ? body.threads : [];
 		const thread = object(
 			threads[typeof body.faultingThread === 'number' ? body.faultingThread : 0]
@@ -111,7 +121,11 @@ export function parseDiagnosticReport(
 			)?.[1]
 			?.toUpperCase();
 		if (!udid && !HOST_PROCESS.test(process)) return undefined;
-		diagnostic = filename.endsWith('.diag');
+		diagnostic =
+			filename.endsWith('.diag') ||
+			/^none$/i.test(field('Action taken')) ||
+			/NON-FATAL/i.test(field('Exception Type')) ||
+			(!field('Exception Type') && !field('Termination Reason'));
 		detail = [
 			'Process',
 			'Command',

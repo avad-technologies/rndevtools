@@ -48,6 +48,7 @@ describe('local subscription handoff', () => {
 		await mkdir(path.join(root, 'bin'));
 	});
 	afterEach(async () => {
+		vi.unstubAllEnvs();
 		await rm(root, { recursive: true, force: true });
 	});
 	function request(
@@ -66,12 +67,13 @@ describe('local subscription handoff', () => {
 		const binary = path.join(root, 'bin', client);
 		await writeFile(
 			binary,
-			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(root, 'received.json'))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), api: process.env.ANTHROPIC_API_KEY ?? null, openai: process.env.OPENAI_API_KEY ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, session: process.env.CODEX_THREAD_ID ?? null }));\n`
+			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(root, 'received.json'))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), api: process.env.ANTHROPIC_API_KEY ?? null, openai: process.env.OPENAI_API_KEY ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, session: process.env.CODEX_THREAD_ID ?? null, home: process.env.HOME, codexHome: process.env.CODEX_HOME ?? null, claudeConfig: process.env.CLAUDE_CONFIG_DIR ?? null }));\n`
 		);
 		await chmod(binary, 0o700);
 	}
 	function make(
-		overrides: Partial<ConstructorParameters<typeof FailureHandoff>[0]> = {}
+		overrides: Partial<ConstructorParameters<typeof FailureHandoff>[0]> = {},
+		verifyLogin = false
 	) {
 		return new FailureHandoff({
 			directory: path.join(root, 'tasks'),
@@ -79,7 +81,8 @@ describe('local subscription handoff', () => {
 			confirm: async () => true,
 			openTerminal: async () => undefined,
 			toolPath: async () => path.join(root, 'bin'),
-			checkLogin: async () => true,
+			loginShellPath: async () => undefined,
+			...(verifyLogin ? {} : { checkLogin: async () => true }),
 			...overrides,
 		});
 	}
@@ -126,6 +129,41 @@ describe('local subscription handoff', () => {
 			);
 		}
 	);
+	it('falls back to the login-shell PATH when Node is present but the selected CLI is missing', async () => {
+		await fakeClient('codex');
+		const openTerminal = vi.fn(async () => undefined);
+		await make({
+			toolPath: async () => '/usr/bin:/bin',
+			loginShellPath: async () => path.join(root, 'bin'),
+			openTerminal,
+		}).run(record, request());
+		expect(openTerminal).toHaveBeenCalledOnce();
+	});
+	it('launches with the same credential directories checked before confirmation', async () => {
+		await fakeClient('codex');
+		vi.stubEnv('CODEX_HOME', path.join(root, 'checked-config'));
+		vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+		await make({
+			openTerminal: async (script) => {
+				await exec('/bin/zsh', ['-f', script], {
+					env: {
+						...process.env,
+						HOME: '/different-home',
+						CODEX_HOME: '/different-codex',
+						CLAUDE_CONFIG_DIR: '/different-claude',
+					},
+				});
+			},
+		}).run(record, request());
+		const received = JSON.parse(
+			await readFile(path.join(root, 'received.json'), 'utf8')
+		);
+		expect(received).toMatchObject({
+			home: process.env.HOME,
+			codexHome: path.join(root, 'checked-config'),
+			claudeConfig: null,
+		});
+	});
 	it('cancels without writing tasks or opening a terminal', async () => {
 		await fakeClient('codex');
 		const openTerminal = vi.fn();
@@ -170,6 +208,49 @@ describe('local subscription handoff', () => {
 			}).run(record, request())
 		).rejects.toThrow('project changed');
 	});
+	it.each([
+		['codex', 'Logged in using ChatGPT', true],
+		['codex', 'Logged in using an API key', false],
+		[
+			'claude',
+			JSON.stringify({
+				loggedIn: true,
+				authMethod: 'claude.ai',
+				apiProvider: 'firstParty',
+			}),
+			true,
+		],
+		[
+			'claude',
+			JSON.stringify({
+				loggedIn: true,
+				authMethod: 'api_key',
+				apiProvider: 'firstParty',
+			}),
+			false,
+		],
+	] as const)(
+		'verifies %s subscription status without invoking a model (%s)',
+		async (client, output, accepted) => {
+			const binary = path.join(root, 'bin', client);
+			await writeFile(
+				binary,
+				`#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)});\n`
+			);
+			await chmod(binary, 0o700);
+			const openTerminal = vi.fn(async () => undefined);
+			const result = make({ openTerminal }, true).run(record, request(client));
+			if (accepted) {
+				await result;
+				expect(openTerminal).toHaveBeenCalledOnce();
+			} else {
+				await expect(result).rejects.toThrow(
+					'Subscription login could not be verified'
+				);
+				expect(openTerminal).not.toHaveBeenCalled();
+			}
+		}
+	);
 	it('keeps normal CLI approval modes and only removes auth/session overrides', () => {
 		expect(
 			subscriptionEnvironment({

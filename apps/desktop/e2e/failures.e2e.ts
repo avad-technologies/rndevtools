@@ -10,6 +10,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
+import type { FailureState } from '../src/shared/failure-protocol';
+import { IPC_CHANNELS } from '../src/shared/ipc';
 import { DesktopHarness } from './harness';
 
 test('failure history persists and subscription actions use a registered project at the minimum window size', async () => {
@@ -152,5 +154,98 @@ test('failure history persists and subscription actions use a registered project
 	} finally {
 		await harness?.close();
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test('a delayed history poll cannot reopen a failure after resolution', async () => {
+	const harness = await DesktopHarness.launch();
+	try {
+		const { app, window } = harness;
+		const state: FailureState = {
+			records: [
+				{
+					id: `failure-${'a'.repeat(32)}`,
+					at: 1,
+					kind: 'app-crash',
+					severity: 'error',
+					title: 'ExampleApp crashed',
+					detail: 'Isolated fixture',
+					source: 'ExampleApp.ips',
+				},
+			],
+			checkedAt: 1,
+			monitoring: true,
+			issues: [],
+		};
+		await app.evaluate(
+			({ ipcMain }, { channels, initial }) => {
+				let resolved = false;
+				const delayed: ((value: typeof initial) => void)[] = [];
+				const latest = () => ({
+					...initial,
+					records: initial.records.map((record) => ({
+						...record,
+						resolvedAt: 0,
+					})),
+				});
+				ipcMain.removeHandler(channels.getFailureState);
+				ipcMain.handle(channels.getFailureState, () => {
+					if (resolved) return latest();
+					if (process.env.RNDEVTOOLS_E2E_DELAY_FAILURE_POLL === 'true') {
+						process.env.RNDEVTOOLS_E2E_FAILURE_POLL_PENDING = 'true';
+						return new Promise<typeof initial>((resolve) =>
+							delayed.push(resolve)
+						);
+					}
+					return initial;
+				});
+				ipcMain.removeHandler(channels.runFailureOperation);
+				ipcMain.handle(channels.runFailureOperation, () => {
+					resolved = true;
+					setTimeout(() => {
+						for (const complete of delayed) complete(initial);
+						process.env.RNDEVTOOLS_E2E_FAILURE_POLL_DELIVERED = 'true';
+					}, 100);
+					return { state: latest() };
+				});
+			},
+			{ channels: IPC_CHANNELS, initial: state }
+		);
+		await harness.openPanel('simulator/lanes');
+		await window.getByRole('button', { name: 'Failures', exact: true }).click();
+		const region = window.getByRole('region', { name: 'Failure history' });
+		await expect(region.locator('.failure-row')).toHaveCount(1);
+		await app.evaluate(() => {
+			process.env.RNDEVTOOLS_E2E_DELAY_FAILURE_POLL = 'true';
+		});
+		await expect
+			.poll(() =>
+				app.evaluate(() => process.env.RNDEVTOOLS_E2E_FAILURE_POLL_PENDING)
+			)
+			.toBe('true');
+		await region
+			.getByRole('button', { name: 'Mark resolved', exact: true })
+			.click();
+		await expect
+			.poll(() =>
+				app.evaluate(() => process.env.RNDEVTOOLS_E2E_FAILURE_POLL_DELIVERED)
+			)
+			.toBe('true');
+		// IPC delivery and React rendering complete on the next renderer frame.
+		await window.evaluate(
+			() =>
+				new Promise<void>((resolve) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+				)
+		);
+		await expect(region.locator('.failure-row')).toHaveCount(0);
+		await expect(region.locator('.failure-count')).toHaveText('0 open');
+		await region.getByLabel('Failure filter').selectOption('resolved');
+		await expect(region.locator('.failure-row')).toHaveCount(1);
+		await expect(
+			region.getByRole('button', { name: 'Reopen', exact: true })
+		).toBeEnabled();
+	} finally {
+		await harness.close();
 	}
 });

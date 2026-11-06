@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Lane } from '../shared/lane-protocol';
+import type { SimulatorState } from '../shared/simulator-protocol';
 import { failureId } from './failure-diagnostics';
 import { FailureService } from './failure-service';
 
@@ -22,6 +23,7 @@ const lane = {
 	port: 8100,
 	metroPid: 1234,
 	metro: 'ready',
+	startedAt: 0,
 } as Lane;
 
 describe('persistent failure monitoring', () => {
@@ -171,6 +173,89 @@ describe('persistent failure monitoring', () => {
 		expect(service.getState().records).toHaveLength(1);
 		expect(service.getState().records[0]?.detail).toContain('SIGKILL');
 	});
+	it('associates simulator jobs with the lane at operation start rather than latest device use', async () => {
+		const service = make();
+		await service.start();
+		service.observeLanes([{ ...lane, startedAt: now }]);
+		const startedAt = now + 1;
+		now += 10;
+		service.observeLanes([]);
+		now += 10;
+		service.observeLanes([
+			{
+				...lane,
+				id: 'lane-other',
+				startedAt: now,
+				worktreePath: '/Users/dev/OtherApp',
+			},
+		]);
+		service.observeSimulator({
+			jobs: [
+				{
+					id: 'historical',
+					kind: 'launch',
+					status: 'failed',
+					deviceUdid: udid,
+					createdAt: startedAt,
+					startedAt,
+					finishedAt: now + 1,
+					message: 'failed',
+				},
+			],
+		} as SimulatorState);
+		expect(service.getState().records[0]).toMatchObject({
+			laneId: lane.id,
+			project: lane.worktreePath,
+		});
+		service.observeSimulator({
+			jobs: [
+				{
+					id: 'before-lane',
+					kind: 'launch',
+					status: 'failed',
+					deviceUdid: udid,
+					createdAt: startedAt - 100,
+					finishedAt: now + 2,
+				},
+			],
+		} as SimulatorState);
+		expect(service.getState().records[0]?.project).toBeUndefined();
+		service.observeLanes([
+			{
+				...lane,
+				id: 'lane-other',
+				startedAt: now,
+				worktreePath: '/Users/dev/OtherApp',
+			},
+		]);
+		expect(service.getState().records[0]?.project).toBeUndefined();
+	});
+	it('does not choose a project when historical lane lifetimes overlap', async () => {
+		const service = make();
+		await service.start();
+		service.observeLanes([
+			{ ...lane, startedAt: now },
+			{
+				...lane,
+				id: 'lane-other',
+				startedAt: now,
+				worktreePath: '/Users/dev/OtherApp',
+			},
+		]);
+		service.observeSimulator({
+			jobs: [
+				{
+					id: 'ambiguous',
+					kind: 'launch',
+					status: 'failed',
+					deviceUdid: udid,
+					createdAt: now + 1,
+					finishedAt: now + 2,
+				},
+			],
+		} as SimulatorState);
+		expect(service.getState().records[0]?.project).toBeUndefined();
+	});
 	it('bounds retained history, redacts diagnostics and never resolves on handoff', async () => {
 		await mkdir(path.join(root, 'history'));
 		await writeFile(
@@ -186,6 +271,7 @@ describe('persistent failure monitoring', () => {
 					title: 'Metro exited',
 					detail: 'Exit code: 1',
 					source: 'Metro child process',
+					process: 'Authorization: Bearer secret-value',
 				})),
 			})
 		);

@@ -90,6 +90,43 @@ describe('bounded simulator diagnostics', () => {
 			)?.kind
 		).toBe('simulator-diagnostic');
 	});
+	it('keeps nonfatal resource reports as warnings even when an exception type is present', () => {
+		for (const overrides of [
+			{ exception: { type: 'EXC_RESOURCE' } },
+			{
+				exception: { type: 'EXC_RESOURCE', signal: 'SIGKILL' },
+				isNonFatalCorpse: 1,
+			},
+		]) {
+			expect(
+				parseDiagnosticReport(report(overrides), 'ExampleApp.ips', now)
+			).toMatchObject({
+				kind: 'simulator-diagnostic',
+				severity: 'warning',
+			});
+		}
+		expect(
+			parseDiagnosticReport(
+				report({ exception: { type: 'EXC_RESOURCE', signal: 'SIGKILL' } }),
+				'ExampleApp.ips',
+				now
+			)?.kind
+		).toBe('app-crash');
+		expect(
+			parseDiagnosticReport(
+				'Process: Simulator [123]\nEvent: disk writes\nAction taken: none',
+				'Simulator.crash',
+				now
+			)?.kind
+		).toBe('simulator-diagnostic');
+		expect(
+			parseDiagnosticReport(
+				report({ captureTime: '1960-01-01' }),
+				'ExampleApp.ips',
+				now
+			)?.at
+		).toBe(now);
+	});
 	it('ignores unrelated host crashes and malformed reports', () => {
 		expect(
 			parseDiagnosticReport(
@@ -158,5 +195,5 @@ describe('bounded simulator diagnostics', () => {
 		expect(result.records).toHaveLength(1);
 		expect(result.records[0]?.source).toBe('A-newest.ips');
 		expect(result.issues).toEqual([expect.stringContaining('newest 300')]);
-	});
+	}, 15_000);
 });

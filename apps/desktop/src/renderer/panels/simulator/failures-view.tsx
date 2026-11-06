@@ -41,6 +41,7 @@ export function FailuresView() {
 	const [error, setError] = useState('');
 	const [message, setMessage] = useState('');
 	const pending = useRef(false);
+	const generation = useRef(0);
 	const mounted = useRef(true);
 	const available = typeof bridge?.getFailureState === 'function';
 	const records = state.records.filter(
@@ -53,16 +54,21 @@ export function FailuresView() {
 	const selected =
 		records.find((record) => record.id === selectedId) ?? records[0];
 	const openCount = state.records.filter(
-		(record) => !record.resolvedAt && record.severity !== 'info'
+		(record) => record.resolvedAt === undefined && record.severity !== 'info'
 	).length;
 
 	const refresh = useCallback(async () => {
 		if (!bridge?.getFailureState || pending.current) return;
+		const requestGeneration = ++generation.current;
+		const current = () =>
+			mounted.current &&
+			!pending.current &&
+			requestGeneration === generation.current;
 		try {
 			const next = await bridge.getFailureState();
-			if (mounted.current) setState(next);
+			if (current()) setState(next);
 		} catch {
-			if (mounted.current) setError('Failure history could not be read.');
+			if (current()) setError('Failure history could not be read.');
 		}
 	}, [bridge]);
 	useEffect(() => {
@@ -71,6 +77,7 @@ export function FailuresView() {
 		const timer = window.setInterval(() => void refresh(), 5_000);
 		return () => {
 			mounted.current = false;
+			generation.current++;
 			window.clearInterval(timer);
 		};
 	}, [refresh]);
@@ -81,6 +88,7 @@ export function FailuresView() {
 	const run = async (request: FailureRequest) => {
 		if (!bridge?.runFailureOperation || pending.current) return;
 		pending.current = true;
+		generation.current++;
 		setBusy(true);
 		setError('');
 		setMessage('');
@@ -198,7 +206,7 @@ export function FailuresView() {
 									<strong>{record.title}</strong>
 									<small>
 										{new Date(record.at).toLocaleString()}
-										{record.resolvedAt ? ' · Resolved' : ''}
+										{record.resolvedAt !== undefined ? ' · Resolved' : ''}
 									</small>
 									<small>
 										{record.project
@@ -340,7 +348,7 @@ export function FailuresView() {
 									})
 								}
 							>
-								{selected.resolvedAt ? 'Reopen' : 'Mark resolved'}
+								{selected.resolvedAt !== undefined ? 'Reopen' : 'Mark resolved'}
 							</Button>
 						</div>
 					</article>
