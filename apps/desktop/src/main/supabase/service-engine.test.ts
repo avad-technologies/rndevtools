@@ -1466,6 +1466,49 @@ describe('SupabaseEngine cadence', () => {
 });
 
 describe('SupabaseEngine state', () => {
+	it('projects lane backend health without assembling state or probing through the lane cycle', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('backend-projection');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		const stack = h.engine
+			.getState()
+			.stacks.find((candidate) => candidate.id === stackId);
+		if (!stack?.apiUrl) throw new Error('Ready backend fixture missing.');
+		const previous = {
+			policy: 'auto' as const,
+			status: 'ready' as const,
+			stackId,
+			apiUrl: stack.apiUrl,
+			appEnvNames: [],
+			warnings: [],
+		};
+		const calls = h.processCalls();
+		const assemble = vi.spyOn(h.engine, 'getState').mockImplementation(() => {
+			throw new Error('Recursive state assembly');
+		});
+		try {
+			expect(h.engine.describeLaneBackend(previous)).toEqual(previous);
+			expect(assemble).not.toHaveBeenCalled();
+			expect(h.processCalls()).toBe(calls);
+		} finally {
+			assemble.mockRestore();
+		}
+		await runToEnd(h, { kind: 'stop', stackIds: [stackId] });
+		h.engine.getState();
+		expect(h.engine.describeLaneBackend(previous).status).toBe('stopped');
+		const ensured = await h.engine.ensureForLane({
+			worktreePath: repo,
+			branch: 'main',
+			environmentId: 'development',
+			policy: 'required',
+			waitMs: 45_000,
+		});
+		expect(ensured.summary.status).toBe('ready');
+		expect(h.engine.describeLaneBackend(ensured.summary).status).toBe('ready');
+	});
+
 	it('retains managed worktree facts when the bounded lane listing drops them', async () => {
 		const h = await createEngineHarness({ enabled: true, start: false });
 		const repo = await h.repository('managed');

@@ -29,9 +29,11 @@ import type {
 	SlimmingJob,
 	SlimmingState,
 } from '../shared/slimming-protocol';
+import { createSupabaseDemoState } from '../shared/supabase-demo-data';
 import type {
 	LaneBackendSummary,
 	LaneWorktreeSupabase,
+	SupabaseState,
 } from '../shared/supabase-protocol';
 import { AgentService } from './agent-service';
 import {
@@ -54,10 +56,11 @@ import type {
 } from './lane-worktree';
 import type { SimulatorMutationLease } from './simulator-mutation-coordinator';
 import { SimulatorMutationCoordinator } from './simulator-mutation-coordinator';
-import type {
-	LaneBackendEnsureInput,
-	LaneBackendEnsureResult,
-	LaneBackendLateAttach,
+import {
+	describeSupabaseLaneBackend,
+	type LaneBackendEnsureInput,
+	type LaneBackendEnsureResult,
+	type LaneBackendLateAttach,
 } from './supabase/service-ports';
 
 const UDID = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
@@ -462,6 +465,9 @@ class FakeBackends implements LaneBackendPort {
 	onEnsure: ((input: LaneBackendEnsureInput) => void) | undefined;
 	readonly described = new Map<string, LaneWorktreeSupabase>();
 	describeError: Error | undefined;
+	runtimeState: SupabaseState | undefined;
+	describeSummary = (previous: LaneBackendSummary) =>
+		describeSupabaseLaneBackend(previous, this.runtimeState);
 
 	ensureForLane = async (
 		input: LaneBackendEnsureInput
@@ -2577,6 +2583,117 @@ describe('LaneService', () => {
 				clearInterval(advance);
 			}
 		}
+
+		it.each(['stopped', 'failed', 'disabled'] as const)(
+			'publishes %s backend health and requires explicit lane up to recover',
+			async (status) => {
+				const started = await up({ backend: 'required', launch: false });
+				const initial = createSupabaseDemoState();
+				const template = initial.stacks[0];
+				if (!template) throw new Error('Demo stack fixture missing.');
+				const healthy: SupabaseState = {
+					...initial,
+					stacks: [
+						{
+							...template,
+							id: STACK_ID,
+							state: 'running',
+							lifecycle: 'running',
+							ownerLiveness: 'reachable',
+							readiness: 'ready',
+							exposure: { verdict: 'loopback' },
+							mode: { value: 'managed' },
+							flags: [],
+							apiUrl: API_URL,
+						},
+					],
+				};
+				const published: LaneState[] = [];
+				lanes.subscribe((state) => published.push(state));
+				const ensures = backends.ensured.length;
+				const actions = simulator.actions.length;
+				backends.runtimeState =
+					status === 'disabled'
+						? { ...healthy, feature: { ...healthy.feature, enabled: false } }
+						: {
+								...healthy,
+								stacks: healthy.stacks.map((stack) => ({
+									...stack,
+									state: status,
+								})),
+							};
+				lanes.backendsChanged();
+				expect(published).toHaveLength(1);
+				expect(published[0]?.lanes[0]?.backend?.status).toBe(
+					status === 'disabled' ? 'skipped' : status
+				);
+				lanes.backendsChanged();
+				expect(published).toHaveLength(1);
+				expect(backends.ensured).toHaveLength(ensures);
+				const launch = await lanes.runOperation({
+					actionId: 'backend-stopped-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(launch.completed).toBe(false);
+				expect(launch.error).toContain('requires its local backend');
+				expect(simulator.actions).toHaveLength(actions);
+				backends.runtimeState = healthy;
+				lanes.backendsChanged();
+				expect(lanes.getState().lanes[0]?.backend?.status).not.toBe('ready');
+				expect(
+					(await up({ backend: 'required', launch: false })).completed
+				).toBe(true);
+				expect(lanes.getState().lanes[0]?.backend?.status).toBe('ready');
+			}
+		);
+
+		it.each(['throws', 'oversized'] as const)(
+			'retains recovery identity when the cached health projector %s',
+			async (failure) => {
+				await up({ backend: 'required', launch: false });
+				const describe = vi
+					.spyOn(backends, 'describeSummary')
+					.mockImplementation((previous) => {
+						if (failure === 'throws') throw new Error('Projection failed.');
+						return { ...previous, reasonText: 'x'.repeat(5_000) };
+					});
+				try {
+					lanes.backendsChanged();
+					const backend = lanes.getState().lanes[0]?.backend;
+					expect(backend).toMatchObject({
+						status: 'failed',
+						stackId: STACK_ID,
+					});
+					expect(backend?.reasonText?.length).toBeLessThanOrEqual(1_024);
+				} finally {
+					describe.mockRestore();
+				}
+			}
+		);
+
+		it('keeps required launches blocked when Metro could not apply changed backend values', async () => {
+			const started = await up({ backend: 'required', launch: false });
+			backends.answers.push(ready(MOVED_API_URL));
+			const stop = vi
+				.spyOn(metro, 'stop')
+				.mockRejectedValueOnce(new Error('Ownership probe unavailable.'));
+			try {
+				const resumed = await up({ backend: 'required', launch: false });
+				expect(resumed.backend?.metro).toBe('needs-restart');
+				const actions = simulator.actions.length;
+				const launched = await lanes.runOperation({
+					actionId: 'backend-unapplied-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(launched.completed).toBe(false);
+				expect(launched.error).toContain('Ownership probe unavailable');
+				expect(simulator.actions).toHaveLength(actions);
+			} finally {
+				stop.mockRestore();
+			}
+		});
 
 		it('ensures the backend while the Simulator boots, then hands Metro exactly the mapped public names', async () => {
 			const answer = deferred<LaneBackendEnsureResult>();

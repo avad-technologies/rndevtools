@@ -159,6 +159,7 @@ import {
 import { describeSupabaseConfirmation } from './service-confirmation';
 import { runSupabaseOperation } from './service-operations';
 import {
+	describeSupabaseLaneBackend,
 	type LaneBackendEnsureInput,
 	type LaneBackendEnsureResult,
 	type SteeringSnapshot,
@@ -2503,6 +2504,11 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		attachment.envFingerprint = envFingerprint;
 		attachment.needsMetroRestart = false;
 		this.markDirty();
+	}
+
+	/** Uses the existing snapshot: assembling state here would recurse through lanes. */
+	describeLaneBackend(previous: LaneBackendSummary): LaneBackendSummary {
+		return describeSupabaseLaneBackend(previous, this.#state);
 	}
 
 	describeWorktree(worktreePath: string): LaneWorktreeSupabase | undefined {

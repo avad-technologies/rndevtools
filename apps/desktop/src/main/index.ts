@@ -1644,6 +1644,8 @@ if (!app.requestSingleInstanceLock()) {
 							? laneDefaultBackend(state.policy, environmentId)
 							: 'off';
 					},
+					describeSummary: (previous) =>
+						supabaseService?.describeLaneBackend?.(previous) ?? previous,
 					describeWorktree: (worktreePath) =>
 						supabaseService?.describeWorktree(worktreePath),
 				},

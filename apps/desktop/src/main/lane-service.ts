@@ -131,6 +131,8 @@ export type LaneBackendPort = {
 	defaultPolicy: (environmentId: string) => 'auto' | 'off';
 	/** The worktree's Supabase project for the start form, when known. */
 	describeWorktree?: (worktreePath: string) => LaneWorktreeSupabase | undefined;
+	/** Cached health projection only: no probes or recursive state assembly. */
+	describeSummary?: (previous: LaneBackendSummary) => LaneBackendSummary;
 };
 
 /**
@@ -565,10 +567,11 @@ export class LaneService {
 	}
 
 	/**
-	 * The backend's view of the worktrees changed: publish again, but only
-	 * when what the start form shows actually moved.
+	 * Publish changed worktree configuration or attached backend health. A
+	 * health downgrade stays until an explicit ensure applies current values.
 	 */
 	backendsChanged(): void {
+		this.#refreshBackendSummaries();
 		const key = this.#worktreeBackendsKey();
 		if (key === this.#publishedBackendsKey) return;
 		this.#touch();
@@ -588,12 +591,70 @@ export class LaneService {
 	}
 
 	#worktreeBackendsKey(): string {
-		return JSON.stringify(
-			this.#worktreeCache.map((worktree) => [
+		return JSON.stringify({
+			worktrees: this.#worktreeCache.map((worktree) => [
 				worktree.path,
 				this.#describeWorktree(worktree.path) ?? null,
-			])
-		);
+			]),
+			lanes: this.#store
+				.lanes()
+				.map((lane) => [lane.id, this.#view(lane).backend ?? null]),
+		});
+	}
+
+	#describeBackend(record: LaneBackendRecord): LaneBackendSummary {
+		if (!this.#backends?.describeSummary) return record.summary;
+		try {
+			const parsed = laneBackendSummarySchema.safeParse(
+				this.#backends.describeSummary(record.summary)
+			);
+			if (parsed.success) return parsed.data;
+		} catch {
+			// An unavailable projector cannot keep an attached backend green.
+		}
+		return record.summary.status === 'ready' ||
+			record.summary.status === 'shadowed'
+			? {
+					...failedBackend(
+						record.policy,
+						'Current backend health could not be read. Run lane up to recover this lane.'
+					),
+					...(record.summary.stackId
+						? { stackId: record.summary.stackId }
+						: {}),
+				}
+			: record.summary;
+	}
+
+	#refreshBackendSummaries(): void {
+		for (const record of this.#backendRecords.values())
+			record.summary = this.#describeBackend(record);
+	}
+
+	#assertRequiredBackendReady(lane: Lane): void {
+		const record = this.#backendRecords.get(lane.id);
+		if ((record?.policy ?? lane.backendPolicy) !== 'required') return;
+		this.#refreshBackendSummaries();
+		if (
+			record?.summary.status !== 'ready' ||
+			record.env === undefined ||
+			record.metro === 'needs-restart'
+		) {
+			throw new LaneBackendError(
+				record?.metro === 'needs-restart'
+					? failedBackend(
+							'required',
+							record.note ??
+								'Metro has not applied the current backend values. Run lane up to recover this lane.'
+						)
+					: (record?.summary ??
+							backendSummary('required', 'failed', {
+								reason: 'failed',
+								reasonText:
+									'Run lane up to recover this lane before launching.',
+							}))
+			);
+		}
 	}
 
 	/**
@@ -1648,6 +1709,7 @@ export class LaneService {
 		signal: AbortSignal
 	): Promise<Lane> {
 		const lane = this.#requireLane(laneId);
+		this.#assertRequiredBackendReady(lane);
 		const healthy = await this.#waitForMetro(lane, signal);
 		if (!healthy) {
 			// The wait awaited; write onto the lane as it is now, and not at all
@@ -1681,6 +1743,7 @@ export class LaneService {
 		await this.#assertDevClientInstalled(lane, signal);
 		for (let attempt = 0; attempt < 2; attempt++) {
 			this.#assertLaunchTarget(lane, signal);
+			this.#assertRequiredBackendReady(lane);
 			try {
 				await this.#runSimulatorAction(
 					{
@@ -2673,11 +2736,26 @@ export class LaneService {
 	#view(lane: Lane): LaneView {
 		const record = this.#backendRecords.get(lane.id);
 		if (!record) return lane;
+		const summary = this.#describeBackend(record);
 		return {
 			...lane,
 			backend: {
-				...record.summary,
-				...(record.note ? { reasonText: record.note } : {}),
+				...summary,
+				...(record.note
+					? {
+							reasonText: backendReason(
+								[
+									summary.reasonText &&
+									!record.note.includes(summary.reasonText)
+										? summary.reasonText
+										: undefined,
+									record.note,
+								]
+									.filter(Boolean)
+									.join(' ')
+							),
+						}
+					: {}),
 				...(record.deferredLaunch ? { launch: 'deferred' as const } : {}),
 				...(record.metro ? { metro: record.metro } : {}),
 			},

@@ -11,7 +11,11 @@ import {
 	supabaseAgentRecovery,
 } from '../../shared/supabase-protocol';
 import { AgentCliError } from '../agent-cli-service';
-import type { SupabaseServiceApi, SupabaseServiceDeps } from './service-ports';
+import {
+	describeSupabaseLaneBackend,
+	type SupabaseServiceApi,
+	type SupabaseServiceDeps,
+} from './service-ports';
 
 /**
  * Demo mode (an unpackaged build started with RNDEVTOOLS_DEMO=true): the
@@ -55,6 +59,8 @@ export function createSupabaseDemoService(
 	};
 	return {
 		getState: () => state,
+		describeLaneBackend: (previous) =>
+			describeSupabaseLaneBackend(previous, state),
 		subscribe: (listener) => {
 			listeners.add(listener);
 			return () => {

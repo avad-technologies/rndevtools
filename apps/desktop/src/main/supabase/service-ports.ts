@@ -28,6 +28,101 @@ import type { ClassifiedSupabaseError } from './cli-errors';
  * pure helpers that keep both sides of a seam in step.
  */
 
+/**
+ * Downgrades an attached lane from the last published, renderer-safe snapshot.
+ * Never promotes a failed attach or reads state through the lane/engine cycle.
+ * A fresh ensure must restore readiness and apply any changed Metro values.
+ */
+export function describeSupabaseLaneBackend(
+	previous: LaneBackendSummary,
+	state: Pick<SupabaseState, 'feature' | 'stacks'> | undefined
+): LaneBackendSummary {
+	if (
+		!state ||
+		!previous.stackId ||
+		previous.policy === 'off' ||
+		(previous.status !== 'ready' && previous.status !== 'shadowed')
+	)
+		return previous;
+	const unavailable = (
+		status: LaneBackendSummary['status'],
+		reason: NonNullable<LaneBackendSummary['reason']>,
+		message: string
+	): LaneBackendSummary => {
+		const { apiUrl: _apiUrl, jobId: _jobId, ...base } = previous;
+		return {
+			...base,
+			status,
+			reason,
+			appEnvNames: [],
+			reasonText: `${message} Run lane up to recover this lane's backend.`,
+		};
+	};
+	if (!state.feature.enabled)
+		return unavailable('skipped', 'disabled', 'Local Supabase is off.');
+	const stack = state.stacks.find(
+		(candidate) => candidate.id === previous.stackId
+	);
+	if (!stack)
+		return unavailable(
+			'stopped',
+			'failed',
+			'This backend is no longer in the current stack inventory.'
+		);
+	if (stack.exposure.verdict === 'lan-exposed')
+		return unavailable(
+			'refused',
+			'lan-exposed',
+			'This backend was refused because it listened beyond loopback.'
+		);
+	if (stack.mode.value !== 'managed')
+		return unavailable(
+			'skipped',
+			'not-managed',
+			'This backend is no longer managed for this repository.'
+		);
+	if (stack.flags.includes('stale-branch'))
+		return unavailable(
+			'stale',
+			'branch-moved',
+			'This backend belongs to an earlier worktree branch.'
+		);
+	if (stack.cli.mismatch)
+		return unavailable(
+			'failed',
+			'cli-mismatch',
+			'This backend has a CLI release mismatch.'
+		);
+	if (
+		['stopped', 'stopping', 'never-started', 'not-created'].includes(
+			stack.state
+		) ||
+		stack.ownerLiveness === 'absent'
+	)
+		return unavailable('stopped', 'failed', 'This backend is stopped.');
+	if (stack.state === 'starting')
+		return unavailable('starting', 'failed', 'This backend is starting again.');
+	if (
+		stack.state !== 'running' ||
+		stack.ownerLiveness !== 'reachable' ||
+		stack.lifecycle !== 'running' ||
+		stack.exposure.verdict !== 'loopback' ||
+		(stack.readiness !== 'ready' && stack.readiness !== 'sleeping')
+	)
+		return unavailable(
+			'failed',
+			'failed',
+			'This backend is not currently healthy and reachable.'
+		);
+	if (previous.apiUrl && stack.apiUrl !== previous.apiUrl)
+		return unavailable(
+			'stale',
+			'failed',
+			'This backend endpoint changed; Metro still has its previous values.'
+		);
+	return previous;
+}
+
 // ---------------------------------------------------------------------------
 // Who is asking
 
@@ -387,6 +482,8 @@ export type SupabaseReleaseResult = Readonly<{
  */
 export interface SupabaseServiceApi {
 	getState(): SupabaseState;
+	/** Cached health only; must never assemble state or perform a probe. */
+	describeLaneBackend?(previous: LaneBackendSummary): LaneBackendSummary;
 	/** Coalesced to 100 ms, only on change. */
 	subscribe(listener: (state: SupabaseState) => void): () => void;
 	/**
