@@ -14,6 +14,7 @@ import {
 	type SupabaseOperation,
 	stackStatus,
 	supabaseActionAvailability,
+	supabaseDesktopError,
 	supabaseOperationSchema,
 	supabaseStateSchema,
 } from '../../shared/supabase-protocol';
@@ -1792,6 +1793,88 @@ describe('SupabaseEngine exposure', () => {
 		expect(lsof()).toBeGreaterThan(before);
 		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
 		expect(stateOf(h, stackId)?.exposure.verdict).toBe('lan-exposed');
+		expect(h.engine.stackStore.record(stackId)?.lastError?.title).toBe(
+			'Stack listened on your network'
+		);
+		expect(
+			h.engine.stackStore
+				.activity()
+				.find((entry) => entry.id.startsWith('supabase-exposure-stop-'))
+		).toMatchObject({
+			kind: 'stop',
+			stackIds: [stackId],
+			outcome: 'complete',
+			errorCode: 'refused',
+			requestedBy: 'automatic',
+		});
+	});
+
+	it('persists a periodic exposure timeout and its stop without a lifecycle job', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('repo');
+		await h.engine.start();
+		await h.engine.settle();
+		const stackId = await startStack(h, repo);
+		const jobs = h.engine.jobStore.jobs().length;
+		const stops = h.cli.count('stack stop');
+		h.discovery.checkExposure = async () => ({
+			status: 'unavailable',
+			reason: 'timeout',
+			detail: 'raw-probe-detail-must-stay-private',
+		});
+		await h.advance(5 * 60_000 + 15_000);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
+		expect(h.cli.count('stack stop')).toBe(stops + 1);
+		expect(h.engine.jobStore.jobs()).toHaveLength(jobs);
+		expect(stateOf(h, stackId)?.lastError).toMatchObject({
+			code: 'refused',
+			title: 'Exposure could not be verified',
+			message: expect.stringContaining('listener probe: timeout'),
+		});
+		const activity = h.engine.stackStore
+			.activity()
+			.filter((entry) => entry.id.startsWith('supabase-exposure-stop-'));
+		expect(activity).toHaveLength(1);
+		expect(activity[0]).toMatchObject({
+			kind: 'stop',
+			stackIds: [stackId],
+			outcome: 'complete',
+			errorCode: 'refused',
+			requestedBy: 'automatic',
+		});
+		const saved = await readFile(
+			path.join(h.userData, 'supabase', 'stacks.json'),
+			'utf8'
+		);
+		expect(saved).toContain('listener probe: timeout');
+		expect(saved).toContain(activity[0]?.id);
+		expect(saved).not.toContain('raw-probe-detail-must-stay-private');
+	});
+
+	it('records a failed protective stop without claiming the stack stopped', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('repo');
+		await h.engine.start();
+		await h.engine.settle();
+		const stackId = await startStack(h, repo);
+		h.discovery.exposureUnavailable = true;
+		vi.spyOn(h.engine, 'stopStep').mockResolvedValue({
+			ok: false,
+			error: supabaseDesktopError('refused', 'The protective stop failed.'),
+		});
+		const result = await h.engine.enforceExposure(stackId, undefined);
+		expect(result.ok).toBe(false);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(true);
+		expect(h.engine.stackStore.record(stackId)?.lastError?.message).toContain(
+			'RN Devtools could not stop it'
+		);
+		expect(h.engine.stackStore.activity()[0]).toMatchObject({
+			kind: 'stop',
+			stackIds: [stackId],
+			outcome: 'failed',
+			errorCode: 'refused',
+			requestedBy: 'automatic',
+		});
 	});
 });
 

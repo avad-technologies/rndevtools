@@ -2221,11 +2221,16 @@ export class SupabaseEngine implements SupabaseServiceApi {
 	 * list that can't be read is an unknown verdict, not a clean one;
 	 * `not-running` means the owner list was read and has no owner for it.
 	 */
-	async verifyExposure(
-		stackId: string
-	): Promise<'loopback' | 'lan-exposed' | 'unknown' | 'not-running'> {
+	async verifyExposure(stackId: string): Promise<{
+		verdict: 'loopback' | 'lan-exposed' | 'unknown' | 'not-running';
+		reason?: string;
+	}> {
 		await this.#readOwners();
 		let verdict: 'loopback' | 'lan-exposed' | 'unknown' = 'unknown';
+		let reason =
+			this.#owners?.status === 'unavailable'
+				? `owner lookup: ${this.#owners.reason}`
+				: 'owner lookup did not complete';
 		if (this.#owners?.status === 'ok') {
 			const owner = this.ownerOf(stackId);
 			if (!owner) {
@@ -2233,24 +2238,30 @@ export class SupabaseEngine implements SupabaseServiceApi {
 					this.#exposure.delete(stackId);
 				}
 				this.markDirty();
-				return 'not-running';
+				return {
+					verdict: 'not-running',
+					reason: 'the stack owner is not running',
+				};
 			}
 			const tree = await this.#discoveryNow().processTree(owner.pid, {
 				stackId,
 			});
 			if (tree.status === 'ok') {
 				const exposure = await this.#discoveryNow().checkExposure(tree.pids);
+				if (exposure.status !== 'ok') {
+					reason = `listener probe: ${exposure.reason}`;
+				}
 				verdict =
 					exposure.status !== 'ok'
 						? 'unknown'
 						: exposure.nonLoopback.length > 0
 							? 'lan-exposed'
 							: 'loopback';
-			}
+			} else reason = `process tree: ${tree.reason}`;
 		}
 		this.#exposure.set(stackId, { verdict, checkedAt: this.now() });
 		this.markDirty();
-		return verdict;
+		return { verdict, ...(verdict === 'unknown' ? { reason } : {}) };
 	}
 
 	/**
@@ -2264,37 +2275,64 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		job: SupabaseEngineJob | undefined,
 		options: Readonly<{ notRunning?: 'pass' | 'fail' }> = {}
 	): Promise<SupabaseStepResult> {
+		const startedAt = this.now();
 		const checked = await this.verifyExposure(stackId);
-		if (checked === 'loopback') return { ok: true };
-		if (checked === 'not-running' && options.notRunning === 'pass') {
+		if (checked.verdict === 'loopback') return { ok: true };
+		if (checked.verdict === 'not-running' && options.notRunning === 'pass') {
 			return { ok: true };
 		}
-		const verdict = checked === 'lan-exposed' ? 'lan-exposed' : 'unknown';
-		await this.stopStep(stackId, job, { clearPin: false });
+		const verdict =
+			checked.verdict === 'lan-exposed' ? 'lan-exposed' : 'unknown';
+		const stopped = await this.stopStep(stackId, job, { clearPin: false });
 		this.#exposure.set(stackId, { verdict, checkedAt: this.now() });
+		const effect = stopped.ok
+			? 'RN Devtools stopped it. Its data is kept.'
+			: 'RN Devtools could not stop it. Stop the stack in RN Devtools and check its listeners before using it.';
+		const error =
+			verdict === 'lan-exposed'
+				? supabaseDesktopError(
+						'refused',
+						`A service of this stack listened on an address other than 127.0.0.1. ${effect}`,
+						{
+							title: LAN_EXPOSED_TITLE,
+							recovery:
+								'Check supabase/config.toml for listener addresses, then start it again.',
+						}
+					)
+				: supabaseDesktopError(
+						'refused',
+						`RN Devtools couldn't verify that this stack listens only on this Mac (${checked.reason ?? 'verification unavailable'}). ${effect}`,
+						{
+							title: 'Exposure could not be verified',
+							recovery: 'Start it again; RN Devtools checks it each time.',
+						}
+					);
+		// The periodic sweep has no job. Persist its reason and stop event too,
+		// rather than leaving only a lastStoppedAt timestamp with no explanation.
+		try {
+			await this.stackStore.updateRecord(stackId, (draft) => ({
+				...draft,
+				lastError: error,
+			}));
+			if (!job) {
+				await this.stackStore.recordActivity({
+					id: `supabase-exposure-stop-${randomUUID()}`,
+					kind: 'stop',
+					stackIds: [stackId],
+					outcome: stopped.ok ? 'complete' : 'failed',
+					errorCode: error.code,
+					startedAt,
+					durationMs: Math.max(0, this.now() - startedAt),
+					requestedBy: 'automatic',
+				});
+			}
+		} catch (failure) {
+			this.log(
+				`Supabase exposure stop could not be saved: ${errorName(failure)}`
+			);
+		}
 		this.markDirty();
-		return {
-			ok: false,
-			error:
-				verdict === 'lan-exposed'
-					? supabaseDesktopError(
-							'refused',
-							'A service of this stack listened on an address other than 127.0.0.1, so RN Devtools stopped it. Its data is kept.',
-							{
-								title: LAN_EXPOSED_TITLE,
-								recovery:
-									'Check supabase/config.toml for listener addresses, then start it again.',
-							}
-						)
-					: supabaseDesktopError(
-							'refused',
-							"RN Devtools couldn't verify that this stack listens only on this Mac, so it stopped it. Its data is kept.",
-							{
-								title: 'Exposure could not be verified',
-								recovery: 'Start it again; RN Devtools checks it each time.',
-							}
-						),
-		};
+		return { ok: false, error };
 	}
 
 	async #sweepExposure(): Promise<void> {
