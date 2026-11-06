@@ -124,6 +124,9 @@ func healthTOMLValue(raw []byte, keys []string, value any, present bool) ([]byte
 	if err != nil {
 		return nil, err
 	}
+	existing, _ := healthGet(doc, keys...)
+	emptyTable, isTable := existing.(map[string]any)
+	removeEmptyTable := !present && isTable && len(emptyTable) == 0
 	if err = healthSet(doc, keys, value, present); err != nil {
 		return nil, err
 	}
@@ -136,6 +139,24 @@ func healthTOMLValue(raw []byte, keys []string, value any, present bool) ([]byte
 		switch node.Kind {
 		case unstable.Table, unstable.ArrayTable:
 			table = tomlNodeKey(node)
+			if node.Kind == unstable.Table && removeEmptyTable && slices.Equal(table, keys) {
+				// Removing leaves alone leaves an invalid empty MCP registration.
+				// Drop only its now-empty header, retaining comments on that line.
+				first := int(node.Child().Raw.Offset)
+				start := bytes.LastIndexByte(raw[:first], '\n') + 1
+				keyEnd := first
+				parts := node.Key()
+				for parts.Next() {
+					key := parts.Node()
+					keyEnd = int(key.Raw.Offset + key.Raw.Length)
+				}
+				end := keyEnd + bytes.IndexByte(raw[keyEnd:], ']') + 1
+				next := append(bytes.Clone(raw[:start]), raw[end:]...)
+				if _, e := healthDecode(next, "toml"); e != nil {
+					return nil, errors.New("Cannot safely remove this empty TOML table.")
+				}
+				return next, nil
+			}
 			if node.Kind == unstable.Table && slices.Equal(table, keys[:len(keys)-1]) {
 				start := int(node.Child().Raw.Offset)
 				end := bytes.IndexByte(raw[start:], '\n')
@@ -158,11 +179,11 @@ func healthTOMLValue(raw []byte, keys []string, value any, present bool) ([]byte
 				if e != nil {
 					return nil, e
 				}
-				sep := bytes.IndexByte(raw[start:end], '=')
-				if sep < 0 {
+				sep := tomlValueSeparator(raw, node)
+				if sep < start || sep >= end {
 					return nil, errors.New("Unsupported TOML layout.")
 				}
-				replacement = string(raw[start:start+sep+1]) + " " + literal
+				replacement = string(raw[start:sep+1]) + " " + literal
 			}
 			next := append([]byte{}, raw[:start]...)
 			next = append(next, []byte(replacement)...)
@@ -237,6 +258,49 @@ func healthWriteValues(raw []byte, format string, changes []healthValue, undo bo
 	return append(raw, '\n'), err
 }
 
+// Remove only empty containers created by the repair. Existing containers and
+// any later settings inside a new container remain the operator's configuration.
+func healthPruneCreatedParents(raw []byte, j healthJournal) ([]byte, error) {
+	original, err := healthDecode(j.Before, j.Format)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := healthDecode(raw, j.Format)
+	if err != nil {
+		return nil, err
+	}
+	for _, change := range j.Values {
+		for depth := len(change.Keys) - 1; depth > 0; depth-- {
+			keys := change.Keys[:depth]
+			if _, existed := healthGet(original, keys...); existed {
+				continue
+			}
+			value, _ := healthGet(doc, keys...)
+			object, ok := value.(map[string]any)
+			if ok && len(object) > 0 && depth == 2 && keys[1] == "rndevtools" && (keys[0] == "mcp_servers" || keys[0] == "mcpServers") {
+				return nil, errors.New("This connection has new settings since the repair. Undo stopped to preserve the newer configuration.")
+			}
+			if !ok || len(object) != 0 {
+				continue
+			}
+			if err = healthSet(doc, keys, nil, false); err != nil {
+				return nil, err
+			}
+			if j.Format == "toml" {
+				raw, err = healthTOMLValue(raw, keys, nil, false)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if j.Format == "toml" {
+		return raw, nil
+	}
+	raw, err = json.MarshalIndent(doc, "", "  ")
+	return append(raw, '\n'), err
+}
+
 func prepareHealthFix(options HealthOptions, f HealthFinding) (healthJournal, error) {
 	raw, present, err := healthRead(f.file)
 	if err != nil {
@@ -252,7 +316,7 @@ func prepareHealthFix(options HealthOptions, f HealthFinding) (healthJournal, er
 		case "skill":
 			j.After = []byte(healthString(f.value))
 		case "routing":
-			block := AgentsBlock("") + "\nUse RN Devtools for managed local Supabase lifecycle; never stop another worktree's stack.\n"
+			block := healthRoutingBlock()
 			start, end, found, valid := agentsBlockSpan(string(raw))
 			if !valid {
 				return j, errors.New("Existing routing markers need manual review.")
@@ -320,6 +384,12 @@ func prepareHealthFix(options HealthOptions, f HealthFinding) (healthJournal, er
 	return j, err
 }
 
+func healthRoutingBlock() string {
+	// Keep all owned guidance inside the markers so upgrades replace it once.
+	return strings.TrimSuffix(AgentsBlock(""), agentsBlockEnd+"\n") +
+		"\nUse RN Devtools for managed local Supabase lifecycle; never stop another worktree's stack.\n" + agentsBlockEnd + "\n"
+}
+
 func healthStateDir(options HealthOptions) string {
 	return filepath.Join(options.Home, "Library", "Application Support", "RN Devtools", "agent-check")
 }
@@ -371,6 +441,20 @@ func healthLoad(options HealthOptions, id string) (healthJournal, error) {
 	raw, err := os.ReadFile(file)
 	if err != nil || json.Unmarshal(raw, &j) != nil || j.Home != options.Home || j.Project != options.Project || j.Executable != options.Executable || j.Plan.ID != id {
 		return j, errors.New("Repair history does not match this configuration scope.")
+	}
+	if len(j.Values) > 0 {
+		// JSON journals cannot retain TOML integer/date types in interface values.
+		// Recover each setting from the saved source bytes before selective Undo.
+		before, beforeErr := healthDecode(j.Before, j.Format)
+		after, afterErr := healthDecode(j.After, j.Format)
+		if beforeErr != nil || afterErr != nil {
+			return j, errors.New("Repair history contains invalid configuration snapshots.")
+		}
+		for i := range j.Values {
+			change := &j.Values[i]
+			change.Before, change.BeforePresent = healthGet(before, change.Keys...)
+			change.After, change.AfterPresent = healthGet(after, change.Keys...)
+		}
 	}
 	return j, nil
 }
@@ -536,6 +620,9 @@ func UndoAgentFix(options HealthOptions, id string) (HealthReport, error) {
 		} else if j.Format != "text" {
 			var restored []byte
 			restored, err = healthWriteValues(current, j.Format, j.Values, true)
+			if err == nil {
+				restored, err = healthPruneCreatedParents(restored, j)
+			}
 			if err == nil {
 				err = writeFileAtomically(target, restored, 0o600)
 			}

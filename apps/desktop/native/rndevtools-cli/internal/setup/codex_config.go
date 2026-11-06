@@ -90,10 +90,13 @@ func mergeCodexServer(raw []byte, executable string) ([]byte, error) {
 				continue
 			}
 			start, end := int(node.Raw.Offset), int(node.Raw.Offset+node.Raw.Length)
-			// These three known keys have no '=' in their names. Keep the
-			// complete original key (including a dotted or quoted prefix).
-			separator := bytes.IndexByte(content[start:end], '=')
-			edits = append(edits, edit{start, end, string(content[start:start+separator+1]) + " " + value})
+			// Quoted dotted prefixes may contain '='. Locate the assignment
+			// after the final parsed key, preserving the complete original key.
+			separator := tomlValueSeparator(content, node)
+			if separator < start || separator >= end {
+				return nil, errors.New("could not locate the Codex setting; leave it unchanged and fix it by hand")
+			}
+			edits = append(edits, edit{start, end, string(content[start:separator+1]) + " " + value})
 			delete(wanted, key[2])
 		}
 	}
@@ -145,4 +148,18 @@ func tomlNodeKey(node *unstable.Node) []string {
 		key = append(key, string(iterator.Node().Data))
 	}
 	return key
+}
+
+func tomlValueSeparator(raw []byte, node *unstable.Node) int {
+	keys := node.Key()
+	end := int(node.Raw.Offset)
+	for keys.Next() {
+		key := keys.Node()
+		end = int(key.Raw.Offset + key.Raw.Length)
+	}
+	limit := int(node.Raw.Offset + node.Raw.Length)
+	if separator := bytes.IndexByte(raw[end:limit], '='); separator >= 0 {
+		return end + separator
+	}
+	return -1
 }

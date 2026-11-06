@@ -30,6 +30,11 @@ preview against current files, changes one file atomically, and rechecks.
 **Undo** restores the touched setting while retaining unrelated later edits.
 If a newer edit changed that same setting, undo refuses to overwrite it. Text
 files are restored only while their content still matches the repaired version.
+Undo removes empty MCP entries created by a repair; if new settings were added
+inside that connection, it stops and preserves the current configuration.
+Previews bind to resolved file and directory symlink targets, so switching a
+dotfiles directory requires a new preview. JSON numbers retain their precision,
+and selective TOML undo recovers value types from the original source snapshot.
 Private previews and original bytes are stored under
 `~/Library/Application Support/RN Devtools/agent-check`, with directory mode
 0700 and file mode 0600. Reports never include environment values or credentials.
@@ -61,6 +66,9 @@ Malformed or unreadable client files and uncertain Codex project trust disable
 automatic fixes for that client. Vendor skills containing lifecycle commands
 receive review findings; their files are never rewritten automatically. Tool
 filters and disabled-hook policy receive review findings and are preserved.
+First-run setup also skips unsupported hook sections or event shapes instead of
+overwriting them. Routing checks distinguish quoted marker examples from the
+managed instruction block and offer updates when that block is stale.
 
 Custom configuration homes, Codex profiles, ancestor project overrides, managed
 organization policy, unknown wrappers, detailed plugin tool filters, remote

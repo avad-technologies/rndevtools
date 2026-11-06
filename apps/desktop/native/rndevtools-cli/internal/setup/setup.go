@@ -267,7 +267,7 @@ func writeJSONServers(path string, key string, executable string, extra map[stri
 	case err == nil:
 		if len(bytes.TrimSpace(raw)) > 0 {
 			// A bare null decodes to a nil map, which cannot take our entry.
-			if err := json.Unmarshal(raw, &document); err != nil || document == nil {
+			if err := decodeJSONDocument(raw, &document); err != nil || document == nil {
 				change.Action = "skip"
 				change.Detail = "not valid JSON; fix it by hand, then rerun setup"
 				return change, nil
@@ -444,7 +444,7 @@ func installHooks(path string, executable string, write bool) (Change, error) {
 	case err == nil:
 		if len(bytes.TrimSpace(raw)) > 0 {
 			// A bare null decodes to a nil map, which cannot take our hooks.
-			if err := json.Unmarshal(raw, &document); err != nil || document == nil {
+			if err := decodeJSONDocument(raw, &document); err != nil || document == nil {
 				change.Action = "skip"
 				change.Detail = "not valid JSON; fix it by hand, then rerun setup"
 				return change, nil
@@ -456,9 +456,23 @@ func installHooks(path string, executable string, write bool) (Change, error) {
 	default:
 		return change, err
 	}
-	hooks, _ := document["hooks"].(map[string]any)
+	hooks, valid := document["hooks"].(map[string]any)
+	if _, exists := document["hooks"]; exists && !valid {
+		change.Action = "skip"
+		change.Detail = "the hooks section is not an object; fix it by hand, then rerun setup"
+		return change, nil
+	}
 	if hooks == nil {
 		hooks = map[string]any{}
+	}
+	for _, event := range []string{"PreToolUse", "SessionEnd"} {
+		if value, exists := hooks[event]; exists {
+			if _, valid := value.([]any); !valid {
+				change.Action = "skip"
+				change.Detail = "an existing hook event is not an array; fix it by hand, then rerun setup"
+				return change, nil
+			}
+		}
 	}
 	preToolUse, sessionEnd := hookDocument(executable)
 	changed := false
@@ -770,17 +784,39 @@ const writeAccess = 0x2
 // this user cannot write, such as a read-only store.
 func writeTarget(path string) (target string, reason string) {
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return path, ""
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", "a symlink to a file that does not exist; restore its target, then rerun setup"
+		}
+		if syscall.Access(filepath.Dir(resolved), writeAccess) != nil {
+			return "", "a symlink into a directory you cannot write; add the rndevtools settings where that file is generated, then rerun setup"
+		}
+		return resolved, ""
 	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", "a symlink to a file that does not exist; restore its target, then rerun setup"
+	// Resolve directory links as well, including when this file or its parent
+	// directories do not exist yet. Repair previews bind to the resulting target,
+	// so swapping a dotfiles directory link cannot redirect apply or undo.
+	ancestor := path
+	var missing []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(ancestor)
+		if resolveErr == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, ""
+		}
+		if _, statErr := os.Lstat(ancestor); statErr == nil || !os.IsNotExist(resolveErr) {
+			return "", "the configuration path cannot be resolved; restore its directory target, then rerun setup"
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", "the configuration path cannot be resolved; restore its directory target, then rerun setup"
+		}
+		missing = append(missing, filepath.Base(ancestor))
+		ancestor = parent
 	}
-	if syscall.Access(filepath.Dir(resolved), writeAccess) != nil {
-		return "", "a symlink into a directory you cannot write; add the rndevtools settings where that file is generated, then rerun setup"
-	}
-	return resolved, ""
 }
 
 func writeFileAtomically(path string, content []byte, mode os.FileMode) error {

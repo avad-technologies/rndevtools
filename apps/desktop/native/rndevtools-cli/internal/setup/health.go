@@ -18,7 +18,7 @@ import (
 )
 
 const healthFileLimit = 2 * 1024 * 1024
-const healthRulesVersion = "2026-11-05.1"
+const healthRulesVersion = "2026-11-06.1"
 
 // HealthOptions are local filesystem inputs, never accepted through the MCP.
 type HealthOptions struct {
@@ -136,12 +136,23 @@ func healthDecode(data []byte, format string) (map[string]any, error) {
 	if format == "toml" {
 		err = toml.Unmarshal(data, &doc)
 	} else {
-		err = json.Unmarshal(data, &doc)
+		err = decodeJSONDocument(data, &doc)
 	}
 	if err != nil || doc == nil {
 		return nil, errors.New("Configuration is not a valid object; no automatic edits are available.")
 	}
 	return doc, nil
+}
+
+// Unknown client settings can contain identifiers and precise numeric policy.
+// Keep their JSON representation instead of rounding every number to float64.
+func decodeJSONDocument(data []byte, doc *map[string]any) error {
+	if !json.Valid(data) {
+		return errors.New("Invalid JSON configuration.")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(doc)
 }
 
 func healthGet(doc map[string]any, keys ...string) (any, bool) {
@@ -405,7 +416,11 @@ func (s *healthScanner) scanCodex() {
 		if target == "" {
 			target = file
 		}
-		f := HealthFinding{Client: "codex", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled executable and enable its MCP. Existing environment and approval settings are preserved.", file: target, format: "toml", mode: "connection", FixLabel: "Repair Codex connection"}
+		scope := "All Codex projects"
+		if target != file {
+			scope = "Selected project (Codex)"
+		}
+		f := HealthFinding{Client: "codex", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled executable and enable its MCP. Existing environment and approval settings are preserved.", file: target, format: "toml", mode: "connection", Scope: scope, FixLabel: "Repair Codex connection"}
 		if server["url"] != nil {
 			f.FixLabel = ""
 			f.Detail = "A custom RN Devtools transport is configured. Review it in Codex; it will not be replaced automatically."
@@ -497,7 +512,11 @@ func (s *healthScanner) scanClaude() {
 		if target == "" {
 			target = file
 		}
-		f := HealthFinding{Client: "claude", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled MCP executable. Existing environment and approval settings are preserved.", file: target, format: "json", mode: "connection", FixLabel: "Repair Claude connection"}
+		scope := "All Claude Code projects"
+		if target == projectMCPFile || healthMap(doc, "projects", s.options.Project, "mcpServers", "rndevtools") != nil {
+			scope = "Selected project (Claude Code)"
+		}
+		f := HealthFinding{Client: "claude", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled MCP executable. Existing environment and approval settings are preserved.", file: target, format: "json", mode: "connection", Scope: scope, FixLabel: "Repair Claude connection"}
 		if server["url"] != nil || healthContains(disabled, "rndevtools") || healthContains(disabledProject, "rndevtools") || (target == file && healthMap(doc, "projects", s.options.Project, "mcpServers", "rndevtools") != nil) {
 			f.FixLabel = ""
 			f.Detail = "Review this project override or disabled connection in Claude /mcp, then recheck."
@@ -561,11 +580,15 @@ func (s *healthScanner) scanGuidance(client string) {
 	root := filepath.Join(s.options.Home, dir)
 	file := filepath.Join(root, instruction)
 	data, _ := s.read(file, client)
-	if !bytes.Contains(data, []byte(agentsBlockStart)) {
-		s.add(HealthFinding{Client: client, Rule: "routing", Severity: "warning", Title: "Add RN Devtools routing instructions", Detail: "Tell this client to use RN Devtools for local simulator, Metro and managed Supabase work. Existing instructions are kept.", file: file, format: "text", mode: "routing", FixLabel: "Add routing instructions"})
-	}
-	if bytes.Contains(data, []byte(agentsBlockStart)) && !bytes.Contains(data, []byte(agentsBlockEnd)) {
-		s.add(HealthFinding{Client: client, Rule: "routing-incomplete", Severity: "review", Title: "Routing instructions are incomplete", Detail: "The RN Devtools instruction block has no closing marker. Review the file before repairing its instructions.", file: file})
+	start, blockEnd, found, valid := agentsBlockSpan(string(data))
+	if !valid {
+		s.add(HealthFinding{Client: client, Rule: "routing-incomplete", Severity: "review", Title: "Routing instructions are incomplete", Detail: "The RN Devtools instruction markers do not form one complete block. Review the file before repairing its instructions.", file: file})
+	} else if !found || string(data[start:blockEnd]) != healthRoutingBlock() {
+		title, label := "Add RN Devtools routing instructions", "Add routing instructions"
+		if found {
+			title, label = "Update RN Devtools routing instructions", "Update routing instructions"
+		}
+		s.add(HealthFinding{Client: client, Rule: "routing", Severity: "warning", Title: title, Detail: "Tell this client to use RN Devtools for local simulator, Metro and managed Supabase work. Existing instructions outside its managed block are kept.", file: file, format: "text", mode: "routing", FixLabel: label})
 	}
 	hookFile := filepath.Join(root, hooks)
 	doc := s.document(hookFile, client, "json")
