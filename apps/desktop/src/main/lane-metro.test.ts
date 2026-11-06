@@ -404,6 +404,33 @@ describe('Metro stop', () => {
 		return { metro, asked, pid: holder.pid as number };
 	}
 
+	it('verifies a surviving Metro command and app directory without signalling it', async () => {
+		const { metro, pid, asked } = supervisor(
+			METRO_COMMAND,
+			realpathSync(root),
+			lsofIdentity(root)
+		);
+		expect(await metro.verifyOwnership(pid, 8_100, root)).toBe(true);
+		expect(asked).toEqual(['/bin/ps', '/usr/sbin/lsof']);
+		expect(holder.exitCode).toBeNull();
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it('refuses to adopt another app serving the same port under a recycled PID', async () => {
+		const other = path.join(root, 'other-app');
+		await mkdir(other);
+		const { metro, pid } = supervisor(
+			METRO_COMMAND,
+			realpathSync(other),
+			lsofIdentity(other)
+		);
+		await expect(metro.verifyOwnership(pid, 8_100, root)).rejects.toThrow(
+			/not from this lane/
+		);
+		expect(holder.exitCode).toBeNull();
+		expect(holder.signalCode).toBeNull();
+	});
+
 	/**
 	 * The refusal to stop a Metro serving from another directory, whose cwd
 	 * lsof prints as `printed` under the real root, for a lane whose app
@@ -483,13 +510,16 @@ describe('Metro stop', () => {
 		expect((await exited)[1]).toBe('SIGTERM');
 		const bounds = { timeoutMs: 3_000, maxOutputBytes: 64 * 1024 };
 		expect(calls).toEqual([
-			[`/usr/sbin/lsof -a -p ${pid} -iTCP:8100 -sTCP:LISTEN -n -P -Fp`, bounds],
+			[
+				`/usr/sbin/lsof -b -a -p ${pid} -iTCP:8100 -sTCP:LISTEN -n -P -Fp`,
+				bounds,
+			],
 			[
 				`/bin/ps -p ${pid} -o command=`,
 				{ timeoutMs: 5_000, maxOutputBytes: 64 * 1024 },
 			],
 			[
-				`/usr/sbin/lsof -a -p ${pid} -d cwd -FDin`,
+				`/usr/sbin/lsof -b -a -p ${pid} -d cwd -FDin`,
 				{ ...bounds, environment: { LC_ALL: 'C' } },
 			],
 		]);
@@ -1366,6 +1396,7 @@ describe('Metro health', () => {
 			{
 				executable: '/usr/sbin/lsof',
 				args: [
+					'-b',
 					'-a',
 					'-p',
 					'4242',

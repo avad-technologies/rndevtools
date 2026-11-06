@@ -362,6 +362,11 @@ export class LaneService {
 	 * directory, settled or not.
 	 */
 	readonly #startsByApp = new Map<string, Promise<void>>();
+	/** A stop owns its lane until signalling and durable removal settle. */
+	readonly #stoppingLanes = new Set<string>();
+	/** PIDs spawned here or proven to belong to a surviving lease. */
+	readonly #verifiedMetros = new Map<string, number>();
+	readonly #metroIdentityErrors = new Map<string, string>();
 	/** Each lane's local backend, by lane id. */
 	readonly #backendRecords = new Map<string, LaneBackendRecord>();
 	/** Aborted by stop(): work the lanes do on their own ends with it. */
@@ -442,18 +447,27 @@ export class LaneService {
 		await this.#store.start();
 		await this.#reconcile();
 		await this.refresh().catch(() => undefined);
-		for (const lane of this.#store.lanes()) {
-			if (
-				(lane.backendPolicy === 'auto' || lane.backendPolicy === 'required') &&
-				this.#isMetroRunning(lane)
-			) {
-				void this.#serialize(
-					laneAppDirectory(lane),
-					this.#lifecycle.signal,
-					() => this.#restoreBackend(lane.id)
-				).catch(() => undefined);
-			}
-		}
+		// Ownership probes can take seconds. The window awaits start(), so
+		// adopt surviving PIDs in the background, before any backend restore.
+		// Until proven, reconcile leaves them starting and never opens an app.
+		const adoptions = this.#store.lanes().map((lane) =>
+			this.#serialize(
+				laneAppDirectory(lane),
+				this.#lifecycle.signal,
+				async () => {
+					if (!(await this.#verifyRecordedMetro(lane))) return;
+					if (
+						lane.backendPolicy === 'auto' ||
+						lane.backendPolicy === 'required'
+					) {
+						await this.#restoreBackend(lane.id);
+					}
+				}
+			)
+		);
+		void Promise.allSettled(adoptions)
+			.then(() => (this.#stopped ? undefined : this.#reconcile()))
+			.catch(() => undefined);
 		this.#reconcileTimer = setInterval(() => {
 			void this.#reconcile();
 		}, RECONCILE_INTERVAL_MS);
@@ -473,6 +487,10 @@ export class LaneService {
 		const laneByWorktree = new Map(
 			lanes.map((lane) => [lane.worktreePath, lane.id])
 		);
+		const error = [this.#error, ...this.#metroIdentityErrors.values()]
+			.filter(Boolean)
+			.join('\n')
+			.slice(0, 4_096);
 		return laneStateSchema.parse({
 			revision: this.#revision,
 			updatedAt: this.#updatedAt,
@@ -490,7 +508,7 @@ export class LaneService {
 			}),
 			repositories: this.#store.repositories(),
 			deviceRequests: [...this.#deviceRequests.values()],
-			...(this.#error ? { error: this.#error } : {}),
+			...(error ? { error } : {}),
 		});
 	};
 
@@ -739,6 +757,7 @@ export class LaneService {
 		const previous = this.#startsByApp.get(appDirectory);
 		const run = (async () => {
 			if (previous) await whenSettled(previous, signal);
+			this.#assertOperationActive(signal);
 			return task();
 		})();
 		const tail = Promise.allSettled([previous, run]).then(() => undefined);
@@ -914,7 +933,7 @@ export class LaneService {
 		// The backend starts now and comes up while the Simulator boots and
 		// slims; nothing below waits for it until Metro is due.
 		const pending = this.#beginBackend(target, backendPolicy, input.agent);
-		let lane: Lane;
+		let lane: Lane | undefined;
 		let decision: BackendDecision | undefined;
 		let metroPid: number | undefined;
 		try {
@@ -949,16 +968,10 @@ export class LaneService {
 			decision = pending
 				? await this.#decideBackend(pending, environment, signal)
 				: undefined;
-			metroPid = await this.#spawnMetro(
-				{ ...target, logPath },
-				environment,
-				decision?.env
-			);
 			lane = {
 				...target,
 				backendPolicy,
 				backendEnvHash: envFingerprint(decision?.env),
-				metroPid,
 				metro: 'starting',
 				logPath,
 				...(identity.bundleIdentifier
@@ -969,6 +982,13 @@ export class LaneService {
 				...(agent ? { agent } : {}),
 				...(slim ? { slim } : {}),
 			};
+			metroPid = await this.#spawnMetro(
+				lane,
+				environment,
+				decision?.env,
+				signal
+			);
+			lane = { ...lane, metroPid };
 			if (decision) {
 				// Recorded before the lane is stored, so its first broadcast says
 				// where its backend stands.
@@ -989,8 +1009,8 @@ export class LaneService {
 			void pending?.answer.then(() => this.#releaseBackend(id));
 			// Nor does its Metro have anyone to serve; left running it would
 			// keep the port, and every retry would leave another.
-			if (metroPid !== undefined) {
-				await this.#discardMetro(id, metroPid, target);
+			if (metroPid !== undefined && lane) {
+				await this.#discardMetro({ ...lane, metroPid });
 			}
 			throw error;
 		}
@@ -1023,20 +1043,46 @@ export class LaneService {
 	/**
 	 * Stops the Metro a start spawned for a lane that never came to be. The
 	 * stop proves the PID is that Metro first and otherwise leaves it alone.
-	 * A store write that failed after taking the lane leaves it in memory, so
-	 * it goes too.
+	 * Only successful cleanup removes its lease. A refused cleanup keeps a
+	 * durable recovery record so the child is never silently forgotten.
 	 */
-	async #discardMetro(
-		laneId: string,
-		metroPid: number,
-		lane: Pick<Lane, 'worktreePath' | 'appPath' | 'port'>
-	): Promise<void> {
-		if (this.#store.get(laneId)) {
-			await this.#store.remove(laneId).catch(() => undefined);
+	async #discardMetro(lane: Lane): Promise<void> {
+		await this.#cleanupUncommittedMetro(lane);
+		if (this.#store.get(lane.id)?.metroPid === lane.metroPid) {
+			await this.#store.remove(lane.id).catch(() => undefined);
 		}
-		await this.#metro
-			.stop(metroPid, lane.port, laneAppDirectory(lane))
-			.catch(() => undefined);
+	}
+
+	/** Keep a recoverable lease when identity-verified cleanup is refused. */
+	async #cleanupUncommittedMetro(
+		lane: Lane,
+		reason = 'Uncommitted Metro cleanup'
+	): Promise<void> {
+		const pid = lane.metroPid;
+		if (pid === undefined) return;
+		this.#verifiedMetros.delete(lane.id);
+		await this.#recordMetroStop(lane, reason);
+		try {
+			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
+		} catch (error) {
+			if (
+				error instanceof NotLaneMetroError ||
+				!this.#metro.isProcessRunning(pid)
+			)
+				return;
+			const message = `${reason} failed for Metro ${pid} on port ${lane.port}: ${safeErrorText(error)} The lane was retained so cleanup can be retried.`;
+			this.#metroIdentityErrors.set(lane.id, message);
+			try {
+				await this.#store.upsert({ ...lane, metro: 'starting' });
+			} catch (persistError) {
+				throw new Error(
+					`${message} Its recovery lease could not be saved: ${safeErrorText(persistError)}`,
+					{ cause: error }
+				);
+			}
+			this.#touch();
+			throw new Error(message, { cause: error });
+		}
 	}
 
 	/**
@@ -1388,6 +1434,9 @@ export class LaneService {
 		reservation: LaneReservation,
 		signal: AbortSignal
 	): Promise<Lane> {
+		this.#requireLane(existing.id);
+		reservation.simulatorUdid = existing.simulatorUdid;
+		reservation.worktreePath = existing.worktreePath;
 		let lane = existing;
 		// Retrying an existing lane must validate and honor --slim too.
 		const slimRequest = input.slimProfileId
@@ -1395,7 +1444,10 @@ export class LaneService {
 			: undefined;
 		// Only the lane's own Metro counts as alive: a packager answering on the
 		// port may be another worktree's, which is no reason to skip a respawn.
+		await this.#verifyRecordedMetro(lane, { fresh: true });
+		this.#requireLane(lane.id);
 		const metroAlive = this.#isMetroRunning(lane);
+		if (metroAlive) reservation.port = lane.port;
 		if (!metroAlive) {
 			// A stopped lane's port reads as free to other starts. Claim it before
 			// the first await, and never take it back from a lane that got it
@@ -1463,19 +1515,20 @@ export class LaneService {
 			throw error;
 		}
 		const current = this.#store.get(lane.id);
-		if (!current) {
+		if (!current || this.#stoppingLanes.has(lane.id)) {
 			this.#releaseBackend(lane.id);
 			throw new Error(
 				`Lane ${lane.id} stopped while its backend was being ensured.`
 			);
 		}
+		this.#assertOperationActive(signal);
 		lane = current;
 		if (!decision && previous) {
 			// Turned off on this lane up: the backend lets go of the lane, and a
 			// running Metro that has its values restarts without them.
 			this.#releaseBackend(lane.id);
 			if (metroAlive && metroHasBackendEnv(lane, previous)) {
-				lane = await this.#respawnMetro(lane, environment, undefined);
+				lane = await this.#respawnMetro(lane, environment, undefined, signal);
 			}
 		}
 		const record = decision
@@ -1484,11 +1537,16 @@ export class LaneService {
 		lane = { ...lane, backendPolicy: policy };
 		await this.#store.upsert(lane);
 		if (!metroAlive) {
-			const metroPid = await this.#spawnMetro(lane, environment, decision?.env);
+			const metroPid = await this.#spawnMetro(
+				lane,
+				environment,
+				decision?.env,
+				signal
+			);
 			try {
 				// A lane stopped while its Metro spawned stays stopped, and that
 				// Metro, which no lane would ever stop, goes.
-				if (!this.#store.get(lane.id)) {
+				if (!this.#store.get(lane.id) || this.#stoppingLanes.has(lane.id)) {
 					throw new Error(
 						`Lane ${lane.id} was stopped while its Metro started.`
 					);
@@ -1503,15 +1561,21 @@ export class LaneService {
 				if (record) record.env = decision?.env;
 				await this.#store.upsert(lane);
 			} catch (error) {
-				await this.#metro
-					.stop(metroPid, lane.port, laneAppDirectory(lane))
-					.catch(() => undefined);
+				await this.#cleanupUncommittedMetro(
+					{
+						...lane,
+						metroPid,
+						backendEnvHash: envFingerprint(decision?.env),
+						startedAt: this.#now(),
+					},
+					safeErrorText(error)
+				);
 				throw error;
 			}
 			this.#reservations.delete(reservation);
 			this.#touch();
 		} else if (record && decision?.env) {
-			await this.#attachEnv(lane, environment, record, decision.env);
+			await this.#attachEnv(lane, environment, record, decision.env, signal);
 			lane = this.#store.get(lane.id) ?? lane;
 		}
 		// A launch held back by an earlier start counts as asked for.
@@ -1535,11 +1599,13 @@ export class LaneService {
 	 * values its backend serves.
 	 */
 	async #spawnMetro(
-		lane: Pick<Lane, 'worktreePath' | 'appPath' | 'port' | 'logPath'>,
+		lane: Lane,
 		environment: LaneEnvironment,
-		backendEnv?: BackendEnv
+		backendEnv?: BackendEnv,
+		signal: AbortSignal = this.#lifecycle.signal
 	): Promise<number> {
-		return this.#metro.start({
+		this.#assertOperationActive(signal);
+		const pid = await this.#metro.start({
 			worktreePath: laneAppDirectory(lane),
 			port: lane.port,
 			logPath: lane.logPath,
@@ -1549,6 +1615,30 @@ export class LaneService {
 				? { laneEnv: backendEnv }
 				: {}),
 		});
+		try {
+			this.#assertOperationActive(signal);
+		} catch (error) {
+			// Cancellation can arrive while the async spawn resolves. This PID
+			// has no durable owner yet, so do not leave it serving forever.
+			await this.#cleanupUncommittedMetro(
+				{
+					...lane,
+					metroPid: pid,
+					backendEnvHash: envFingerprint(backendEnv),
+					startedAt: this.#now(),
+				},
+				safeErrorText(error)
+			);
+			throw error;
+		}
+		this.#verifiedMetros.set(lane.id, pid);
+		this.#metroIdentityErrors.delete(lane.id);
+		return pid;
+	}
+
+	#assertOperationActive(signal: AbortSignal): void {
+		if (this.#stopped) throw new Error('Lanes are shutting down.');
+		if (signal.aborted) throw new Error('Lane operation cancelled.');
 	}
 
 	async launchLane(
@@ -1590,7 +1680,7 @@ export class LaneService {
 		// build. The check only runs when the worktree told us its bundle id.
 		await this.#assertDevClientInstalled(lane, signal);
 		for (let attempt = 0; attempt < 2; attempt++) {
-			if (signal.aborted) throw new Error('Lane operation cancelled.');
+			this.#assertLaunchTarget(lane, signal);
 			try {
 				await this.#runSimulatorAction(
 					{
@@ -1672,7 +1762,17 @@ export class LaneService {
 		reason = 'Explicit lane stop or session release'
 	): Promise<void> {
 		const lane = this.#requireLane(laneId);
-		await this.#onMetroStop?.(lane, reason).catch(() => undefined);
+		this.#stoppingLanes.add(laneId);
+		try {
+			await this.#stopLaneNow(lane, reason);
+		} finally {
+			this.#stoppingLanes.delete(laneId);
+		}
+	}
+
+	async #stopLaneNow(lane: Lane, reason: string): Promise<void> {
+		const laneId = lane.id;
+		await this.#recordMetroStop(lane, reason);
 		if (lane.metroPid !== undefined) {
 			try {
 				await this.#metro.stop(
@@ -1690,10 +1790,20 @@ export class LaneService {
 			}
 		}
 		await this.#store.remove(laneId);
+		this.#verifiedMetros.delete(laneId);
+		this.#metroIdentityErrors.delete(laneId);
 		// The backend lets go of the lane without anything waiting for a stop,
 		// and nothing it does can keep the lane alive.
 		this.#releaseBackend(laneId);
 		this.#touch();
+	}
+
+	async #recordMetroStop(lane: Lane, reason: string): Promise<void> {
+		try {
+			await this.#onMetroStop?.(lane, reason);
+		} catch {
+			// Diagnostics cannot prevent intentional cleanup.
+		}
 	}
 
 	/**
@@ -1791,6 +1901,7 @@ export class LaneService {
 		try {
 			restarted = await this.#respawnMetro(lane, environment, decision.env);
 		} catch (error) {
+			this.#assertOperationActive(signal);
 			record.metro = 'needs-restart';
 			record.note = backendReason(
 				`Metro could not be restarted with the backend: ${safeErrorText(error)}`
@@ -1867,9 +1978,11 @@ export class LaneService {
 			const liveStatus =
 				status === 'stopped' || lane.metroPid === undefined
 					? 'stopped'
-					: (await this.#metro.isHealthy(lane.port, lane.metroPid))
-						? 'ready'
-						: 'starting';
+					: this.#verifiedMetros.get(lane.id) !== lane.metroPid
+						? 'starting'
+						: (await this.#metro.isHealthy(lane.port, lane.metroPid))
+							? 'ready'
+							: 'starting';
 			// The probe awaited; write back onto the lane as it is now, and not
 			// at all if it was stopped or got a new Metro meanwhile.
 			const current = this.#store.get(lane.id);
@@ -1970,8 +2083,11 @@ export class LaneService {
 			lane.metroPid === undefined ||
 			!this.#metro.isProcessRunning(lane.metroPid)
 		) {
+			this.#verifiedMetros.delete(lane.id);
+			this.#metroIdentityErrors.delete(lane.id);
 			return 'stopped';
 		}
+		if (this.#verifiedMetros.get(lane.id) !== lane.metroPid) return 'starting';
 		return lane.metro === 'stopped' ? 'starting' : lane.metro;
 	}
 
@@ -1981,13 +2097,17 @@ export class LaneService {
 	 * or its dev client launched, against another worktree's Metro.
 	 */
 	async #waitForMetro(lane: Lane, signal: AbortSignal): Promise<boolean> {
+		this.#assertLaunchTarget(lane, signal);
+		await this.#verifyRecordedMetro(lane, { fresh: true });
 		const deadline = this.#now() + LANE_METRO_HEALTH_TIMEOUT_MS;
 		while (this.#now() < deadline) {
-			if (signal.aborted) throw new Error('Lane launch cancelled.');
+			this.#assertLaunchTarget(lane, signal);
 			if (
 				lane.metroPid !== undefined &&
+				this.#verifiedMetros.get(lane.id) === lane.metroPid &&
 				(await this.#metro.isHealthy(lane.port, lane.metroPid))
 			) {
+				this.#assertLaunchTarget(lane, signal);
 				return true;
 			}
 			if (
@@ -2003,9 +2123,73 @@ export class LaneService {
 		return false;
 	}
 
+	#assertLaunchTarget(lane: Lane, signal: AbortSignal): void {
+		this.#assertOperationActive(signal);
+		const current = this.#requireLane(lane.id);
+		if (
+			current.metroPid !== lane.metroPid ||
+			current.simulatorUdid !== lane.simulatorUdid ||
+			current.port !== lane.port
+		) {
+			throw new Error('The lane changed before its dev-client launch.');
+		}
+	}
+
+	async #verifyRecordedMetro(
+		lane: Lane,
+		{ fresh = false }: { fresh?: boolean } = {}
+	): Promise<boolean> {
+		const pid = lane.metroPid;
+		if (pid === undefined || !this.#metro.isProcessRunning(pid)) {
+			this.#verifiedMetros.delete(lane.id);
+			return false;
+		}
+		if (!fresh && this.#verifiedMetros.get(lane.id) === pid) return true;
+		this.#verifiedMetros.delete(lane.id);
+		try {
+			if (
+				!(await this.#metro.verifyOwnership(
+					pid,
+					lane.port,
+					laneAppDirectory(lane)
+				))
+			) {
+				this.#metroIdentityErrors.delete(lane.id);
+				return false;
+			}
+		} catch (error) {
+			const message = `Cannot adopt Metro for lane ${lane.id}: ${safeErrorText(error)} Lane up will retry ownership verification.`;
+			const current = this.#store.get(lane.id);
+			if (
+				!this.#stopped &&
+				current?.metroPid === pid &&
+				!this.#stoppingLanes.has(lane.id)
+			) {
+				this.#metroIdentityErrors.set(lane.id, message);
+				await this.#store
+					.upsert({ ...current, metro: 'starting' })
+					.catch(() => undefined);
+				this.#touch();
+			}
+			throw new Error(message, { cause: error });
+		}
+		const current = this.#store.get(lane.id);
+		if (
+			this.#stopped ||
+			current?.metroPid !== pid ||
+			this.#stoppingLanes.has(lane.id)
+		)
+			return false;
+		this.#verifiedMetros.set(lane.id, pid);
+		this.#metroIdentityErrors.delete(lane.id);
+		return true;
+	}
+
 	#isMetroRunning(lane: Lane): boolean {
 		return (
-			lane.metroPid !== undefined && this.#metro.isProcessRunning(lane.metroPid)
+			lane.metroPid !== undefined &&
+			this.#verifiedMetros.get(lane.id) === lane.metroPid &&
+			this.#metro.isProcessRunning(lane.metroPid)
 		);
 	}
 
@@ -2039,31 +2223,71 @@ export class LaneService {
 	async #respawnMetro(
 		lane: Lane,
 		environment: LaneEnvironment,
-		backendEnv: BackendEnv | undefined
+		backendEnv: BackendEnv | undefined,
+		signal: AbortSignal = this.#lifecycle.signal
 	): Promise<Lane> {
+		// A stop may remove the stored lane while its replacement spawns.
+		// Keep its resources reserved until cleanup or a recovery lease wins.
+		const reservation: LaneReservation = {
+			appDirectory: laneAppDirectory(lane),
+			simulatorUdid: lane.simulatorUdid,
+			port: lane.port,
+		};
+		this.#reservations.add(reservation);
+		try {
+			return await this.#respawnMetroNow(lane, environment, backendEnv, signal);
+		} finally {
+			this.#reservations.delete(reservation);
+		}
+	}
+
+	async #respawnMetroNow(
+		lane: Lane,
+		environment: LaneEnvironment,
+		backendEnv: BackendEnv | undefined,
+		signal: AbortSignal
+	): Promise<Lane> {
+		this.#assertOperationActive(signal);
+		this.#requireLane(lane.id);
 		const pid = lane.metroPid;
 		if (pid !== undefined && this.#metro.isProcessRunning(pid)) {
-			await this.#onMetroStop?.(
+			await this.#recordMetroStop(
 				lane,
 				'Managed Metro restart to refresh its lane environment'
-			).catch(() => undefined);
+			);
 			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
 			await this.#waitForMetroExit(pid, lane.port);
 		}
 		const current = this.#store.get(lane.id);
-		if (!current || current.metroPid !== pid) {
+		if (
+			!current ||
+			this.#stoppingLanes.has(lane.id) ||
+			current.metroPid !== pid
+		) {
 			throw new Error(
 				`Lane ${lane.id} stopped or got another Metro while this one restarted.`
 			);
 		}
-		const metroPid = await this.#spawnMetro(current, environment, backendEnv);
+		const metroPid = await this.#spawnMetro(
+			current,
+			environment,
+			backendEnv,
+			signal
+		);
 		// A lane stopped while its Metro spawned leaves that Metro no one to
 		// serve, so it goes too.
 		const latest = this.#store.get(lane.id);
-		if (!latest || latest.metroPid !== pid) {
-			await this.#metro
-				.stop(metroPid, current.port, laneAppDirectory(current))
-				.catch(() => undefined);
+		if (
+			!latest ||
+			this.#stoppingLanes.has(lane.id) ||
+			latest.metroPid !== pid
+		) {
+			await this.#cleanupUncommittedMetro({
+				...current,
+				metroPid,
+				backendEnvHash: envFingerprint(backendEnv),
+				startedAt: this.#now(),
+			});
 			throw new Error(`Lane ${lane.id} stopped while its Metro restarted.`);
 		}
 		const next: Lane = {
@@ -2073,7 +2297,13 @@ export class LaneService {
 			backendEnvHash: envFingerprint(backendEnv),
 			startedAt: this.#now(),
 		};
-		await this.#store.upsert(next);
+		try {
+			await this.#store.upsert(next);
+		} catch (error) {
+			// Without a durable PID a desktop restart cannot recover this child.
+			await this.#cleanupUncommittedMetro(next, safeErrorText(error));
+			throw error;
+		}
 		this.#touch();
 		return next;
 	}
@@ -2536,7 +2766,8 @@ export class LaneService {
 		lane: Lane,
 		environment: LaneEnvironment,
 		record: LaneBackendRecord,
-		env: BackendEnv
+		env: BackendEnv,
+		signal: AbortSignal = this.#lifecycle.signal
 	): Promise<void> {
 		if (!this.#isMetroRunning(lane)) {
 			record.metro = 'needs-restart';
@@ -2552,10 +2783,11 @@ export class LaneService {
 			return;
 		}
 		try {
-			await this.#respawnMetro(lane, environment, env);
+			await this.#respawnMetro(lane, environment, env, signal);
 			record.env = env;
 			record.metro = 'restarted';
 		} catch (error) {
+			this.#assertOperationActive(signal);
 			record.metro = 'needs-restart';
 			record.note = backendReason(
 				`Metro could not be restarted with the backend: ${safeErrorText(error)}`
@@ -2578,6 +2810,7 @@ export class LaneService {
 		const pid = lane.metroPid;
 		if (pid === undefined || !this.#metro.isProcessRunning(pid)) return;
 		try {
+			await this.#recordMetroStop(lane, 'Required backend failed to attach');
 			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
 		} catch (error) {
 			record.note = backendReason(
@@ -2660,6 +2893,9 @@ export class LaneService {
 	}
 
 	#requireLane(laneId: string): Lane {
+		if (this.#stoppingLanes.has(laneId)) {
+			throw new Error(`Lane ${laneId} is stopping.`);
+		}
 		const lane = this.#store.get(laneId);
 		if (!lane) throw new Error(`Lane ${laneId} does not exist.`);
 		return lane;

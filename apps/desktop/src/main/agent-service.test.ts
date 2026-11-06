@@ -514,6 +514,7 @@ describe('AgentService holds through the lane reconcile', () => {
 		start = async (_input: MetroLaunchInput) => 1;
 		isHealthy = async () => true;
 		isProcessRunning = () => true;
+		verifyOwnership = async () => true;
 		stop = async (pid: number, port: number) => {
 			this.stopped.push({ pid, port });
 		};
