@@ -57,7 +57,7 @@ type RecordedCommand = {
 class FakeProvider implements SimulatorHostProvider {
 	readonly commands: RecordedCommand[] = [];
 	readonly opened: string[] = [];
-	deviceState: 'booted' | 'shutdown' = 'booted';
+	deviceState: 'booted' | 'booting' | 'shutdown' = 'booted';
 	deviceName = 'Example Test';
 	blockVideo = false;
 	failKeychain = false;
@@ -474,6 +474,51 @@ describe('simulator service', () => {
 		expect(provider.commands).toHaveLength(2);
 		await service.stop();
 	});
+
+	it.each([true, false])(
+		'waits passively for an in-progress boot (still owned: %s)',
+		async (stillOwned) => {
+			const provider = new FakeProvider();
+			const { service } = await createService(provider);
+			// Recovery must use fresh execution-time state.
+			provider.deviceState = 'booting';
+			const assertLifecycleOwnership = vi.fn();
+			if (!stillOwned) {
+				assertLifecycleOwnership
+					.mockImplementationOnce(() => {})
+					.mockImplementationOnce(() => {
+						throw new Error('Simulator ownership changed.');
+					});
+			}
+			try {
+				const receipt = service.runAction(
+					parsedAction({
+						actionId: 'retry-boot',
+						kind: 'device.boot',
+						udid: UDID,
+					}),
+					{ assertLifecycleOwnership }
+				);
+				const job = await waitForJob(
+					service,
+					receipt.jobId ?? '',
+					stillOwned ? 'complete' : 'failed'
+				);
+				expect(provider.commands.map(({ args }) => args)).toEqual([
+					['bootstatus', UDID],
+				]);
+				expect(assertLifecycleOwnership).toHaveBeenCalledTimes(2);
+				expect(assertLifecycleOwnership).toHaveBeenCalledBefore(
+					provider.runSimctl
+				);
+				expect(provider.opened).toEqual(stillOwned ? [UDID] : []);
+				if (!stillOwned)
+					expect(job.message).toBe('Simulator ownership changed.');
+			} finally {
+				await service.stop();
+			}
+		}
+	);
 
 	it('rejects a target removed from the fresh execution-time inventory', async () => {
 		const provider = new FakeProvider();

@@ -1271,14 +1271,20 @@ export class SimulatorService {
 		await this.#refreshInventory(signal);
 		const device = this.#requireDevice(action.udid);
 		if (action.kind === 'device.boot') {
-			if (device.state !== 'booted') {
+			// A prior boot request may still be running after its simctl caller timed out.
+			const bootInProgress = device.state === 'booting';
+			if (!bootInProgress && device.state !== 'booted') {
 				context.assertLifecycleOwnership?.();
 				await this.#run(['boot', action.udid], signal, { timeoutMs: 120_000 });
 			}
 			context.assertLifecycleOwnership?.();
-			await this.#run(['bootstatus', action.udid, '-b'], signal, {
-				timeoutMs: 180_000,
-			});
+			await this.#run(
+				bootInProgress
+					? ['bootstatus', action.udid]
+					: ['bootstatus', action.udid, '-b'],
+				signal,
+				{ timeoutMs: 180_000 }
+			);
 			context.assertLifecycleOwnership?.();
 			await this.#provider.openSimulator(action.udid, signal);
 			await this.#refreshInventory(signal);
