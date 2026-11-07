@@ -45,7 +45,7 @@ or:
 
 ## Commands and input
 
-Commands are `doctor`, `simulators`, `apps`, `screen`, `elements`, `act`,
+Commands are `doctor`, `simulators`, `simulator`, `apps`, `screen`, `elements`, `act`,
 `wait`, `capture`, `record`, `network`, `recipe`, `jobs`, `slimming`, `lane`,
 `supabase`, `native`, `agents`, `claim`, `release`, and `input`. Run `rndevtools <command> --help` for structured flags. An optional JSON
 command object may be piped on standard input; flags may add different fields,
@@ -62,6 +62,26 @@ under the same gates. `lane --operation up` needs only `--worktree`: without
 `deviceRequest` that the user settles in the Lanes panel (use an existing
 Simulator, clone one, or dismiss) while the agent polls `lane --operation ls`. `act` is limited to the desktop service's explicit
 unattended-action allowlist.
+
+`simulators` remains a read-only list command. The separate `simulator` command
+boots or shuts down one device already claimed by the exact calling session or
+assigned to its lane. It rechecks ownership when queued work begins. Shared MCP
+identities must use the owning agent's CLI session. A shutdown preserves the
+lane, Metro, backend, and simulator data:
+
+```sh
+rndevtools simulator --operation shutdown --udid DEVICE_UDID
+rndevtools wait --condition job --job-id JOB_ID  # when shutdown returns pending
+rndevtools simulator --operation boot --udid DEVICE_UDID
+rndevtools wait --condition job --job-id JOB_ID  # when boot returns pending
+rndevtools lane --operation launch --lane-id LANE_ID
+```
+
+Providing both `--operation` and `--udid` makes this new command ignore stdin,
+so automation that leaves its input pipe open does not block it. Otherwise it
+accepts the missing fields from a JSON object on stdin. Existing `simulators`
+stdin behavior and read-only MCP approvals are unchanged. Reload the agent
+client to discover the new tool and review its tool-approval policy.
 
 ## MCP server
 
@@ -92,8 +112,10 @@ concurrently, so a long `wait` or `lane up` never holds up a ping or another
 call, and at most four of a session's calls are with the desktop at once.
 `notifications/cancelled` stops the call it names, which gets no response:
 its socket closes, and the desktop aborts the handler at its next liveness
-probe, within about a second. A cancel stops the wait, not a job the call
-already started on the desktop: a `native` install or a slimming `apply`,
+probe, within about a second. Cancelling a pending `simulator` call requests
+cancellation of its lifecycle job too. Its normal observation deadline returns
+a job ID and leaves that job running. For other operations, cancellation stops
+the wait: a `native` install or a slimming `apply`,
 `undo`, or `restore` runs to the end unless `jobs --operation cancel` cancels
 it. For two seconds after the cancel, the time the desktop needs to notice,
 the call still counts toward the four and stays ahead of later calls on its

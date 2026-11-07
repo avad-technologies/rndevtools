@@ -103,6 +103,14 @@ Check all of the following before calling the Mac qualified:
   and database access again. Retain the restore checkpoint.
 - An unrelated agent is refused access to a device held by another session.
 
+For a simulator that stops responding, recover only the device your session
+already holds with `rndevtools simulator --operation shutdown --udid DEVICE_UDID`,
+then `--operation boot` for the same UDID. Follow each returned pending job with
+`rndevtools wait --condition job --job-id JOB_ID` before proceeding. Relaunch
+its lane and repeat input, capture, and database checks. The existing plural
+`simulators` command remains read-only; reload the agent client to discover the
+separate lifecycle tool and check its permission policy.
+
 For Codex clients that omit their thread identity over MCP, use the CLI from
 the chat's shell for explicit `CODEX_THREAD_ID` attribution. Never put one chat's
 thread ID into the global MCP registration.
