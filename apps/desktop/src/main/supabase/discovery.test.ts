@@ -147,6 +147,7 @@ function lsofCommand(pids: readonly number[], protocol: 'tcp' | 'udp'): string {
 		'/usr/sbin/lsof',
 		'-nP',
 		'-w',
+		'-b',
 		'-a',
 		'-p',
 		pids.join(','),
@@ -415,6 +416,11 @@ describe('checkExposure', () => {
 			'/usr/sbin/lsof',
 			'/usr/sbin/lsof',
 		]);
+		for (const call of calls) {
+			expect(call.args).toContain('-b');
+			expect(call.args).toContain('-nP');
+			expect(call.timeoutMs).toBe(10_000);
+		}
 	});
 
 	it('flags wildcard, LAN and link-local listeners, and ignores connected UDP', async () => {

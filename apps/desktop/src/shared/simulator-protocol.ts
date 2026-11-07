@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+	agentSetupRequestSchema,
+	agentSetupResultSchema,
+} from './agent-setup-protocol';
 
 const MAX_SHORT_TEXT = 4 * 1024;
 const MAX_LONG_TEXT = 512 * 1024;
@@ -1092,6 +1096,11 @@ export type SimulatorConfirmationResult = z.infer<
 export const simulatorOnboardingOperationSchema = z.discriminatedUnion('kind', [
 	z.strictObject({
 		actionId: identifierSchema,
+		kind: z.literal('agentCli.check'),
+		request: agentSetupRequestSchema,
+	}),
+	z.strictObject({
+		actionId: identifierSchema,
 		kind: z.literal('toolchain.selectXcode'),
 	}),
 	z.strictObject({
@@ -1128,6 +1137,7 @@ export const simulatorOnboardingReceiptSchema = z.strictObject({
 		'privacy.openSettings',
 		'agentCli.reveal',
 		'agentCli.setup',
+		'agentCli.check',
 	]),
 	completed: z.boolean(),
 	cancelled: z.boolean().optional(),
@@ -1135,6 +1145,7 @@ export const simulatorOnboardingReceiptSchema = z.strictObject({
 	error: shortTextSchema.optional(),
 	/** Human-readable outcome lines, e.g. one per file `agentCli.setup` touched. */
 	summary: z.array(shortTextSchema).max(32).optional(),
+	agentCheck: agentSetupResultSchema.optional(),
 });
 export type SimulatorOnboardingReceipt = z.infer<
 	typeof simulatorOnboardingReceiptSchema

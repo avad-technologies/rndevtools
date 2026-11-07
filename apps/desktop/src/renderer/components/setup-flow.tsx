@@ -14,6 +14,7 @@ import {
 	X,
 } from 'lucide-react';
 import { type ComponentType, useEffect, useRef, useState } from 'react';
+import { AgentSetupCheck } from '@/components/agent-setup-check';
 import { ProgressBar, useGetStarted } from '@/components/get-started';
 import { TargetStatePill } from '@/components/simulator-ui';
 import { CodePreview } from '@/components/ui';
@@ -540,6 +541,7 @@ function ConnectStage() {
 }
 
 function ExtrasStage() {
+	const [checkRevision, setCheckRevision] = useState(0);
 	const { state: supabase } = useSupabaseState();
 	const slimming = useSlimmingRuntime();
 	const { isBridgeAvailable, runOnboardingOperation } = useSimulatorRuntime();
@@ -610,12 +612,14 @@ function ExtrasStage() {
 									? (receipt.summary ?? ['Setup completed.'])
 									: [receipt.error ?? 'Setup failed.'],
 							});
+							setCheckRevision((revision) => revision + 1);
 						}}
 					>
 						{agents.busy ? 'Setting up…' : 'Set up'}
 					</Button>
 				</li>
 			</ul>
+			<AgentSetupCheck refreshKey={checkRevision} />
 			<p className="setup-stage-foot">
 				Turn on local Supabase and SimSlim from their tabs whenever you want
 				them.

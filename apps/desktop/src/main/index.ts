@@ -67,6 +67,7 @@ import { AgentCliService } from './agent-cli-service';
 import { runAgentCliSetup } from './agent-cli-setup';
 import { createAgentCommandRouter } from './agent-command-router';
 import { AgentService } from './agent-service';
+import { AgentSetupCheckService } from './agent-setup-check';
 import {
 	createAppearanceIpcHandlers,
 	windowChromeColors,
@@ -77,7 +78,11 @@ import { BuildInsightsService } from './build-insights-service';
 import { BuildInsightsStore } from './build-insights-store';
 import { desktopActionConfirmationCopy } from './desktop-action-confirmation';
 import { DesktopSettingsStore } from './desktop-settings-store';
+import { FailureHandoff } from './failure-handoff';
+import { createFailureIpcHandlers } from './failure-ipc';
+import { FailureService } from './failure-service';
 import { createLaneIpcHandlers } from './lane-ipc';
+import { createMetroSupervisor } from './lane-metro';
 import { LaneService } from './lane-service';
 import { LaneStore } from './lane-store';
 import { verifyAgentCli } from './native-helper-trust';
@@ -176,8 +181,10 @@ let simulatorService: SimulatorService | undefined;
 let slimmingService: SlimmingService | undefined;
 let recipeService: RecipeService | undefined;
 let agentCliService: AgentCliService | undefined;
+let agentSetupCheckService: AgentSetupCheckService | undefined;
 let buildInsightsService: BuildInsightsService | undefined;
 let laneService: LaneService | undefined;
+let failureService: FailureService | undefined;
 let agentService: AgentService | undefined;
 let simulatorStreamService: SimulatorStreamService | undefined;
 let stagedCertificateStore: StagedCertificateStore | undefined;
@@ -762,7 +769,43 @@ function registerIpc(
 		assertTrustedRenderer,
 		selectRepository: selectLaneRepository,
 	});
+	// Isolated fixture homes are allowed only in unpackaged demo tests.
+	const agentConfigHome =
+		!app.isPackaged && process.env.RNDEVTOOLS_DEMO === 'true'
+			? (process.env.RNDEVTOOLS_AGENT_CHECK_HOME ?? app.getPath('home'))
+			: app.getPath('home');
+	agentSetupCheckService = new AgentSetupCheckService({
+		home: agentConfigHome,
+		executable: async () =>
+			(
+				await verifyAgentCli({
+					resourceDirectory: nativeResourceDirectory,
+					appVersion: app.getVersion(),
+				})
+			).executablePath,
+		projects: () => [
+			...lanes.getState().repositories,
+			...lanes.getState().worktrees.map((worktree) => worktree.path),
+		],
+		confirm: async ({ title, detail }) => {
+			const result = await dialog.showMessageBox({
+				type: 'question',
+				message: title,
+				detail,
+				buttons: ['Cancel', 'Apply change'],
+				defaultId: 0,
+				cancelId: 0,
+				noLink: true,
+			});
+			return result.response === 1;
+		},
+	});
 	const simulatorOnboardingHandlers = createSimulatorOnboardingIpcHandlers({
+		checkAgentSetup: (request) => {
+			if (!agentSetupCheckService)
+				throw new Error('Agent setup checks are not available.');
+			return agentSetupCheckService.run(request);
+		},
 		assertTrustedRenderer,
 		selectXcodeApplication,
 		activateXcodeDeveloperDirectory: async (developerDirectory) => {
@@ -796,7 +839,7 @@ function registerIpc(
 				resourceDirectory: nativeResourceDirectory,
 				appVersion: app.getVersion(),
 			});
-			return runAgentCliSetup(cli.executablePath, app.getPath('home'));
+			return runAgentCliSetup(cli.executablePath, agentConfigHome);
 		},
 	});
 	const appearanceHandlers = createAppearanceIpcHandlers({
@@ -1503,7 +1546,64 @@ if (!app.requestSingleInstanceLock()) {
 					path.join(app.getPath('userData'), 'build-insights')
 				),
 			});
+			const failureHandoff = new FailureHandoff({
+				directory: path.join(app.getPath('userData'), 'failures', 'tasks'),
+				projects: () => [
+					...new Set([
+						...(laneService?.getState().repositories ?? []),
+						...(laneService
+							?.getState()
+							.worktrees.map((worktree) => worktree.path) ?? []),
+					]),
+				],
+				confirm: async ({ client, mode, project, title }) => {
+					const result = await dialog.showMessageBox({
+						type: 'question',
+						title: `Open ${client}`,
+						message: `${mode === 'fix' ? 'Investigate and fix' : 'Investigate'} with ${client}?`,
+						detail: `${title}\n\nProject: ${project}\n\nOpens an interactive terminal using your existing subscription login. ${mode === 'fix' ? 'The agent may edit this project and run checks, subject to its normal approval prompts.' : 'The agent starts in read-only or plan mode.'} Review its results there before marking this failure resolved.`,
+						buttons: ['Cancel', `Open ${client}`],
+						defaultId: 1,
+						cancelId: 0,
+					});
+					return result.response === 1;
+				},
+				openTerminal: async (script) => {
+					const error = await shell.openPath(script);
+					if (error)
+						throw new Error('Terminal could not open the investigation task.');
+				},
+			});
+			failureService = new FailureService({
+				directory: path.join(app.getPath('userData'), 'failures'),
+				...(!app.isPackaged && process.env.RNDEVTOOLS_DEMO === 'true'
+					? {
+							directories: process.env.RNDEVTOOLS_FAILURE_REPORTS
+								? [process.env.RNDEVTOOLS_FAILURE_REPORTS]
+								: [],
+						}
+					: {}),
+				handoff: (record, request) => failureHandoff.run(record, request),
+			});
+			await failureService.start();
+			const failureHandlers = createFailureIpcHandlers(
+				failureService,
+				assertTrustedRenderer
+			);
+			ipcMain.handle(IPC_CHANNELS.getFailureState, failureHandlers.getState);
+			ipcMain.handle(
+				IPC_CHANNELS.runFailureOperation,
+				failureHandlers.runOperation
+			);
 			laneService = new LaneService({
+				metro: createMetroSupervisor({
+					onExit: (event) => {
+						void failureService?.metroExited(event).catch(() => undefined);
+					},
+				}),
+				onMetroStop: async (lane, reason) => {
+					await failureService?.laneIntent(lane, reason);
+				},
 				store: new LaneStore(path.join(app.getPath('userData'), 'lanes')),
 				simulator: simulatorService,
 				slimming: slimmingService,
@@ -1544,6 +1644,8 @@ if (!app.requestSingleInstanceLock()) {
 							? laneDefaultBackend(state.policy, environmentId)
 							: 'off';
 					},
+					describeSummary: (previous) =>
+						supabaseService?.describeLaneBackend?.(previous) ?? previous,
 					describeWorktree: (worktreePath) =>
 						supabaseService?.describeWorktree(worktreePath),
 				},
@@ -1585,6 +1687,9 @@ if (!app.requestSingleInstanceLock()) {
 			agentCliService = new AgentCliService({
 				socketPath: agentSocketPath,
 				handler: createAgentCommandRouter({
+					agentSetup: () =>
+						agentSetupCheckService?.scan('', true) ??
+						Promise.reject(new Error('Agent setup checks are starting.')),
 					broker,
 					simulator: simulatorService,
 					slimming: slimmingService,
@@ -1640,9 +1745,10 @@ if (!app.requestSingleInstanceLock()) {
 			);
 			registerSupabaseIpc(supabaseService);
 			broker.subscribe((state) => broadcast(IPC_CHANNELS.stateChanged, state));
-			simulatorService.subscribe((state) =>
-				broadcast(IPC_CHANNELS.simulatorStateChanged, state)
-			);
+			simulatorService.subscribe((state) => {
+				failureService?.observeSimulator(state);
+				broadcast(IPC_CHANNELS.simulatorStateChanged, state);
+			});
 			slimmingService.subscribe((state) =>
 				broadcast(IPC_CHANNELS.slimmingStateChanged, state)
 			);
@@ -1652,9 +1758,10 @@ if (!app.requestSingleInstanceLock()) {
 			buildInsightsService.subscribe((state) =>
 				broadcast(IPC_CHANNELS.buildInsightsStateChanged, state)
 			);
-			laneService.subscribe((state) =>
-				broadcast(IPC_CHANNELS.laneStateChanged, state)
-			);
+			laneService.subscribe((state) => {
+				failureService?.observeLanes(state.lanes);
+				broadcast(IPC_CHANNELS.laneStateChanged, state);
+			});
 			agentService.subscribe((state) =>
 				broadcast(IPC_CHANNELS.agentStateChanged, state)
 			);
@@ -1667,10 +1774,22 @@ if (!app.requestSingleInstanceLock()) {
 			simulatorStreamService.subscribeStatus((status) =>
 				broadcast(IPC_CHANNELS.simulatorStreamStatus, status)
 			);
-			await Promise.all([
-				broker.start(),
+			// Inventory and read-only SimSlim probes can wait on busy or unhealthy
+			// simulators. Their validated "checking" states already disable actions;
+			// let the window show progress instead of hiding the entire app until
+			// every device answers. Resource stores still load before the window.
+			void Promise.all([
 				simulatorService.start(),
 				slimmingService.start(),
+			]).catch((error: unknown) => {
+				if (!shutdownStarted)
+					dialog.showErrorBox(
+						'Simulator discovery could not start',
+						diagnosticErrorText(error).slice(0, 8 * 1024)
+					);
+			});
+			await Promise.all([
+				broker.start(),
 				recipeService.start(),
 				buildInsightsService.start(),
 				agentService.start(),
@@ -1725,6 +1844,7 @@ app.on('before-quit', (event) => {
 			supabaseService?.stop(),
 			simulatorStreamService?.stop(),
 			agentCliService?.stop(),
+			failureService?.stop(),
 			certificateShutdown,
 		];
 	}).finally(() => {

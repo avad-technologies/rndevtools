@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+import { createConnection } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import {
@@ -80,6 +82,41 @@ describe('DesktopBroker', () => {
 		expect(secondStart).toBe(firstStart);
 		await firstStart;
 		expect(broker.getState().broker.status).toBe('listening');
+	});
+
+	it('closes a partially sent HTTP request and WebSocket when stopped', async () => {
+		const broker = new DesktopBroker({
+			port: 40_000 + Math.floor(Math.random() * 20_000),
+		});
+		brokers.push(broker);
+		await broker.start();
+		const port = broker.getState().broker.port;
+		const webSocket = await openSocket(`ws://127.0.0.1:${port}/device`);
+		const socket = createConnection(port, '127.0.0.1');
+		let stopped: Promise<void> | undefined;
+		try {
+			await once(socket, 'connect');
+			// A response to the first request confirms the connection was accepted.
+			// Leave the pipelined request's headers unfinished.
+			socket.write(
+				'GET /health HTTP/1.1\r\nHost: localhost\r\n\r\nGET /health HTTP/1.1\r\nHost: localhost\r\n'
+			);
+			const [response] = await once(socket, 'data');
+			expect(String(response)).toMatch(/^HTTP\/1\.1 200 /);
+			const signal = AbortSignal.timeout(1_500);
+			const socketsClosed = Promise.all([
+				once(socket, 'close', { signal }),
+				once(webSocket, 'close', { signal }),
+			]);
+			stopped = broker.stop();
+			await socketsClosed;
+			await stopped;
+			expect(broker.getState().broker.status).toBe('stopped');
+		} finally {
+			socket.destroy();
+			webSocket.terminate();
+			await stopped;
+		}
 	});
 
 	it('registers devices, validates snapshots, and round-trips remote actions', async () => {

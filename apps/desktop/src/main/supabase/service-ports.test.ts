@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { createSupabaseDemoState } from '../../shared/supabase-demo-data';
 import {
+	type LaneBackendSummary,
 	SUPABASE_EXCLUDABLE_CAPABILITIES as SHARED_EXCLUDABLE,
 	SUPABASE_PREPARABLE_CAPABILITIES as SHARED_PREPARABLE,
 	SUPABASE_CLI_ERROR_CODES,
 	SUPABASE_UNREADABLE_RECOVERY,
+	type SupabaseStackSummary,
 	supabaseErrorSchema,
 } from '../../shared/supabase-protocol';
 import { parseSupabaseErrorEnvelope } from './cli-contract';
@@ -22,6 +25,7 @@ import {
 	SUPABASE_PREPARABLE_CAPABILITIES,
 } from './dialect';
 import {
+	describeSupabaseLaneBackend,
 	LANE_BACKEND_DEFAULT_WAIT_MS,
 	type SupabaseConfirmationFacts,
 	supabaseConfirmationOutcome,
@@ -282,5 +286,85 @@ describe('supabaseSteeringFile', () => {
 			enabled: false,
 			roots: [],
 		});
+	});
+});
+
+describe('cached lane backend health', () => {
+	const initial = createSupabaseDemoState();
+	const template = initial.stacks[0];
+	if (!template) throw new Error('Demo stack fixture missing.');
+	const stack: SupabaseStackSummary = {
+		...template,
+		state: 'running',
+		ownerLiveness: 'reachable',
+		lifecycle: 'running',
+		readiness: 'ready',
+		mode: { value: 'managed' },
+		exposure: { verdict: 'loopback' },
+		flags: [],
+		apiUrl: 'http://127.0.0.1:54321',
+	};
+	const previous: LaneBackendSummary = {
+		policy: 'required',
+		status: 'ready',
+		stackId: stack.id,
+		apiUrl: stack.apiUrl as string,
+		appEnvNames: ['PUBLIC_API_URL'],
+		warnings: [],
+	};
+	const state = {
+		...initial,
+		feature: { ...initial.feature, enabled: true },
+		stacks: [stack],
+	};
+	it.each(['stopped', 'failed', 'unhealthy', 'partial', 'unknown'] as const)(
+		'downgrades %s stacks without retaining stale endpoints',
+		(status) => {
+			const projected = describeSupabaseLaneBackend(previous, {
+				...state,
+				stacks: [{ ...stack, state: status }],
+			});
+			expect(projected.status).toBe(
+				status === 'stopped' ? 'stopped' : 'failed'
+			);
+			expect(projected.apiUrl).toBeUndefined();
+			expect(projected.appEnvNames).toEqual([]);
+			expect(projected.reasonText).toContain('Run lane up');
+			// A running stack alone cannot prove this Metro received its new values.
+			expect(describeSupabaseLaneBackend(projected, state)).toEqual(projected);
+		}
+	);
+	it('reports disabled, missing, exposed, and moved backends from cached state', () => {
+		expect(
+			describeSupabaseLaneBackend(previous, {
+				...state,
+				feature: { ...state.feature, enabled: false },
+			})
+		).toMatchObject({ status: 'skipped', reason: 'disabled' });
+		expect(
+			describeSupabaseLaneBackend(previous, { ...state, stacks: [] }).status
+		).toBe('stopped');
+		expect(
+			describeSupabaseLaneBackend(previous, {
+				...state,
+				stacks: [{ ...stack, exposure: { verdict: 'lan-exposed' } }],
+			})
+		).toMatchObject({ status: 'refused', reason: 'lan-exposed' });
+		expect(
+			describeSupabaseLaneBackend(previous, {
+				...state,
+				stacks: [{ ...stack, apiUrl: 'http://127.0.0.1:54322' }],
+			}).status
+		).toBe('stale');
+	});
+	it('preserves shadowed, stale and failed attachment evidence when the stack runs', () => {
+		for (const status of ['shadowed', 'stale', 'failed', 'blocked'] as const) {
+			const attached = {
+				...previous,
+				status,
+				reasonText: 'Existing attachment diagnostic',
+			};
+			expect(describeSupabaseLaneBackend(attached, state)).toBe(attached);
+		}
 	});
 });

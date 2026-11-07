@@ -1,6 +1,7 @@
 import type { AgentBridge } from '../shared/agent-protocol';
 import type { AppearanceBridge } from '../shared/appearance-protocol';
 import type { BuildInsightsBridge } from '../shared/build-insights-protocol';
+import type { FailureBridge } from '../shared/failure-protocol';
 import type { LaneBridge } from '../shared/lane-protocol';
 import type { DesktopBridge } from '../shared/protocol';
 import type { RecipeBridge } from '../shared/recipe-protocol';
@@ -13,6 +14,7 @@ import type { SupabaseBridge } from '../shared/supabase-protocol';
 declare global {
 	interface Window {
 		rnDevtools?: DesktopBridge &
+			FailureBridge &
 			AppearanceBridge &
 			SimulatorBridge &
 			SlimmingBridge &

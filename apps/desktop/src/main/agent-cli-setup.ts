@@ -30,10 +30,14 @@ export async function runAgentCliSetup(
 	executablePath: string,
 	home: string
 ): Promise<string[]> {
-	const { stdout } = await execFileAsync(executablePath, ['setup'], {
-		timeout: 60_000,
-		maxBuffer: 1024 * 1024,
-	});
+	const { stdout } = await execFileAsync(
+		executablePath,
+		['setup', '--config-home', home],
+		{
+			timeout: 60_000,
+			maxBuffer: 1024 * 1024,
+		}
+	);
 	return summarizeAgentCliSetup(stdout, home);
 }
 
@@ -58,9 +62,31 @@ export function summarizeAgentCliSetup(stdout: string, home: string): string[] {
 			'Codex runs new hooks only after you trust them: open Codex and run /hooks.'
 		);
 	}
+	if (
+		report.changes.some(
+			(change) =>
+				['create', 'update'].includes(change.action) &&
+				/\/(?:\.claude\.json|config\.toml|mcp\.json)$/.test(change.path)
+		)
+	) {
+		lines.push(
+			'Restart your coding agent or reload its MCP servers to use the updated registration.'
+		);
+	}
+	if (
+		report.changes.some(
+			(change) =>
+				['create', 'update'].includes(change.action) &&
+				change.path.endsWith('/.local/bin/rndevtools')
+		)
+	) {
+		lines.push(
+			'For Terminal commands, add ~/.local/bin to your shell PATH if needed; MCP uses the absolute executable path.'
+		);
+	}
 	lines.push(
 		report.doctor.ok
-			? 'Agents can reach RN Devtools now.'
+			? 'The RN Devtools desktop connection is working.'
 			: `Agents will reach RN Devtools once it is running${report.doctor.message ? ` (${report.doctor.message})` : ''}.`
 	);
 	return lines;

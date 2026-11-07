@@ -1,6 +1,6 @@
 # RN Devtools local CLI
 
-`rndevtools` is a first-party, standard-library-only macOS CLI for local
+`rndevtools` is a macOS CLI for local
 agents and scripts. It never opens a TCP socket, discovers a network endpoint,
 invokes a shell, accepts a socket override, or removes a stale socket.
 
@@ -45,7 +45,7 @@ or:
 
 ## Commands and input
 
-Commands are `doctor`, `simulators`, `apps`, `screen`, `elements`, `act`,
+Commands are `doctor`, `simulators`, `simulator`, `apps`, `screen`, `elements`, `act`,
 `wait`, `capture`, `record`, `network`, `recipe`, `jobs`, `slimming`, `lane`,
 `supabase`, `native`, `agents`, `claim`, `release`, and `input`. Run `rndevtools <command> --help` for structured flags. An optional JSON
 command object may be piped on standard input; flags may add different fields,
@@ -63,7 +63,32 @@ under the same gates. `lane --operation up` needs only `--worktree`: without
 Simulator, clone one, or dismiss) while the agent polls `lane --operation ls`. `act` is limited to the desktop service's explicit
 unattended-action allowlist.
 
+`simulators` remains a read-only list command. The separate `simulator` command
+boots or shuts down one device already claimed by the exact calling session or
+assigned to its lane. It rechecks ownership when queued work begins. Shared MCP
+identities must use the owning agent's CLI session. A shutdown preserves the
+lane, Metro, backend, and simulator data:
+
+```sh
+rndevtools simulator --operation shutdown --udid DEVICE_UDID
+rndevtools wait --condition job --job-id JOB_ID  # when shutdown returns pending
+rndevtools simulator --operation boot --udid DEVICE_UDID
+rndevtools wait --condition job --job-id JOB_ID  # when boot returns pending
+rndevtools lane --operation launch --lane-id LANE_ID
+```
+
+Providing both `--operation` and `--udid` makes this new command ignore stdin,
+so automation that leaves its input pipe open does not block it. Otherwise it
+accepts the missing fields from a JSON object on stdin. Existing `simulators`
+stdin behavior and read-only MCP approvals are unchanged. Reload the agent
+client to discover the new tool and review its tool-approval policy.
+
 ## MCP server
+
+Local configuration checks and repairs are available separately through
+`rndevtools agent-check`; see the [agent setup guide](../../../../docs/AGENT_SETUP_CHECK.md).
+They are not exposed as configuration-changing MCP tools. `setup` includes
+before/after agent reports, and desktop `doctor` includes the read-only report.
 
 `rndevtools mcp` serves the same commands to coding agents as a Model Context
 Protocol server over stdio (JSON-RPC 2.0, one message per line, protocol
@@ -87,8 +112,10 @@ concurrently, so a long `wait` or `lane up` never holds up a ping or another
 call, and at most four of a session's calls are with the desktop at once.
 `notifications/cancelled` stops the call it names, which gets no response:
 its socket closes, and the desktop aborts the handler at its next liveness
-probe, within about a second. A cancel stops the wait, not a job the call
-already started on the desktop: a `native` install or a slimming `apply`,
+probe, within about a second. Cancelling a pending `simulator` call requests
+cancellation of its lifecycle job too. Its normal observation deadline returns
+a job ID and leaves that job running. For other operations, cancellation stops
+the wait: a `native` install or a slimming `apply`,
 `undo`, or `restore` runs to the end unless `jobs --operation cancel` cancels
 it. For two seconds after the cancel, the time the desktop needs to notice,
 the call still counts toward the four and stays ahead of later calls on its
@@ -130,14 +157,46 @@ agents".
 | Step | Where | Notes |
 | --- | --- | --- |
 | Symlink the verified CLI | `~/.local/bin/rndevtools` | Re-pointed when the app moves; a foreign file there is left alone and reported. `--no-link` skips it. |
-| Register the MCP server | Claude Code `~/.claude.json`, Codex `~/.codex/config.toml`, Cursor `~/.cursor/mcp.json`, Kiro `~/.kiro/settings/mcp.json` | Entry is `{command: <cli>, args: ["mcp"]}`. Claude and Codex are always configured; Cursor and Kiro only when their directory exists, or when named in `--agents`. Kiro gets the tools the MCP server marks read-only in `autoApprove`; tools that drive a device, cancel a job, or slim a Simulator still prompt. Codex's TOML is edited textually and setup owns only the `[mcp_servers.rndevtools]` table. |
+| Register the MCP server | Claude Code `~/.claude.json`, Codex `~/.codex/config.toml`, Cursor `~/.cursor/mcp.json`, Kiro `~/.kiro/settings/mcp.json` | Entry is `{command: <cli>, args: ["mcp"]}`. Claude and Codex are always configured; Cursor and Kiro only when their directory exists, or when named in `--agents`. New Kiro registrations approve the read-only tools by default. Existing approval lists and enabled state are preserved. Codex TOML is parsed before editing: setup updates only the executable, arguments, and a missing/short tool timeout, preserving longer timeouts, environment, approval rules, comments, and other servers. Invalid configuration or a custom remote transport is reported as `skip` without changing it. |
 | Install the skills | `~/.claude/skills`, `~/.agents/skills` (Codex), `~/.kiro/skills` | Every `skills/*/SKILL.md` is embedded in the binary (`rndevtools-lanes` and `rndevtools-supabase`), so the installed copies always match the CLI. With `--project <dir>` they go into that repository's `.claude/skills` and `.agents/skills` instead. |
 | Agent hooks | Claude Code `~/.claude/settings.json` → `hooks`, Codex `~/.codex/hooks.json` | Two hooks, same for both agents because they send the same payload and read the same verdict. `PreToolUse` (`rndevtools hook pre-tool-use`) exits 2 (block, with the reason shown to the model) for `simctl boot`, `shutdown`, `erase`, `delete`, `openurl`, `install`, `uninstall`, `launch`, `terminate`, `io`, `privacy`, `push`, `keychain`, `status_bar`, `spawn`, `addmedia`, `clone`, and for hand-started Metro (`expo start`, `react-native start`); `simctl list` and other read-only verbs pass, and anything unparseable passes, because a hook that fails closed would lock the model out of Bash. While local Supabase is turned on in RN Devtools it also applies the [Supabase steering rules](#supabase-steering). `SessionEnd` (`rndevtools hook session-end`) releases everything the ending session holds (`release --all`) so its Simulators return to the pool at once rather than after the 10-minute grace; it never fails the agent's exit and finishes in milliseconds, inside Codex's 3-second cap. How it tells a steered command from a mention of one is described under [Simulator and Metro steering](#simulator-and-metro-steering): a match on each command's text is the baseline, the scripts a command hands on to be run are followed, and one excuse covers a mention on a line that looks as if it can only read and print text. Both agents run a hook command through a shell, so setup single-quotes the executable when its path needs it (a packaged install lives under `RN Devtools.app`). A rerun replaces only the hooks setup wrote (`<path>/rndevtools hook <event>`); other tools' hooks, and hooks you add to the same entry, stay. An event the installed build does not know exits 0 with a note on stderr, never 2. Codex runs new or changed hooks only after the user trusts them once with `/hooks`; setup says so in its report. Cursor has no hook mechanism, so for it the AGENTS.md block is the only guard. `--no-hook` skips both. |
 | AGENTS.md block | `<project>/AGENTS.md` with `--project` | A short "iOS Simulators" section between `<!-- rndevtools:start -->` / `<!-- rndevtools:end -->` markers, replaced in place on rerun when the file has exactly one start-marker line and, after it, one end-marker line (a marker quoted inside other text does not count); markers that do not pair up are reported as `skip` and the file is left alone. When the project has `supabase/config.toml`, a "Local Supabase" paragraph follows, worded for when RN Devtools is not managing a worktree: use the `supabase` tool or `lane up` when it is, otherwise start the stack with the project's runner (from its lockfile) and `--runtime native`. The report also returns the block for manual installs. |
 
-Setup finishes with the `doctor` check, so a mis-registered path or a desktop
-that is not running shows up immediately rather than in the agent's first
-failed tool call.
+Setup finishes with the `doctor` check to verify the desktop connection. Restart
+your coding agent or reload its MCP servers after the registration changes;
+that connection check does not prove an already-running agent has loaded the
+new configuration. The MCP registration uses an absolute executable path. For
+Terminal commands, add `~/.local/bin` to your shell PATH if needed.
+
+The CLI vendors go-toml v2.4.3 for configuration parsing, so its build needs no
+network access. See the desktop third-party notices for its MIT license.
+
+### Agent permissions
+
+MCP exposes the same typed operations as the CLI through a private, current-user
+socket. It does not grant an unrestricted shell, macOS administrator access, or
+access to another user account. Your coding agent controls whether tool calls
+need approval; setup preserves that policy rather than resetting it on upgrade.
+
+Routine work can run unattended: start/resume/stop a lane, install a cached dev
+client, tap/type/scroll, capture, inspect logs, wait for jobs, start/resume/stop a
+managed local Supabase stack, and reset a stack when the session is its sole live
+holder. Native builds run separately using the command from `native plan`.
+
+RN Devtools still enforces device holds, one mutation per device, and local-only
+stack isolation. Enable Supabase and SimSlim once in the desktop. SimSlim also
+requires acknowledgement for an unverified runtime/profile/build combination.
+Destroying a database, resetting a shared database, enabling Studio, and actions
+outside the unattended app-action allowlist require the desktop operator.
+These gates are separate from the coding agent's tool-approval settings.
+
+Host Accessibility, Screen Recording, camera, and microphone permissions are
+separate macOS grants. Ordinary simulator input and screenshots do not require
+those host grants; enable them only for a feature that actually uses them.
+
+Codex MCP clients that omit a thread identity use a shared synthetic identity.
+For explicit session attribution, call the CLI from that chat's shell, which
+passes `CODEX_THREAD_ID`; do not hardcode a thread ID into the global MCP config.
 
 ### Simulator and Metro steering
 

@@ -26,6 +26,48 @@ afterEach(async () => {
 });
 
 describe('Simulator onboarding IPC', () => {
+	it('routes setup checks only after renderer trust and rejects untyped file edits', async () => {
+		const assertTrustedRenderer = vi.fn();
+		const checkAgentSetup = vi.fn(async () => ({ cancelled: true }));
+		const handlers = createSimulatorOnboardingIpcHandlers({
+			assertTrustedRenderer,
+			selectXcodeApplication: vi.fn(async () => undefined),
+			activateXcodeDeveloperDirectory: vi.fn(async () => undefined),
+			openPrivacySettings: vi.fn(async () => undefined),
+			revealAgentCli: vi.fn(async () => undefined),
+			setupAgentCli: vi.fn(async () => []),
+			checkAgentSetup,
+		});
+		await expect(
+			handlers.runOperation(event, {
+				actionId: 'check',
+				kind: 'agentCli.check',
+				request: { operation: 'scan' },
+			})
+		).resolves.toMatchObject({
+			completed: false,
+			agentCheck: { cancelled: true },
+		});
+		expect(checkAgentSetup).toHaveBeenCalledOnce();
+		assertTrustedRenderer.mockImplementationOnce(() => {
+			throw new Error('untrusted');
+		});
+		await expect(
+			handlers.runOperation(event, {
+				actionId: 'check',
+				kind: 'agentCli.check',
+				request: { operation: 'scan' },
+			})
+		).rejects.toThrow('untrusted');
+		await expect(
+			handlers.runOperation(event, {
+				actionId: 'check',
+				kind: 'agentCli.check',
+				request: { operation: 'apply', path: '/arbitrary' },
+			})
+		).rejects.toThrow();
+		expect(checkAgentSetup).toHaveBeenCalledOnce();
+	});
 	it('validates a selected Xcode bundle without exposing its path to the renderer', async () => {
 		const root = await mkdtemp(path.join(os.tmpdir(), 'rndevtools-xcode-'));
 		roots.push(root);

@@ -60,6 +60,12 @@ export type MetroSupervisorPort = {
 	 */
 	isHealthy: (port: number, pid: number) => Promise<boolean>;
 	isProcessRunning: (pid: number) => boolean;
+	/** Proves command and cwd identity without signalling; false only once gone. */
+	verifyOwnership: (
+		pid: number,
+		port: number,
+		appDirectory: string
+	) => Promise<boolean>;
 	/**
 	 * Stops the Metro at `pid` only if it is the one serving `port` from
 	 * `appDirectory`. Throws NotLaneMetroError, signalling nothing, once `pid`
@@ -89,7 +95,22 @@ type MetroChild = {
 	readonly pid?: number | undefined;
 	unref: () => void;
 	once: (event: 'spawn', listener: () => void) => unknown;
-	on: (event: 'error', listener: (error: Error) => void) => unknown;
+	on: {
+		(event: 'error', listener: (error: Error) => void): unknown;
+		(
+			event: 'exit',
+			listener: (code: number | null, signal: NodeJS.Signals | null) => void
+		): unknown;
+	};
+};
+
+export type MetroExit = {
+	logPath?: string;
+	pid: number;
+	port: number;
+	startedAt: number;
+	code: number | null;
+	signal: NodeJS.Signals | null;
 };
 
 type MetroSpawn = (
@@ -266,7 +287,8 @@ async function startMetro(
 	input: MetroLaunchInput,
 	spawnProcess: MetroSpawn,
 	inherited: NodeJS.ProcessEnv,
-	toolPath: ToolPathResolver
+	toolPath: ToolPathResolver,
+	onExit?: (event: MetroExit) => void
 ): Promise<number> {
 	const expoBinary = resolveExpoBinary(input.worktreePath);
 	if (!expoBinary) {
@@ -302,6 +324,18 @@ async function startMetro(
 				env,
 			}
 		);
+		const startedAt = Date.now();
+		child.on('exit', (code, signal) => {
+			if (child.pid)
+				onExit?.({
+					pid: child.pid,
+					logPath: input.logPath,
+					port: input.port,
+					startedAt,
+					code,
+					signal,
+				});
+		});
 		child.unref();
 		try {
 			await spawned(child);
@@ -344,6 +378,8 @@ async function packagerAnswers(
 }
 
 /**
+ * Avoid unrelated mount stat/readlink calls that can block lsof past the
+ * ownership deadline (-b); incomplete reports still fail closed.
  * Whether `pid` itself holds a listening TCP socket on `port`. Expo serves
  * Metro from the CLI process the lane spawned, so the lane's PID is the
  * listener. lsof exits 1 when the process has no such socket; that, and any
@@ -358,6 +394,7 @@ async function listensOn(
 		const result = await runCommand(
 			LSOF_PATH,
 			[
+				'-b',
 				'-a',
 				'-p',
 				String(pid),
@@ -415,6 +452,8 @@ const LSOF_CWD_REPORT =
 	/^p(\d+)\nfcwd\n(?:D0x([0-9a-f]{1,8})\n)?(?:i(\d{1,20})\n)?n([^\n]+)\n$/;
 
 /**
+ * -b skips potentially blocking mount stat/readlink calls. The report still
+ * must carry the cwd's device and inode, checked against the app directory.
  * The working directory lsof reports for `pid`: its device and inode, and
  * its path as lsof prints it, which the kernel resolved, free of symlinks and
  * spelling each name as the disk stores it. Any other report fails. lsof
@@ -429,7 +468,7 @@ async function processCwd(
 ): Promise<ProcessCwd> {
 	const result = await runCommand(
 		LSOF_PATH,
-		['-a', '-p', String(pid), '-d', 'cwd', '-FDin'],
+		['-b', '-a', '-p', String(pid), '-d', 'cwd', '-FDin'],
 		{
 			timeoutMs: OWNER_PROBE_TIMEOUT_MS,
 			maxOutputBytes: OWNER_PROBE_MAX_OUTPUT_BYTES,
@@ -658,8 +697,8 @@ async function readsAsAppDirectory(
 }
 
 /**
- * Stops only a Metro this lane owns. PIDs are recycled, so before signalling
- * the process group the PID must still be an Expo or Metro serving the lane's
+ * Proves a Metro belongs to this lane, for adoption and before signalling.
+ * PIDs are recycled, so it must still be an Expo or Metro serving the lane's
  * port (its command line carries the `--port` the lane passed) from the
  * lane's app directory (its working directory, by device and inode: Expo and
  * Metro never change it). A PID whose command line is anything else is left
@@ -669,13 +708,13 @@ async function readsAsAppDirectory(
  * was moved or renamed, which lsof then reports under the new path, or after
  * its app directory was recreated.
  */
-async function stopMetro(
+async function verifyMetroOwnership(
 	pid: number,
 	port: number,
 	appDirectory: string,
 	runCommand: CommandRunner
-): Promise<void> {
-	if (!isProcessRunning(pid)) return;
+): Promise<boolean> {
+	if (!isProcessRunning(pid)) return false;
 	let cwd: ProcessCwd | undefined;
 	let servesHere = false;
 	try {
@@ -690,7 +729,7 @@ async function stopMetro(
 		}
 	} catch (error) {
 		// A process that exited while it was inspected has nothing to stop.
-		if (!isProcessRunning(pid)) return;
+		if (!isProcessRunning(pid)) return false;
 		// Otherwise the PID cannot be proven to be ours. Fail closed and say
 		// so: the lane keeps its lease and the operator can stop Metro by hand.
 		throw new Error(
@@ -711,6 +750,18 @@ async function stopMetro(
 				: `Process ${pid} is an Expo or Metro on port ${port} serving from ${readableLsofPath(cwd.printed)}, not from this lane's ${lanePath}; refusing to stop it. If the worktree was moved or renamed, it is likely this lane's Metro: stop it manually, then stop the lane again.`
 		);
 	}
+	return true;
+}
+
+/** Signals only after the same identity proof adoption uses. */
+async function stopMetro(
+	pid: number,
+	port: number,
+	appDirectory: string,
+	runCommand: CommandRunner
+): Promise<void> {
+	if (!(await verifyMetroOwnership(pid, port, appDirectory, runCommand)))
+		return;
 	try {
 		process.kill(-pid, 'SIGTERM');
 	} catch {
@@ -724,7 +775,7 @@ async function stopMetro(
  * a secret whose name was cut off, which no redactor can recognise
  * afterwards. A tail that is all one line is returned as it is.
  */
-async function readLogTail(
+export async function readLogTail(
 	logPath: string,
 	maxCharacters: number
 ): Promise<string> {
@@ -759,6 +810,7 @@ export function createMetroSupervisor({
 	probe = fetch,
 	environment = process.env,
 	toolPath = resolveToolPath,
+	onExit,
 }: {
 	/** The bounded runner `ps` and `lsof` go through. */
 	runCommand?: CommandRunner;
@@ -768,12 +820,16 @@ export function createMetroSupervisor({
 	environment?: NodeJS.ProcessEnv;
 	/** The PATH Metro gets in place of the inherited one, so it finds Node. */
 	toolPath?: ToolPathResolver;
+	onExit?: (event: MetroExit) => void;
 } = {}): MetroSupervisorPort {
 	return {
 		isPortFree,
-		start: (input) => startMetro(input, spawnProcess, environment, toolPath),
+		start: (input) =>
+			startMetro(input, spawnProcess, environment, toolPath, onExit),
 		isHealthy: (port, pid) => isMetroHealthy(port, pid, probe, runCommand),
 		isProcessRunning,
+		verifyOwnership: (pid, port, appDirectory) =>
+			verifyMetroOwnership(pid, port, appDirectory, runCommand),
 		stop: (pid, port, appDirectory) =>
 			stopMetro(pid, port, appDirectory, runCommand),
 		readLogTail,

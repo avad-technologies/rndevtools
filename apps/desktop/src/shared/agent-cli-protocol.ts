@@ -154,6 +154,11 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 		includeUnavailable: z.boolean().default(false),
 	}),
 	z.strictObject({
+		kind: z.literal('simulator'),
+		operation: z.enum(['boot', 'shutdown']),
+		udid: udidSchema,
+	}),
+	z.strictObject({
 		kind: z.literal('apps'),
 		udid: udidSchema,
 	}),

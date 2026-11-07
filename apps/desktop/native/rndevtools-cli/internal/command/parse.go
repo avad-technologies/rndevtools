@@ -55,6 +55,10 @@ var commandFields = map[protocol.Command][]fieldSpec{
 	protocol.CommandSimulators: {
 		{flagName: "include-unavailable", path: []string{"includeUnavailable"}, kind: fieldBoolean, usage: "Include unavailable runtimes and devices."},
 	},
+	protocol.CommandSimulator: {
+		{flagName: "operation", path: []string{"operation"}, kind: fieldString, usage: "boot or shutdown. Requires a Simulator this session already holds."},
+		{flagName: "udid", path: []string{"udid"}, kind: fieldString, usage: "Exact Simulator UDID, required."},
+	},
 	protocol.CommandApps: {
 		{flagName: "udid", path: []string{"udid"}, kind: fieldString, usage: "Simulator UDID."},
 	},
@@ -237,7 +241,13 @@ func ParseWithEnvironment(
 	// A command with no fields (doctor, agents) has nothing to read, so it
 	// never waits for stdin to end: `ssh host rndevtools doctor`, or a parent
 	// that leaves the pipe open, would otherwise hang.
-	if stdinAvailable && len(specs) > 0 {
+	readStdin := stdinAvailable && len(specs) > 0
+	if kind == protocol.CommandSimulator && values["operation"].set && values["udid"].set {
+		// An automation parent may leave stdin open. These two flags fully
+		// specify a lifecycle request, so it can start without reading stdin.
+		readStdin = false
+	}
+	if readStdin {
 		input, err := readInputObject(stdin)
 		if err != nil {
 			return Parsed{}, err
@@ -303,7 +313,10 @@ func resolveAgainstWorkingDirectory(value any) any {
 func Usage(kind protocol.Command) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Usage: rndevtools %s [flags]\n", kind)
-	if len(commandFields[kind]) == 0 {
+	if kind == protocol.CommandSimulator {
+		builder.WriteString("Pass --operation and --udid to run without reading stdin. Alternatively, supply the missing\n")
+		builder.WriteString("fields in one JSON command object on stdin and close the input.\n\nFlags:\n")
+	} else if len(commandFields[kind]) == 0 {
 		builder.WriteString("Takes no fields, so it never reads stdin.\n\nFlags:\n")
 	} else {
 		builder.WriteString("Accepts an optional JSON command object on stdin. Flags and stdin may\n")

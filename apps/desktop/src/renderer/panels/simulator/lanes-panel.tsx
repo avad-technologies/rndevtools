@@ -86,6 +86,7 @@ import {
 	supabaseStackTitle,
 } from '../../../shared/supabase-protocol';
 import { AgentsView } from './agents-view';
+import { FailuresView } from './failures-view';
 
 /** The DOM id of a lane row, so a deep link can scroll it into view. */
 function laneRowId(laneId: string): string {
@@ -155,7 +156,7 @@ export function LanesPanel() {
 	const chipsVisible = supabaseChipsVisible(supabase);
 	const [selectedLaneId, setSelectedLaneId] = useState<string>('');
 	const [showStart, setShowStart] = useState(false);
-	const [view, setView] = useState<'lanes' | 'agents'>('lanes');
+	const [view, setView] = useState<'lanes' | 'agents' | 'failures'>('lanes');
 	const [focusedSessionKey, setFocusedSessionKey] = useState<string | null>(
 		null
 	);
@@ -272,6 +273,14 @@ export function LanesPanel() {
 								<Bot className="h-3.5 w-3.5" /> Agents
 								{liveAgentCount > 0 ? ` (${liveAgentCount})` : ''}
 							</Button>
+							<Button
+								aria-pressed={view === 'failures'}
+								size="sm"
+								variant={view === 'failures' ? 'secondary' : 'ghost'}
+								onPress={() => setView('failures')}
+							>
+								Failures
+							</Button>
 						</fieldset>
 						<Button
 							isDisabled={!lanes.isBridgeAvailable}
@@ -386,7 +395,9 @@ export function LanesPanel() {
 					}}
 				/>
 			) : null}
-			{view === 'agents' ? (
+			{view === 'failures' ? (
+				<FailuresView />
+			) : view === 'agents' ? (
 				<AgentsView
 					devices={simulator.state.devices}
 					focusSessionKey={focusedSessionKey}

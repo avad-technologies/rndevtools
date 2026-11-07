@@ -22,16 +22,16 @@ function verified(): VerifiedSimulatorHelper {
 			protocolVersion: 2,
 			compatibilityMatrixVersion: '2026-09-03-v2',
 			catalog: {
-				version: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+				version: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 				upstreamRepository: 'https://github.com/MobAI-App/simslim',
-				upstreamCommit: '6518ba7eab1123d7e1d7797b0e05f51043b42a5b',
+				upstreamCommit: '7e374b3839d49608a681d1f8b9ca0dd83d35189e',
 				patchSet: 'rndevtools.1',
 				upstreamSourceManifestSha256:
-					'bbd7640e2738197be54564d9f9926710a0dc5e13ee674d6e00e48bd5714b6172',
+					'cd8843eca8ac08e7b44fcab27582bc8d76ca29ee80a8334e6873c3c7dd568056',
 				patchSha256:
-					'99703cfc6fa2bddf360f364b115edd0f235df82282e3e809daff543641a472f0',
+					'045c1b21248398f066d20766bf178dc307fdee3ca5ef5fcea11f889dcddc1063',
 				vendoredSourceManifestSha256:
-					'887daa4543b0aecaefbdd9c7edb6e46e00205fecaba254c09527579dc84175d2',
+					'f5082751ccb44251861356158fce6a88a5c736dfe52844929db77bacf99af694',
 			},
 			helpers: {
 				simulator: {
@@ -64,18 +64,18 @@ function handshakeResult() {
 		protocolVersion: 2,
 		platform: 'darwin',
 		architecture: 'arm64',
-		catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+		catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 		catalogSource: {
 			repository: 'https://github.com/MobAI-App/simslim',
-			commit: '6518ba7eab1123d7e1d7797b0e05f51043b42a5b',
+			commit: '7e374b3839d49608a681d1f8b9ca0dd83d35189e',
 			profilesSha256: 'd'.repeat(64),
 			patchSet: 'rndevtools.1',
 			upstreamSourceManifestSha256:
-				'bbd7640e2738197be54564d9f9926710a0dc5e13ee674d6e00e48bd5714b6172',
+				'cd8843eca8ac08e7b44fcab27582bc8d76ca29ee80a8334e6873c3c7dd568056',
 			patchSha256:
-				'99703cfc6fa2bddf360f364b115edd0f235df82282e3e809daff543641a472f0',
+				'045c1b21248398f066d20766bf178dc307fdee3ca5ef5fcea11f889dcddc1063',
 			vendoredSourceManifestSha256:
-				'887daa4543b0aecaefbdd9c7edb6e46e00205fecaba254c09527579dc84175d2',
+				'f5082751ccb44251861356158fce6a88a5c736dfe52844929db77bacf99af694',
 		},
 		capabilities: {
 			operations: [
@@ -528,7 +528,7 @@ describe('sim helper client', () => {
 		});
 		await expect(client.handshake()).resolves.toMatchObject({
 			helperVersion: '0.1.0',
-			catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+			catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 		});
 		expect(verifier).toHaveBeenCalledTimes(1);
 	});

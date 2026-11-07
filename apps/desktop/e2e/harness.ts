@@ -137,16 +137,26 @@ export class DesktopHarness {
 		readonly window: Page
 	) {}
 
-	static async launch(): Promise<DesktopHarness> {
+	static async launch(
+		options: {
+			agentConfigHome?: string;
+			onboarding?: boolean;
+			failureReports?: string;
+			userDataDir?: string;
+		} = {}
+	): Promise<DesktopHarness> {
 		ensureBuilt();
 		// Each launch gets its own userData dir so Electron's single-instance
 		// lock (src/main/index.ts) does not evict concurrent or back-to-back
 		// runs, and its own free broker port so brokers never collide.
-		const userDataDir = mkdtempSync(join(tmpdir(), 'rndevtools-e2e-'));
+		const userDataDir =
+			options.userDataDir ?? mkdtempSync(join(tmpdir(), 'rndevtools-e2e-'));
 		const brokerPort = await freeLoopbackPort();
 		const app = await electron.launch({
 			args: [
-				mainEntry,
+				// Launch the package, so app.getAppPath()/getVersion() match
+				// development builds and native resources resolve from build/.
+				appRoot,
 				'--no-sandbox',
 				'--disable-gpu',
 				`--user-data-dir=${userDataDir}`,
@@ -155,6 +165,9 @@ export class DesktopHarness {
 			env: {
 				...process.env,
 				RNDEVTOOLS_DEMO: 'true',
+				RNDEVTOOLS_FAILURE_REPORTS: options.failureReports ?? '',
+				RNDEVTOOLS_AGENT_CHECK_HOME:
+					options.agentConfigHome ?? join(userDataDir, 'agent-config'),
 				// The host the port was probed on; an inherited LAN bind setting
 				// must never widen a test broker.
 				RNDEVTOOLS_BIND_ADDRESS: LOOPBACK,
@@ -162,15 +175,32 @@ export class DesktopHarness {
 				NODE_ENV: 'production',
 			},
 		});
-		const window = await app.firstWindow();
+		// Test windows must not leave indistinguishable Dock icons next to the
+		// installed app. Keep the window available to Playwright and screenshots.
+		await app.evaluate(({ app }) => {
+			app.setName('RN Devtools Test');
+			app.dock?.hide();
+		});
+		let window: Page;
+		try {
+			window = await app.firstWindow();
+		} catch (error) {
+			app.process().kill('SIGKILL');
+			throw error;
+		}
 		await window.waitForLoadState('domcontentloaded');
 		await window.waitForSelector('.desktop-provider', { timeout: 30_000 });
 		// A fresh profile would open first-run setup over the panels under test.
-		await window.evaluate(() =>
-			window.localStorage.setItem('rndevtools.desktop.onboarding.setup', 'done')
-		);
-		await window.reload();
-		await window.waitForSelector('.desktop-provider', { timeout: 30_000 });
+		if (!options.onboarding) {
+			await window.evaluate(() =>
+				window.localStorage.setItem(
+					'rndevtools.desktop.onboarding.setup',
+					'done'
+				)
+			);
+			await window.reload();
+			await window.waitForSelector('.desktop-provider', { timeout: 30_000 });
+		}
 		return new DesktopHarness(app, window);
 	}
 
@@ -232,6 +262,14 @@ export class DesktopHarness {
 	}
 
 	async close(): Promise<void> {
+		if (
+			this.app.process().exitCode !== null ||
+			this.app.process().signalCode !== null
+		)
+			return;
+		// Closing the page first lets Playwright detach its renderer session
+		// before Electron's asynchronous before-quit cleanup closes the app.
+		if (!this.window.isClosed()) await this.window.close();
 		await this.app.close();
 	}
 }

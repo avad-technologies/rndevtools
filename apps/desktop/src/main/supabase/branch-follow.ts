@@ -164,6 +164,14 @@ export function planSupabaseFollows(
 		const from = input.stacks.filter((stack) => {
 			const record = input.records.get(stack.id);
 			const worktree = record?.worktreePath;
+			// A cwd keeper names a checkout, not its previous branch. Once a
+			// follow moved its holds and lanes, that same cwd must not follow the
+			// superseded record again on every tick and restart the new Metro.
+			const held =
+				isSupabaseStackHeld(stack) &&
+				(record?.flags?.supersededAt === undefined ||
+					stack.holds.some((hold) => hold.live) ||
+					stack.lanes.length > 0);
 			return (
 				worktree !== undefined &&
 				(worktree === facts.worktreePath ||
@@ -175,8 +183,7 @@ export function planSupabaseFollows(
 				stack.branchContext !== head.branchContext &&
 				stack.runtime !== 'docker' &&
 				stack.runtime !== 'podman' &&
-				(input.force === stack.id ||
-					(input.force === undefined && isSupabaseStackHeld(stack)))
+				(input.force === stack.id || (input.force === undefined && held))
 			);
 		});
 		if (from.length === 0) continue;

@@ -277,7 +277,11 @@ func pauseWakesOnCancellation() {
   #expect(DispatchTime.now().uptimeNanoseconds - held.uptimeNanoseconds >= 30_000_000)
 
   let cancellation = CancellationToken()
-  DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { cancellation.cancel() }
+  // Cancellation must not wait for the shared executor's blocking test bodies.
+  Thread.detachNewThread {
+    Thread.sleep(forTimeInterval: 0.05)
+    cancellation.cancel()
+  }
   let started = DispatchTime.now()
   driver.pause(milliseconds: 5_000, cancellation: cancellation)
   #expect(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds < 1_000_000_000)

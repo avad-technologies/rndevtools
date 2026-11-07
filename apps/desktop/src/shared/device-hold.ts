@@ -15,8 +15,8 @@ import type { Lane } from './lane-protocol';
  * device, not states of their own: a lane whose Metro died still holds it. A
  * hold whose holder has gone away (its agent session exited) is **abandoned**
  * and still enforced until its releaseAt, {@link DEVICE_HOLD_GRACE_MS} after
- * the holder was first missed, when the desktop releases it so the device
- * returns to the pool without anyone's cooperation.
+ * a confirmed exit, when the desktop releases it. Codex recency is not
+ * exit evidence: an unlisted Codex holder is retained until explicit release.
  *
  * A lane start holds its Simulator from the moment it reserves it, before
  * its lane is stored, but yields to a claim that was there first.
@@ -115,6 +115,12 @@ export type HolderLivenessInputs = {
 
 export type HolderLiveness =
 	| { live: true }
+	| {
+			live: false;
+			unconfirmed: true;
+			abandonedSince?: undefined;
+			releaseAt?: undefined;
+	  }
 	| { live: false; abandonedSince: number; releaseAt: number };
 
 /**
@@ -144,6 +150,11 @@ export function resolveHolderLiveness(
 	) {
 		return { live: true };
 	}
+	// Codex's SQLite query is a bounded recent-activity list, not a process
+	// registry. An idle/open chat, long tool call, or older result outside its
+	// LIMIT must never be treated as an exit and terminate its resources.
+	// Explicit release/session-end remains authoritative.
+	if (holder.kind === 'codex') return { live: false, unconfirmed: true };
 	const since =
 		inputs.missingSince.get(holderClockKey(holder, directory)) ?? inputs.now;
 	return {
@@ -308,11 +319,13 @@ export function decideDeviceAccess(
 		hold.via === 'lane' ? `lane ${hold.laneId ?? ''}`.trim() : 'a claim';
 	const liveness = hold.holderLive
 		? ''
-		: ` (its session is gone; the hold releases ${
-				hold.releaseAt
-					? `in ${Math.max(0, Math.ceil((hold.releaseAt - now) / 60_000))} min`
-					: 'soon'
-			})`;
+		: hold.releaseAt === undefined
+			? ' (session activity is unconfirmed; the hold is retained)'
+			: ` (its session is gone; the hold releases ${
+					hold.releaseAt
+						? `in ${Math.max(0, Math.ceil((hold.releaseAt - now) / 60_000))} min`
+						: 'soon'
+				})`;
 	return {
 		allowed: false,
 		hold,
@@ -398,7 +411,8 @@ export function holdCountdownLabel(
 	if (options.clocksPaused === true) {
 		return { text: 'clocks paused', tone: 'info' };
 	}
-	if (hold.releaseAt === undefined) return { text: 'gone', tone: 'warning' };
+	if (hold.releaseAt === undefined)
+		return { text: 'unconfirmed · retained', tone: 'info' };
 	const verb = options.verb ?? 'releases';
 	const remainingMs = Math.max(0, hold.releaseAt - now);
 	if (remainingMs === 0) {

@@ -267,7 +267,7 @@ func writeJSONServers(path string, key string, executable string, extra map[stri
 	case err == nil:
 		if len(bytes.TrimSpace(raw)) > 0 {
 			// A bare null decodes to a nil map, which cannot take our entry.
-			if err := json.Unmarshal(raw, &document); err != nil || document == nil {
+			if err := decodeJSONDocument(raw, &document); err != nil || document == nil {
 				change.Action = "skip"
 				change.Detail = "not valid JSON; fix it by hand, then rerun setup"
 				return change, nil
@@ -279,11 +279,31 @@ func writeJSONServers(path string, key string, executable string, extra map[stri
 	default:
 		return change, err
 	}
-	servers, _ := document[key].(map[string]any)
+	servers, valid := document[key].(map[string]any)
+	if _, exists := document[key]; exists && !valid {
+		change.Action = "skip"
+		change.Detail = "the MCP server collection is not an object; fix it by hand, then rerun setup"
+		return change, nil
+	}
 	if servers == nil {
 		servers = map[string]any{}
 	}
 	wanted := serverEntry(executable, extra)
+	if existing, exists := servers["rndevtools"]; exists {
+		previous, valid := existing.(map[string]any)
+		if !valid || previous["url"] != nil {
+			change.Action = "skip"
+			change.Detail = "rndevtools has a custom or invalid transport; keep it or remove that entry before rerunning setup"
+			return change, nil
+		}
+		// Setup owns the bundled executable and its transport, not the
+		// operator's approval lists, enabled state, environment, or extensions.
+		for key, value := range previous {
+			if key != "command" && key != "args" && key != "type" {
+				wanted[key] = value
+			}
+		}
+	}
 	if existing, ok := servers["rndevtools"]; ok && jsonEqual(existing, wanted) {
 		change.Action = "unchanged"
 		change.Detail = "rndevtools MCP server already registered"
@@ -305,48 +325,37 @@ func jsonEqual(a any, b any) bool {
 	return errA == nil && errB == nil && bytes.Equal(left, right)
 }
 
-var codexServerBlock = regexp.MustCompile(`(?ms)^\[mcp_servers\.rndevtools(?:\.[A-Za-z0-9_]+)?\]\n(?:[^\[\n][^\n]*\n|\n)*`)
-
 // codexToolTimeoutSeconds raises Codex's per-call MCP timeout (60 s by
 // default) to the CLI's lane budget, so a cold lane up or Supabase start over
 // MCP is not cut off while the desktop is still working.
 const codexToolTimeoutSeconds = 240
 
-// writeCodexServer edits ~/.codex/config.toml textually: it owns only the
-// `[mcp_servers.rndevtools]` table and leaves every other byte alone.
+// writeCodexServer edits only the managed transport fields. Approval settings,
+// environment, comments, and every other server remain intact across upgrades.
 func writeCodexServer(path string, executable string, write bool) (Change, error) {
 	change := Change{Path: path}
-	block := fmt.Sprintf("[mcp_servers.rndevtools]\ncommand = %s\nargs = [\"mcp\"]\ntool_timeout_sec = %d\n", tomlString(executable), codexToolTimeoutSeconds)
 	raw, err := os.ReadFile(path)
-	var content string
 	switch {
 	case err == nil:
-		content = string(raw)
-		// codexServerBlock matches whole lines. Without a final newline the
-		// table's last line would survive the strip as a stray key in
-		// whatever table comes before ours.
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
-		}
 		change.Action = "update"
 	case errors.Is(err, fs.ErrNotExist):
 		change.Action = "create"
 	default:
 		return change, err
 	}
-	stripped := codexServerBlock.ReplaceAllString(content, "")
-	if stripped != content && strings.Contains(content, block) {
+	next, err := mergeCodexServer(raw, executable)
+	if err != nil {
+		change.Action = "skip"
+		change.Detail = err.Error()
+		return change, nil
+	}
+	if bytes.Equal(next, raw) {
 		change.Action = "unchanged"
 		change.Detail = "rndevtools MCP server already registered"
 		return change, nil
 	}
 	change.Detail = "register the rndevtools MCP server (" + executable + " mcp)"
-	stripped = strings.TrimRight(stripped, "\n")
-	if stripped != "" {
-		stripped += "\n\n"
-	}
-	next := stripped + block
-	return commit(change, path, []byte(next), 0o600, write)
+	return commit(change, path, next, 0o600, write)
 }
 
 // tomlString quotes value as a TOML basic string. Go's %q is close but not
@@ -405,7 +414,7 @@ func quotePath(path string) string {
 // the shape both agents' hook files use.
 func hookDocument(executable string) (preToolUse map[string]any, sessionEnd map[string]any) {
 	preToolUse = map[string]any{
-		"matcher": "Bash",
+		"matcher": `Bash|exec_command|functions\.exec_command`,
 		"hooks": []any{map[string]any{
 			"type":    "command",
 			"command": hookCommand(executable, "pre-tool-use"),
@@ -435,7 +444,7 @@ func installHooks(path string, executable string, write bool) (Change, error) {
 	case err == nil:
 		if len(bytes.TrimSpace(raw)) > 0 {
 			// A bare null decodes to a nil map, which cannot take our hooks.
-			if err := json.Unmarshal(raw, &document); err != nil || document == nil {
+			if err := decodeJSONDocument(raw, &document); err != nil || document == nil {
 				change.Action = "skip"
 				change.Detail = "not valid JSON; fix it by hand, then rerun setup"
 				return change, nil
@@ -447,9 +456,23 @@ func installHooks(path string, executable string, write bool) (Change, error) {
 	default:
 		return change, err
 	}
-	hooks, _ := document["hooks"].(map[string]any)
+	hooks, valid := document["hooks"].(map[string]any)
+	if _, exists := document["hooks"]; exists && !valid {
+		change.Action = "skip"
+		change.Detail = "the hooks section is not an object; fix it by hand, then rerun setup"
+		return change, nil
+	}
 	if hooks == nil {
 		hooks = map[string]any{}
+	}
+	for _, event := range []string{"PreToolUse", "SessionEnd"} {
+		if value, exists := hooks[event]; exists {
+			if _, valid := value.([]any); !valid {
+				change.Action = "skip"
+				change.Detail = "an existing hook event is not an array; fix it by hand, then rerun setup"
+				return change, nil
+			}
+		}
 	}
 	preToolUse, sessionEnd := hookDocument(executable)
 	changed := false
@@ -761,17 +784,39 @@ const writeAccess = 0x2
 // this user cannot write, such as a read-only store.
 func writeTarget(path string) (target string, reason string) {
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return path, ""
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", "a symlink to a file that does not exist; restore its target, then rerun setup"
+		}
+		if syscall.Access(filepath.Dir(resolved), writeAccess) != nil {
+			return "", "a symlink into a directory you cannot write; add the rndevtools settings where that file is generated, then rerun setup"
+		}
+		return resolved, ""
 	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", "a symlink to a file that does not exist; restore its target, then rerun setup"
+	// Resolve directory links as well, including when this file or its parent
+	// directories do not exist yet. Repair previews bind to the resulting target,
+	// so swapping a dotfiles directory link cannot redirect apply or undo.
+	ancestor := path
+	var missing []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(ancestor)
+		if resolveErr == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, ""
+		}
+		if _, statErr := os.Lstat(ancestor); statErr == nil || !os.IsNotExist(resolveErr) {
+			return "", "the configuration path cannot be resolved; restore its directory target, then rerun setup"
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", "the configuration path cannot be resolved; restore its directory target, then rerun setup"
+		}
+		missing = append(missing, filepath.Base(ancestor))
+		ancestor = parent
 	}
-	if syscall.Access(filepath.Dir(resolved), writeAccess) != nil {
-		return "", "a symlink into a directory you cannot write; add the rndevtools settings where that file is generated, then rerun setup"
-	}
-	return resolved, ""
 }
 
 func writeFileAtomically(path string, content []byte, mode os.FileMode) error {

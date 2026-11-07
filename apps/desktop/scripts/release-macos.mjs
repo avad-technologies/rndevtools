@@ -50,12 +50,14 @@ export function assertSignature(
 	localDevelopment,
 	executable = true
 ) {
-	const authority = localDevelopment
-		? 'Apple Development:'
-		: 'Developer ID Application:';
-	if (!details.includes(`Authority=${authority}`)) {
+	const authorities = localDevelopment
+		? ['Apple Development:', 'Developer ID Application:']
+		: ['Developer ID Application:'];
+	if (
+		!authorities.some((authority) => details.includes(`Authority=${authority}`))
+	) {
 		throw new Error(
-			`Expected ${authority} signing; development and ad-hoc signatures cannot pass the public gate.`
+			`Expected ${authorities.join(' or ')} signing; ad-hoc signatures are never accepted and development signatures cannot pass the public gate.`
 		);
 	}
 	if (!details.split('\n').includes(`TeamIdentifier=${team}`)) {

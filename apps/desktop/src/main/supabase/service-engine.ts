@@ -159,6 +159,7 @@ import {
 import { describeSupabaseConfirmation } from './service-confirmation';
 import { runSupabaseOperation } from './service-operations';
 import {
+	describeSupabaseLaneBackend,
 	type LaneBackendEnsureInput,
 	type LaneBackendEnsureResult,
 	type SteeringSnapshot,
@@ -398,6 +399,8 @@ type SupabaseEnsureRequest = Readonly<{
 	createdBy: SupabaseStackRecord['createdBy'];
 	/** An agent's session or worktree hold, added once the stack runs. */
 	hold?: SupabaseStoredHold | undefined;
+	/** Caller scope for an explicit agent up, never inferred from lane attachments. */
+	holdSessionCwd?: string | undefined;
 	/** The operator's start pins the stack (always, or only when unheld). */
 	pin?: 'always' | 'if-unheld' | undefined;
 	lane?: Readonly<{ laneId: string; port?: number | undefined }> | undefined;
@@ -1382,6 +1385,7 @@ export class SupabaseEngine implements SupabaseServiceApi {
 
 	refreshRepositories(options: { fresh?: boolean } = {}): Promise<void> {
 		const scan = async () => {
+			if (!this.#active) return;
 			this.#repositoriesDirty = false;
 			let repositories: readonly string[] = [];
 			let worktrees: readonly Readonly<{
@@ -1400,23 +1404,57 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			const extras = [...this.#extraWorktrees.values()].filter(
 				(extra) => !tracked.has(extra.path)
 			);
+			// The lane list is a bounded UI inventory, and explicit agent
+			// worktrees live only in memory. Recover our durable stacks' roots
+			// even when no lane remains or the desktop has just restarted.
+			const known = new Set([...tracked, ...extras.map((extra) => extra.path)]);
+			const recorded = [];
+			for (const record of this.stackStore.records()) {
+				if (!this.#active) return;
+				const target = record.worktreePath;
+				if (
+					record.origin === 'external' ||
+					target === undefined ||
+					known.has(target) ||
+					this.policySnapshot().policy.repositories.some(
+						(repository) =>
+							repository.id === record.repositoryId && repository.mode === 'off'
+					)
+				)
+					continue;
+				known.add(target);
+				const extra = await this.#inspectExtraWorktree(target);
+				// A deleted checkout must not be replaced by an ancestor's repo.
+				if (extra?.path === target) recorded.push(extra);
+			}
+			if (!this.#active) return;
+			const active = new Set(this.#lanes().map((lane) => lane.worktreePath));
+			const requested = new Set(this.#extraWorktrees.keys());
+			const saved = new Set(recorded.map((worktree) => worktree.path));
+			const priority = (worktree: { path: string }) =>
+				active.has(worktree.path)
+					? 0
+					: requested.has(worktree.path)
+						? 1
+						: saved.has(worktree.path)
+							? 2
+							: 3;
+			const scanWorktrees = [
+				...worktrees,
+				...[...extras, ...recorded].map((extra) => ({
+					...extra,
+					dirty: false,
+				})),
+			].sort((left, right) => priority(left) - priority(right));
 			const facts = await inspectSupabaseRepositories(
 				{
 					repositories: [
 						...new Set([
+							...scanWorktrees.map((worktree) => worktree.repositoryRoot),
 							...repositories,
-							...extras.map((extra) => extra.repositoryRoot),
 						]),
 					],
-					worktrees: [
-						...worktrees,
-						...extras.map((extra) => ({
-							path: extra.path,
-							branch: extra.branch,
-							repositoryRoot: extra.repositoryRoot,
-							dirty: false,
-						})),
-					],
+					worktrees: scanWorktrees,
 					lanes: this.#lanes(),
 					appPaths: [
 						...this.#requestedApps.values(),
@@ -1430,11 +1468,15 @@ export class SupabaseEngine implements SupabaseServiceApi {
 					policy: this.policySnapshot().policy,
 					featureEnabled: true,
 					platformSupported: this.platform.supported,
-					resolveCli: (input) => this.resolver.resolve(input),
+					resolveCli: async (input) => {
+						if (!this.#active) throw new Error('Local Supabase is off.');
+						return this.resolver.resolve(input);
+					},
 					now: this.now(),
 				},
 				this.#seams.repositoryScan ?? {}
 			);
+			if (!this.#active) return;
 			this.#facts = facts;
 			this.#heads = observeSupabaseHeads(
 				this.#heads,
@@ -1528,18 +1570,24 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		return facts;
 	}
 
-	/** Records an untracked git worktree so the next scan includes it. */
-	async #addExtraWorktree(target: string): Promise<boolean> {
+	async #inspectExtraWorktree(
+		target: string
+	): Promise<
+		| Readonly<{ path: string; repositoryRoot: string; branch: string }>
+		| undefined
+	> {
 		let current = target;
 		for (let depth = 0; ; depth += 1) {
+			if (!this.#active) return undefined;
 			const kind = await this.#fs.kind(path.join(current, '.git'));
 			if (kind === 'file' || kind === 'directory') break;
 			const parent = path.dirname(current);
-			if (parent === current || depth >= 32) return false;
+			if (parent === current || depth >= 32) return undefined;
 			current = parent;
 		}
+		if (!this.#active) return undefined;
 		const head = await this.#readHead(current);
-		if (head.status !== 'ok') return false;
+		if (head.status !== 'ok') return undefined;
 		const repositoryRoot =
 			path.basename(head.commonDir) === '.git'
 				? path.dirname(head.commonDir)
@@ -1547,11 +1595,18 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		const branch = head.branchContext.startsWith('refs/heads/')
 			? head.branchContext.slice('refs/heads/'.length)
 			: head.branchContext;
-		this.#extraWorktrees.set(current, {
+		return {
 			path: current,
 			repositoryRoot,
 			branch: branch.slice(0, 256) || 'detached',
-		});
+		};
+	}
+
+	/** Records an untracked git worktree so the next scan includes it. */
+	async #addExtraWorktree(target: string): Promise<boolean> {
+		const extra = await this.#inspectExtraWorktree(target);
+		if (!extra) return false;
+		this.#extraWorktrees.set(extra.path, extra);
 		while (this.#extraWorktrees.size > MAX_EXTRA_WORKTREES) {
 			const oldest = this.#extraWorktrees.keys().next().value;
 			if (oldest === undefined) break;
@@ -2169,11 +2224,16 @@ export class SupabaseEngine implements SupabaseServiceApi {
 	 * list that can't be read is an unknown verdict, not a clean one;
 	 * `not-running` means the owner list was read and has no owner for it.
 	 */
-	async verifyExposure(
-		stackId: string
-	): Promise<'loopback' | 'lan-exposed' | 'unknown' | 'not-running'> {
+	async verifyExposure(stackId: string): Promise<{
+		verdict: 'loopback' | 'lan-exposed' | 'unknown' | 'not-running';
+		reason?: string;
+	}> {
 		await this.#readOwners();
 		let verdict: 'loopback' | 'lan-exposed' | 'unknown' = 'unknown';
+		let reason =
+			this.#owners?.status === 'unavailable'
+				? `owner lookup: ${this.#owners.reason}`
+				: 'owner lookup did not complete';
 		if (this.#owners?.status === 'ok') {
 			const owner = this.ownerOf(stackId);
 			if (!owner) {
@@ -2181,24 +2241,30 @@ export class SupabaseEngine implements SupabaseServiceApi {
 					this.#exposure.delete(stackId);
 				}
 				this.markDirty();
-				return 'not-running';
+				return {
+					verdict: 'not-running',
+					reason: 'the stack owner is not running',
+				};
 			}
 			const tree = await this.#discoveryNow().processTree(owner.pid, {
 				stackId,
 			});
 			if (tree.status === 'ok') {
 				const exposure = await this.#discoveryNow().checkExposure(tree.pids);
+				if (exposure.status !== 'ok') {
+					reason = `listener probe: ${exposure.reason}`;
+				}
 				verdict =
 					exposure.status !== 'ok'
 						? 'unknown'
 						: exposure.nonLoopback.length > 0
 							? 'lan-exposed'
 							: 'loopback';
-			}
+			} else reason = `process tree: ${tree.reason}`;
 		}
 		this.#exposure.set(stackId, { verdict, checkedAt: this.now() });
 		this.markDirty();
-		return verdict;
+		return { verdict, ...(verdict === 'unknown' ? { reason } : {}) };
 	}
 
 	/**
@@ -2212,37 +2278,64 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		job: SupabaseEngineJob | undefined,
 		options: Readonly<{ notRunning?: 'pass' | 'fail' }> = {}
 	): Promise<SupabaseStepResult> {
+		const startedAt = this.now();
 		const checked = await this.verifyExposure(stackId);
-		if (checked === 'loopback') return { ok: true };
-		if (checked === 'not-running' && options.notRunning === 'pass') {
+		if (checked.verdict === 'loopback') return { ok: true };
+		if (checked.verdict === 'not-running' && options.notRunning === 'pass') {
 			return { ok: true };
 		}
-		const verdict = checked === 'lan-exposed' ? 'lan-exposed' : 'unknown';
-		await this.stopStep(stackId, job, { clearPin: false });
+		const verdict =
+			checked.verdict === 'lan-exposed' ? 'lan-exposed' : 'unknown';
+		const stopped = await this.stopStep(stackId, job, { clearPin: false });
 		this.#exposure.set(stackId, { verdict, checkedAt: this.now() });
+		const effect = stopped.ok
+			? 'RN Devtools stopped it. Its data is kept.'
+			: 'RN Devtools could not stop it. Stop the stack in RN Devtools and check its listeners before using it.';
+		const error =
+			verdict === 'lan-exposed'
+				? supabaseDesktopError(
+						'refused',
+						`A service of this stack listened on an address other than 127.0.0.1. ${effect}`,
+						{
+							title: LAN_EXPOSED_TITLE,
+							recovery:
+								'Check supabase/config.toml for listener addresses, then start it again.',
+						}
+					)
+				: supabaseDesktopError(
+						'refused',
+						`RN Devtools couldn't verify that this stack listens only on this Mac (${checked.reason ?? 'verification unavailable'}). ${effect}`,
+						{
+							title: 'Exposure could not be verified',
+							recovery: 'Start it again; RN Devtools checks it each time.',
+						}
+					);
+		// The periodic sweep has no job. Persist its reason and stop event too,
+		// rather than leaving only a lastStoppedAt timestamp with no explanation.
+		try {
+			await this.stackStore.updateRecord(stackId, (draft) => ({
+				...draft,
+				lastError: error,
+			}));
+			if (!job) {
+				await this.stackStore.recordActivity({
+					id: `supabase-exposure-stop-${randomUUID()}`,
+					kind: 'stop',
+					stackIds: [stackId],
+					outcome: stopped.ok ? 'complete' : 'failed',
+					errorCode: error.code,
+					startedAt,
+					durationMs: Math.max(0, this.now() - startedAt),
+					requestedBy: 'automatic',
+				});
+			}
+		} catch (failure) {
+			this.log(
+				`Supabase exposure stop could not be saved: ${errorName(failure)}`
+			);
+		}
 		this.markDirty();
-		return {
-			ok: false,
-			error:
-				verdict === 'lan-exposed'
-					? supabaseDesktopError(
-							'refused',
-							'A service of this stack listened on an address other than 127.0.0.1, so RN Devtools stopped it. Its data is kept.',
-							{
-								title: LAN_EXPOSED_TITLE,
-								recovery:
-									'Check supabase/config.toml for listener addresses, then start it again.',
-							}
-						)
-					: supabaseDesktopError(
-							'refused',
-							"RN Devtools couldn't verify that this stack listens only on this Mac, so it stopped it. Its data is kept.",
-							{
-								title: 'Exposure could not be verified',
-								recovery: 'Start it again; RN Devtools checks it each time.',
-							}
-						),
-		};
+		return { ok: false, error };
 	}
 
 	async #sweepExposure(): Promise<void> {
@@ -2413,6 +2506,11 @@ export class SupabaseEngine implements SupabaseServiceApi {
 		attachment.envFingerprint = envFingerprint;
 		attachment.needsMetroRestart = false;
 		this.markDirty();
+	}
+
+	/** Uses the existing snapshot: assembling state here would recurse through lanes. */
+	describeLaneBackend(previous: LaneBackendSummary): LaneBackendSummary {
+		return describeSupabaseLaneBackend(previous, this.#state);
 	}
 
 	describeWorktree(worktreePath: string): LaneWorktreeSupabase | undefined {
@@ -3743,22 +3841,25 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			keyFingerprints: _keyFingerprints,
 			...rest
 		} = base;
-		await this.stackStore.upsertRecord({
-			...rest,
-			origin: rest.origin === 'external' ? 'adopted' : rest.origin,
-			projectRoot: detection.projectRoot,
-			worktreePath: facts.worktreePath,
-			appPaths: [...new Set([...rest.appPaths, facts.appPath])].slice(-16),
-			repositoryId: facts.repositoryId,
-			branchContext,
-			lastStartedAt: now,
-			lastUsedAt: now,
-			cliVersion: cli.version,
-			binaryPath: cli.binaryPath,
-			runtime: 'native',
-			exclusions: [...input.exclusions],
-			flags,
-		});
+		await this.stackStore.upsertRecord(
+			{
+				...rest,
+				origin: rest.origin === 'external' ? 'adopted' : rest.origin,
+				projectRoot: detection.projectRoot,
+				worktreePath: facts.worktreePath,
+				appPaths: [...new Set([...rest.appPaths, facts.appPath])].slice(-16),
+				repositoryId: facts.repositoryId,
+				branchContext,
+				lastStartedAt: now,
+				lastUsedAt: now,
+				cliVersion: cli.version,
+				binaryPath: cli.binaryPath,
+				runtime: 'native',
+				exclusions: [...input.exclusions],
+				flags,
+			},
+			{ preserveOwnership: true }
+		);
 	}
 
 	async #recordStartFailure(
@@ -3810,20 +3911,23 @@ export class SupabaseEngine implements SupabaseServiceApi {
 			: existing
 				? supabaseRecreateError(existing)
 				: undefined;
-		await this.stackStore.upsertRecord({
-			...kept,
-			lastError: error,
-			...(recreateError ? { recreateError } : {}),
-			flags: {
-				...base.flags,
-				...(recreate ? { needsRecreate: true as const } : {}),
-				...(interrupted ? { interrupted: true as const } : {}),
-				// The first start failed but still registered an empty stack.
-				...(input.mode === 'create' && !interrupted && !recreate && !started
-					? { failedStart: true as const }
-					: {}),
+		await this.stackStore.upsertRecord(
+			{
+				...kept,
+				lastError: error,
+				...(recreateError ? { recreateError } : {}),
+				flags: {
+					...base.flags,
+					...(recreate ? { needsRecreate: true as const } : {}),
+					...(interrupted ? { interrupted: true as const } : {}),
+					// The first start failed but still registered an empty stack.
+					...(input.mode === 'create' && !interrupted && !recreate && !started
+						? { failedStart: true as const }
+						: {}),
+				},
 			},
-		});
+			{ preserveOwnership: true }
+		);
 	}
 
 	/** lsof after a start; then a status read so the row shows Running. */
@@ -4363,7 +4467,13 @@ export class SupabaseEngine implements SupabaseServiceApi {
 	): Promise<void> {
 		const record = this.stackStore.record(stackId);
 		if (!record) return;
-		if (request.hold) await this.stackStore.addHold(stackId, request.hold);
+		if (request.hold) {
+			await this.stackStore.addHold(stackId, request.hold, {
+				...(request.holdSessionCwd === undefined
+					? {}
+					: { sessionCwd: request.holdSessionCwd }),
+			});
+		}
 		if (request.pin === 'always') {
 			await this.stackStore.setPinned(stackId, true);
 		} else if (

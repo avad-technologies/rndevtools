@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
 	Lane,
@@ -29,9 +30,11 @@ import type {
 	SlimmingJob,
 	SlimmingState,
 } from '../shared/slimming-protocol';
+import { createSupabaseDemoState } from '../shared/supabase-demo-data';
 import type {
 	LaneBackendSummary,
 	LaneWorktreeSupabase,
+	SupabaseState,
 } from '../shared/supabase-protocol';
 import { AgentService } from './agent-service';
 import {
@@ -54,10 +57,11 @@ import type {
 } from './lane-worktree';
 import type { SimulatorMutationLease } from './simulator-mutation-coordinator';
 import { SimulatorMutationCoordinator } from './simulator-mutation-coordinator';
-import type {
-	LaneBackendEnsureInput,
-	LaneBackendEnsureResult,
-	LaneBackendLateAttach,
+import {
+	describeSupabaseLaneBackend,
+	type LaneBackendEnsureInput,
+	type LaneBackendEnsureResult,
+	type LaneBackendLateAttach,
 } from './supabase/service-ports';
 
 const UDID = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
@@ -350,6 +354,8 @@ class FakeMetro implements MetroSupervisorPort {
 		(pid === undefined ||
 			(this.listeners.get(port) === pid && !this.deadPids.has(pid)));
 	isProcessRunning = (pid: number) => !this.deadPids.has(pid);
+	verifyOwnership = async (pid: number, _port: number, _directory: string) =>
+		this.isProcessRunning(pid);
 	/** A stopped Metro exits and lets go of its port, as a real one does. */
 	stop: MetroSupervisorPort['stop'] = async (pid, port) => {
 		this.stopped.push({ pid, port });
@@ -460,6 +466,9 @@ class FakeBackends implements LaneBackendPort {
 	onEnsure: ((input: LaneBackendEnsureInput) => void) | undefined;
 	readonly described = new Map<string, LaneWorktreeSupabase>();
 	describeError: Error | undefined;
+	runtimeState: SupabaseState | undefined;
+	describeSummary = (previous: LaneBackendSummary) =>
+		describeSupabaseLaneBackend(previous, this.runtimeState);
 
 	ensureForLane = async (
 		input: LaneBackendEnsureInput
@@ -537,7 +546,13 @@ describe('LaneService', () => {
 
 	afterEach(async () => {
 		await service.stop();
-		await rm(root, { recursive: true, force: true });
+		// Atomic writes already in flight may finish while temp cleanup starts.
+		await rm(root, {
+			recursive: true,
+			force: true,
+			maxRetries: 5,
+			retryDelay: 50,
+		});
 	});
 
 	it('boots the simulator, leases a port, starts Metro, and deep-links the dev client', async () => {
@@ -788,6 +803,284 @@ describe('LaneService', () => {
 		expect(receipt.error).toBe('CoreSimulator refused to boot.');
 		expect(metro.started).toHaveLength(0);
 		expect(service.getState().lanes).toHaveLength(0);
+	});
+
+	it.each(['cancel', 'shutdown'] as const)(
+		'cleans up a Metro whose spawn finishes after %s',
+		async (operation) => {
+			const spawning = deferred<void>();
+			const release = deferred<void>();
+			metro.start = async (input) => {
+				const pid = metro.launch(input);
+				spawning.resolve();
+				await release.promise;
+				return pid;
+			};
+			const controller = new AbortController();
+			const starting = service.runOperation(
+				{
+					actionId: 'op-cancel-spawn',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				},
+				controller.signal
+			);
+			await spawning.promise;
+			if (operation === 'cancel') controller.abort();
+			else await service.stop();
+			release.resolve();
+			const result = await starting;
+			expect(result.completed).toBe(false);
+			expect(result.error).toMatch(/cancelled|shutting down/);
+			expect(metro.stopped).toEqual([{ pid: 1_001, port: 8_100 }]);
+			expect(service.getState().lanes).toEqual([]);
+			const reopened = new LaneStore(root);
+			await reopened.start();
+			expect(reopened.lanes()).toEqual([]);
+		}
+	);
+
+	it.each(['cancel', 'shutdown'] as const)(
+		'retains a recoverable lease when %s cleanup cannot safely stop a spawned Metro',
+		async (operation) => {
+			const spawning = deferred<void>();
+			const release = deferred<void>();
+			metro.start = async (input) => {
+				const pid = metro.launch(input);
+				spawning.resolve();
+				await release.promise;
+				return pid;
+			};
+			const stop = vi
+				.spyOn(metro, 'stop')
+				.mockRejectedValue(new Error('Ownership probe timed out.'));
+			const controller = new AbortController();
+			const starting = service.runOperation(
+				{
+					actionId: 'op-retained-start',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				},
+				controller.signal
+			);
+			await spawning.promise;
+			if (operation === 'cancel') controller.abort();
+			else await service.stop();
+			release.resolve();
+			const result = await starting;
+			expect(result.completed).toBe(false);
+			expect(result.error).toMatch(/cancelled|shutting down/);
+			expect(result.error).toContain('lane was retained');
+			expect(metro.isProcessRunning(1_001)).toBe(true);
+			const retained = service.getState().lanes[0];
+			expect(retained).toMatchObject({
+				metroPid: 1_001,
+				metro: 'starting',
+				port: 8_100,
+			});
+			const reopened = new LaneStore(root);
+			await reopened.start();
+			expect(reopened.lanes()[0]?.metroPid).toBe(1_001);
+			// Once identity inspection recovers the retained lane can be stopped.
+			stop.mockRestore();
+			await service.stopLane(retained?.id as string);
+			expect(metro.isProcessRunning(1_001)).toBe(false);
+			expect(service.getState().lanes).toEqual([]);
+		}
+	);
+
+	it('does not spawn Metro for an already cancelled lane up', async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const result = await service.runOperation(
+			{
+				actionId: 'op-cancelled',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			},
+			controller.signal
+		);
+		expect(result.completed).toBe(false);
+		expect(metro.started).toEqual([]);
+	});
+
+	it('refuses a Metro restart while a lane stop is signalling its old PID', async () => {
+		const started = await service.runOperation({
+			actionId: 'op-start',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		const laneId = started.lane?.id as string;
+		const stopping = deferred<void>();
+		const release = deferred<void>();
+		const stop = metro.stop;
+		let first = true;
+		metro.stop = async (pid, port, directory) => {
+			if (first) {
+				first = false;
+				stopping.resolve();
+				await release.promise;
+			}
+			await stop(pid, port, directory);
+		};
+		const stopped = service.stopLane(laneId);
+		await stopping.promise;
+		try {
+			await expect(service.restartMetro(laneId, 'operator')).rejects.toThrow(
+				/stopping/
+			);
+		} finally {
+			release.resolve();
+			await stopped;
+		}
+		expect(metro.started).toHaveLength(1);
+		expect(service.getState().lanes).toEqual([]);
+	});
+
+	it('reserves a stopping lane device until an uncommitted replacement is cleaned up or retained', async () => {
+		const started = await service.runOperation({
+			actionId: 'op-reservation-start',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		const spawning = deferred<void>();
+		const release = deferred<void>();
+		metro.start = async (input) => {
+			const pid = metro.launch(input);
+			spawning.resolve();
+			if (pid === 1_002) await release.promise;
+			return pid;
+		};
+		const stop = metro.stop;
+		metro.stop = async (pid, port, directory) => {
+			if (pid === 1_002) throw new Error('Ownership inspection unavailable.');
+			await stop(pid, port, directory);
+		};
+		const restarting = service
+			.restartMetro(started.lane?.id as string, 'operator')
+			.then(
+				() => 'unexpected success',
+				(error: unknown) =>
+					error instanceof Error ? error.message : String(error)
+			);
+		await spawning.promise;
+		await service.stopLane(started.lane?.id as string);
+		const other = await service.runOperation({
+			actionId: 'op-reservation-other',
+			kind: 'lane.start',
+			worktreePath: OTHER_WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		expect(other.completed).toBe(false);
+		expect(metro.started).toHaveLength(2);
+		release.resolve();
+		expect(await restarting).toContain('lane was retained');
+		expect(service.getState().lanes).toMatchObject([
+			{ id: started.lane?.id, metroPid: 1_002 },
+		]);
+		metro.stop = stop;
+		await service.stopLane(started.lane?.id as string);
+	});
+
+	it('stops a replacement Metro when its PID cannot be persisted', async () => {
+		const started = await service.runOperation({
+			actionId: 'op-persist-start',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		const failedWrite = vi
+			.spyOn(store, 'upsert')
+			.mockRejectedValueOnce(new Error('Disk write failed.'));
+		try {
+			await expect(
+				service.restartMetro(started.lane?.id as string, 'operator')
+			).rejects.toThrow('Disk write failed.');
+		} finally {
+			failedWrite.mockRestore();
+		}
+		expect(metro.started).toHaveLength(2);
+		expect(metro.stopped).toEqual([
+			{ pid: 1_001, port: 8_100 },
+			{ pid: 1_002, port: 8_100 },
+		]);
+		expect(metro.isProcessRunning(1_002)).toBe(false);
+	});
+
+	it.each(['stop', 'restart'] as const)(
+		'continues a Metro %s when diagnostics throw synchronously',
+		async (operation) => {
+			await service.stop();
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+				onMetroStop: () => {
+					throw new Error('Diagnostics unavailable.');
+				},
+			});
+			await service.start();
+			const started = await service.runOperation({
+				actionId: 'op-diagnostic-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			if (operation === 'stop')
+				await service.stopLane(started.lane?.id as string);
+			else await service.restartMetro(started.lane?.id as string, 'operator');
+			expect(metro.stopped).toEqual([{ pid: 1_001, port: 8_100 }]);
+		}
+	);
+
+	it('does not open a dev client after its lane stops during a readiness probe', async () => {
+		const started = await service.runOperation({
+			actionId: 'op-readiness-start',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		const probing = deferred<void>();
+		const release = deferred<boolean>();
+		metro.isHealthy = async () => {
+			probing.resolve();
+			return release.promise;
+		};
+		const launching = service.runOperation({
+			actionId: 'op-readiness-launch',
+			kind: 'lane.launch',
+			laneId: started.lane?.id as string,
+		});
+		await probing.promise;
+		await service.stopLane(started.lane?.id as string);
+		release.resolve(true);
+		expect((await launching).completed).toBe(false);
+		expect(simulator.actions).toEqual([]);
 	});
 
 	it('reports a Metro that exited before becoming ready and keeps the lease for inspection', async () => {
@@ -1217,6 +1510,88 @@ describe('LaneService', () => {
 			});
 		}
 
+		it.each([
+			{ failures: 1, code: 60, url: undefined, attempts: 2, completed: true },
+			{ failures: 2, code: 60, url: undefined, attempts: 2, completed: false },
+			{ failures: 1, code: 61, url: undefined, attempts: 1, completed: false },
+			{
+				failures: 1,
+				code: 60,
+				url: 'checkout/cart',
+				attempts: 1,
+				completed: false,
+			},
+		])(
+			'bounds default dev-client launch recovery: $code / $failures / $url',
+			async ({ failures, code, url, attempts, completed }) => {
+				const started = await startLane();
+				const run = simulator.runAction;
+				let opens = 0;
+				simulator.runAction = (action) => {
+					if (action.kind === 'url.open' && opens++ < failures) {
+						simulator.failNext = `xcrun failed with exit code ${code}.`;
+					}
+					return run(action);
+				};
+				const result = await service.runOperation({
+					actionId: 'recover-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+					...(url ? { url } : {}),
+				});
+				expect(result.completed).toBe(completed);
+				expect(opens).toBe(attempts);
+				expect(metro.started).toHaveLength(1);
+				expect(service.getState().lanes[0]?.metroPid).toBe(
+					started.lane?.metroPid
+				);
+				if (!completed)
+					expect(result.error).toBe(`xcrun failed with exit code ${code}.`);
+				const actions = simulator.actions.filter(
+					(action) => action.kind === 'url.open'
+				);
+				expect(new Set(actions.map((action) => action.actionId)).size).toBe(
+					attempts
+				);
+				expect(new Set(actions.map((action) => action.url)).size).toBe(1);
+			}
+		);
+
+		it.each(['stop', 'cancel'] as const)(
+			'does not retry a timed-out launch after %s',
+			async (operation) => {
+				const started = await startLane();
+				const laneId = started.lane?.id as string;
+				const controller = new AbortController();
+				const run = simulator.runAction;
+				simulator.runAction = (action) => {
+					if (action.kind === 'url.open')
+						simulator.failNext = 'xcrun failed with exit code 60.';
+					return run(action);
+				};
+				const result = service
+					.launchLane(laneId, undefined, undefined, controller.signal)
+					.then(
+						() => 'unexpected success',
+						(error: unknown) =>
+							error instanceof Error ? error.message : String(error)
+					);
+				await vi.waitFor(() =>
+					expect(
+						simulator.actions.some((action) => action.kind === 'url.open')
+					).toBe(true)
+				);
+				if (operation === 'stop') await service.stopLane(laneId);
+				else controller.abort();
+				expect(await result).toMatch(
+					operation === 'stop' ? /changed before.*retry/ : /cancelled/
+				);
+				expect(
+					simulator.actions.filter((action) => action.kind === 'url.open')
+				).toHaveLength(1);
+			}
+		);
+
 		it('does not bring back a lane stopped while its dev client opened', async () => {
 			const started = await startLane();
 			const laneId = started.lane?.id as string;
@@ -1501,6 +1876,41 @@ describe('LaneService', () => {
 		expect(asked).toEqual([false, true]);
 	});
 
+	it('retains both active lanes and registered roots when discovery exceeds its bound', async () => {
+		for (const [worktreePath, simulatorUdid] of [
+			[WORKTREE, UDID],
+			[OTHER_WORKTREE, OTHER_UDID],
+		] as const) {
+			const receipt = await service.runOperation({
+				actionId: `op-bounded-${simulatorUdid}`,
+				kind: 'lane.start',
+				worktreePath,
+				simulatorUdid,
+				environment: 'development',
+				launch: false,
+			});
+			expect(receipt.completed).toBe(true);
+		}
+		const active = [...worktrees.worktrees];
+		worktrees.worktrees = [
+			...Array.from({ length: 140 }, (_, index) => ({
+				path: `/Users/dev/app/archive/${index}`,
+				branch: `archive-${index}`,
+				repositoryRoot: REPO,
+				dirty: false,
+			})),
+			...active,
+			...active,
+		];
+		const state = await service.refresh();
+		expect(state.worktrees).toHaveLength(128);
+		expect(new Set(state.worktrees.map((w) => w.path)).size).toBe(128);
+		for (const target of [REPO, WORKTREE, OTHER_WORKTREE]) {
+			expect(state.worktrees.some((w) => w.path === target)).toBe(true);
+		}
+		expect(metro.stopped).toEqual([]);
+	});
+
 	it('surfaces repository discovery errors without hiding the rest of the state', async () => {
 		worktrees.listWorktrees = async () => {
 			throw new Error('fatal: not a git repository');
@@ -1664,6 +2074,218 @@ describe('LaneService', () => {
 	});
 
 	describe('Metro health', () => {
+		it('rechecks identity before a direct launch when a cached PID now belongs to another app', async () => {
+			const started = await service.runOperation({
+				actionId: 'op-recycled-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			metro.healthyPorts.add(8_100);
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockRejectedValue(
+					new NotLaneMetroError('Another app now owns this PID.')
+				);
+			const result = await service.runOperation({
+				actionId: 'op-recycled-launch',
+				kind: 'lane.launch',
+				laneId: started.lane?.id as string,
+			});
+			expect(result.completed).toBe(false);
+			expect(result.error).toContain('Another app now owns this PID');
+			expect(verify).toHaveBeenCalledWith(
+				started.lane?.metroPid,
+				8_100,
+				WORKTREE
+			);
+			expect(simulator.actions).toEqual([]);
+			expect(metro.stopped).toEqual([]);
+			verify.mockRestore();
+		});
+
+		it('starts the desktop service without waiting for surviving Metro ownership probes', async () => {
+			const started = await service.runOperation({
+				actionId: 'op-background-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			await service.stop();
+			const ownership = deferred<boolean>();
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockReturnValue(ownership.promise);
+			metro.healthyPorts.add(started.lane?.port as number);
+			service = new LaneService({
+				store: new LaneStore(root),
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			expect(verify).toHaveBeenCalledOnce();
+			expect(service.getState().lanes[0]?.metro).toBe('starting');
+			ownership.resolve(true);
+			await vi.waitFor(() =>
+				expect(service.getState().lanes[0]?.metro).toBe('ready')
+			);
+			verify.mockRestore();
+		});
+
+		describe('shutdown during startup reconciliation', () => {
+			let health: ReturnType<typeof deferred<boolean>>;
+
+			beforeEach(async () => {
+				await service.runOperation({
+					actionId: 'op-before-shutdown',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+				await service.stop();
+				health = deferred<boolean>();
+				const probing = deferred<void>();
+				metro.isHealthy = () => {
+					probing.resolve();
+					return health.promise;
+				};
+				store = new LaneStore(root);
+				service = new LaneService({
+					store,
+					simulator,
+					metro,
+					worktrees,
+					now: () => now,
+				});
+				await service.start();
+				await probing.promise;
+			});
+
+			it('discards a health result received after stop without waiting for the probe', async () => {
+				const write = vi.spyOn(store, 'upsert');
+				const stopping = service.stop();
+				try {
+					await expect(
+						Promise.race([stopping, nextTurn('pending')])
+					).resolves.toBeUndefined();
+				} finally {
+					health.resolve(true);
+					await stopping;
+				}
+				await nextTurn();
+				expect(write).not.toHaveBeenCalled();
+				expect(metro.stopped).toEqual([]);
+			});
+
+			it('drains the durable write already started by reconciliation', async () => {
+				const writing = deferred<void>();
+				const writeAllowed = deferred<void>();
+				const upsert = store.upsert.bind(store);
+				vi.spyOn(store, 'upsert').mockImplementation(async (lane) => {
+					writing.resolve();
+					await writeAllowed.promise;
+					await upsert(lane);
+				});
+				health.resolve(true);
+				await writing.promise;
+				const stopping = service.stop();
+				try {
+					await expect(
+						Promise.race([stopping, nextTurn('pending')])
+					).resolves.toBe('pending');
+				} finally {
+					writeAllowed.resolve();
+					await stopping;
+				}
+				const reopened = new LaneStore(root);
+				await reopened.start();
+				expect(reopened.lanes()[0]?.metro).toBe('ready');
+				expect(metro.stopped).toEqual([]);
+			});
+		});
+
+		it.each(['another app directory', 'ownership probe timeout'] as const)(
+			'refuses a surviving PID with %s even when that PID serves /status on its port',
+			async (failure) => {
+				metro.healthyPorts.add(8_100);
+				const started = await service.runOperation({
+					actionId: 'op-adoption-start',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+				await service.stop();
+				const verify = vi
+					.spyOn(metro, 'verifyOwnership')
+					.mockRejectedValue(new Error(failure));
+				const backends = new FakeBackends();
+				service = new LaneService({
+					store: new LaneStore(root),
+					simulator,
+					metro,
+					worktrees,
+					backends,
+					now: () => now,
+				});
+				await service.start();
+				await vi.waitFor(() =>
+					expect(service.getState().error).toContain('Cannot adopt Metro')
+				);
+				expect(await metro.isHealthy(8_100, started.lane?.metroPid)).toBe(true);
+				expect(service.getState()).toMatchObject({
+					error: expect.stringContaining('Cannot adopt Metro'),
+					lanes: [{ id: started.lane?.id, metro: 'starting' }],
+				});
+				const launch = await service.runOperation({
+					actionId: 'op-adoption-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(launch.completed).toBe(false);
+				expect(launch.error).toContain(failure);
+				const resumed = await service.runOperation({
+					actionId: 'op-adoption-resume',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+				expect(resumed.completed).toBe(false);
+				expect(resumed.error).toContain(failure);
+				expect(backends.ensured).toEqual([]);
+				expect(simulator.actions).toEqual([]);
+				expect(metro.started).toHaveLength(1);
+				expect(metro.stopped).toEqual([]);
+				// A transient probe failure can recover on explicit retry.
+				verify.mockRestore();
+				expect(
+					(
+						await service.runOperation({
+							actionId: 'op-adoption-retry',
+							kind: 'lane.start',
+							worktreePath: WORKTREE,
+							simulatorUdid: OTHER_UDID,
+							environment: 'development',
+							backend: 'off',
+							launch: false,
+						})
+					).completed
+				).toBe(true);
+				expect(service.getState().error).toBeUndefined();
+			}
+		);
+
 		it("does not launch against another packager answering on the lane's port", async () => {
 			// Something grabbed 8100 after the bind probe passed and answers /status.
 			metro.healthyPorts.add(8_100);
@@ -2036,6 +2658,117 @@ describe('LaneService', () => {
 				clearInterval(advance);
 			}
 		}
+
+		it.each(['stopped', 'failed', 'disabled'] as const)(
+			'publishes %s backend health and requires explicit lane up to recover',
+			async (status) => {
+				const started = await up({ backend: 'required', launch: false });
+				const initial = createSupabaseDemoState();
+				const template = initial.stacks[0];
+				if (!template) throw new Error('Demo stack fixture missing.');
+				const healthy: SupabaseState = {
+					...initial,
+					stacks: [
+						{
+							...template,
+							id: STACK_ID,
+							state: 'running',
+							lifecycle: 'running',
+							ownerLiveness: 'reachable',
+							readiness: 'ready',
+							exposure: { verdict: 'loopback' },
+							mode: { value: 'managed' },
+							flags: [],
+							apiUrl: API_URL,
+						},
+					],
+				};
+				const published: LaneState[] = [];
+				lanes.subscribe((state) => published.push(state));
+				const ensures = backends.ensured.length;
+				const actions = simulator.actions.length;
+				backends.runtimeState =
+					status === 'disabled'
+						? { ...healthy, feature: { ...healthy.feature, enabled: false } }
+						: {
+								...healthy,
+								stacks: healthy.stacks.map((stack) => ({
+									...stack,
+									state: status,
+								})),
+							};
+				lanes.backendsChanged();
+				expect(published).toHaveLength(1);
+				expect(published[0]?.lanes[0]?.backend?.status).toBe(
+					status === 'disabled' ? 'skipped' : status
+				);
+				lanes.backendsChanged();
+				expect(published).toHaveLength(1);
+				expect(backends.ensured).toHaveLength(ensures);
+				const launch = await lanes.runOperation({
+					actionId: 'backend-stopped-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(launch.completed).toBe(false);
+				expect(launch.error).toContain('requires its local backend');
+				expect(simulator.actions).toHaveLength(actions);
+				backends.runtimeState = healthy;
+				lanes.backendsChanged();
+				expect(lanes.getState().lanes[0]?.backend?.status).not.toBe('ready');
+				expect(
+					(await up({ backend: 'required', launch: false })).completed
+				).toBe(true);
+				expect(lanes.getState().lanes[0]?.backend?.status).toBe('ready');
+			}
+		);
+
+		it.each(['throws', 'oversized'] as const)(
+			'retains recovery identity when the cached health projector %s',
+			async (failure) => {
+				await up({ backend: 'required', launch: false });
+				const describe = vi
+					.spyOn(backends, 'describeSummary')
+					.mockImplementation((previous) => {
+						if (failure === 'throws') throw new Error('Projection failed.');
+						return { ...previous, reasonText: 'x'.repeat(5_000) };
+					});
+				try {
+					lanes.backendsChanged();
+					const backend = lanes.getState().lanes[0]?.backend;
+					expect(backend).toMatchObject({
+						status: 'failed',
+						stackId: STACK_ID,
+					});
+					expect(backend?.reasonText?.length).toBeLessThanOrEqual(1_024);
+				} finally {
+					describe.mockRestore();
+				}
+			}
+		);
+
+		it('keeps required launches blocked when Metro could not apply changed backend values', async () => {
+			const started = await up({ backend: 'required', launch: false });
+			backends.answers.push(ready(MOVED_API_URL));
+			const stop = vi
+				.spyOn(metro, 'stop')
+				.mockRejectedValueOnce(new Error('Ownership probe unavailable.'));
+			try {
+				const resumed = await up({ backend: 'required', launch: false });
+				expect(resumed.backend?.metro).toBe('needs-restart');
+				const actions = simulator.actions.length;
+				const launched = await lanes.runOperation({
+					actionId: 'backend-unapplied-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(launched.completed).toBe(false);
+				expect(launched.error).toContain('Ownership probe unavailable');
+				expect(simulator.actions).toHaveLength(actions);
+			} finally {
+				stop.mockRestore();
+			}
+		});
 
 		it('ensures the backend while the Simulator boots, then hands Metro exactly the mapped public names', async () => {
 			const answer = deferred<LaneBackendEnsureResult>();
@@ -2975,6 +3708,33 @@ describe('LaneService', () => {
 	});
 
 	describe('slimming on lane start', () => {
+		it('honors --slim on an existing lane and rejects an unknown profile before actions', async () => {
+			healthyMetro();
+			const first = await startWithSlim();
+			const second = await startWithSlim();
+			expect(second.completed).toBe(true);
+			expect(second.lane?.id).toBe(first.lane?.id);
+			expect(second.lane?.slim).toMatchObject({
+				status: 'applied',
+				jobId: 'slimming-2',
+			});
+			expect(slimming.actions).toHaveLength(2);
+			expect(metro.started).toHaveLength(1);
+			const previousActions = simulator.actions.length;
+			const bad = await service.runOperation({
+				actionId: 'retry-bad-profile',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+				slimProfileId: 'nope',
+			});
+			expect(bad.completed).toBe(false);
+			expect(bad.error).toMatch(/Unknown SimSlim profile/);
+			expect(simulator.actions).toHaveLength(previousActions);
+			expect(slimming.actions).toHaveLength(2);
+		});
 		it('applies the profile during start, boot then slim then Metro, with the lane agent as requester', async () => {
 			healthyMetro();
 			const receipt = await startWithSlim({
@@ -3118,7 +3878,7 @@ describe('LaneService', () => {
 			expect(receipt.completed).toBe(false);
 			expect(receipt.error).toMatch(/com\.example\.app is not installed/);
 			expect(receipt.error).toMatch(
-				new RegExp(`expo run:ios --device ${UDID} --no-bundler`)
+				new RegExp(`expo run:ios --device ${UDID} --port 8100 --no-bundler`)
 			);
 			expect(receipt.error).toMatch(/Metro on port 8100 is still running/);
 			expect(simulator.actions.map((action) => action.kind)).toEqual([

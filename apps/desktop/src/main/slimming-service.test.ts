@@ -8,6 +8,7 @@ import {
 	type SlimmingAction,
 	slimmingActionSchema,
 } from '../shared/slimming-protocol';
+import { waitForJob as waitForPublishedJob } from './job-wait';
 import {
 	type SimHelperCompatibility,
 	SimHelperError,
@@ -104,7 +105,7 @@ const COMPATIBILITY: SimHelperCompatibility = {
 		hostArchitecture: 'arm64',
 		helperVersion: '0.1.0',
 		helperBuildCommit: 'a'.repeat(40),
-		catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+		catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 	},
 	verifiedOperations: [],
 };
@@ -177,18 +178,18 @@ class FakeHelper implements SlimmingHelperProvider {
 			protocolVersion: 2 as const,
 			platform: 'darwin' as const,
 			architecture: 'arm64' as const,
-			catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+			catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 			catalogSource: {
 				repository: 'https://github.com/MobAI-App/simslim' as const,
 				commit: 'b'.repeat(40),
 				profilesSha256: 'c'.repeat(64),
 				patchSet: 'rndevtools.1' as const,
 				upstreamSourceManifestSha256:
-					'bbd7640e2738197be54564d9f9926710a0dc5e13ee674d6e00e48bd5714b6172' as const,
+					'cd8843eca8ac08e7b44fcab27582bc8d76ca29ee80a8334e6873c3c7dd568056' as const,
 				patchSha256:
-					'99703cfc6fa2bddf360f364b115edd0f235df82282e3e809daff543641a472f0' as const,
+					'045c1b21248398f066d20766bf178dc307fdee3ca5ef5fcea11f889dcddc1063' as const,
 				vendoredSourceManifestSha256:
-					'887daa4543b0aecaefbdd9c7edb6e46e00205fecaba254c09527579dc84175d2' as const,
+					'f5082751ccb44251861356158fce6a88a5c736dfe52844929db77bacf99af694' as const,
 			},
 			capabilities: {
 				operations: [
@@ -230,7 +231,7 @@ class FakeHelper implements SlimmingHelperProvider {
 		}))
 	);
 	listProfiles = vi.fn(async () => ({
-		catalogVersion: 'simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3',
+		catalogVersion: 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3',
 		categories: [
 			{
 				id: 'telemetry',
@@ -835,7 +836,17 @@ describe('slimming service', () => {
 	});
 
 	it('makes room for new work by dropping the oldest finished jobs, and refuses only while 100 are active', async () => {
-		const { service } = await createService();
+		const { helper, service } = await createService();
+		const releasePreviews = deferred();
+		const previewProfile = helper.previewProfile.getMockImplementation();
+		if (!previewProfile) throw new Error('Fake profile preview is missing.');
+		helper.previewProfile
+			.mockImplementationOnce(previewProfile)
+			.mockImplementationOnce(previewProfile)
+			.mockImplementation(async (...args) => {
+				await releasePreviews.promise;
+				return previewProfile(...args);
+			});
 		const preview = (actionId: string) =>
 			service.runAction(
 				action({
@@ -845,29 +856,37 @@ describe('slimming service', () => {
 					profileId: PROFILE,
 				})
 			);
-		// Read-only jobs run one at a time, so 100 accepted at once are all active.
-		const active = Array.from({ length: 100 }, (_, index) =>
-			preview(`preview-${index}`)
-		);
-		expect(active.every((receipt) => receipt.accepted)).toBe(true);
-		expect(preview('preview-overflow')).toMatchObject({
-			accepted: false,
-			error: 'The 100-job Slimming queue is full.',
-		});
-		for (const receipt of active)
-			await waitForJob(service, receipt.jobId ?? '');
+		try {
+			// Read-only jobs run one at a time, so 100 accepted at once are all active.
+			const active = Array.from({ length: 100 }, (_, index) =>
+				preview(`preview-${index}`)
+			);
+			expect(active.every((receipt) => receipt.accepted)).toBe(true);
+			expect(preview('preview-overflow')).toMatchObject({
+				accepted: false,
+				error: 'The 100-job Slimming queue is full.',
+			});
+			const secondJobId = active[1]?.jobId ?? '';
+			const second = await waitForPublishedJob(
+				service,
+				secondJobId,
+				AbortSignal.timeout(2_000),
+				{ abortError: () => new Error(`Job ${secondJobId} did not finish.`) }
+			);
+			expect(second.status).toBe('complete');
 
-		// A session that already ran 100 jobs keeps working.
-		const next = preview('preview-after');
-		expect(next.accepted).toBe(true);
-		expect((await waitForJob(service, next.jobId ?? '')).status).toBe(
-			'complete'
-		);
-		const actionIds = service.getState().jobs.map((job) => job.actionId);
-		expect(actionIds).toHaveLength(100);
-		expect(actionIds).not.toContain('preview-0');
-		expect(actionIds.at(-1)).toBe('preview-after');
-		await service.stop();
+			// Only the first two previews finish. A new job evicts the older one
+			// while the other finished record and all active jobs stay put.
+			expect(preview('preview-after').accepted).toBe(true);
+			expect(service.getState().jobs.map((job) => job.actionId)).toEqual([
+				...active.slice(1).map((receipt) => receipt.actionId),
+				'preview-after',
+			]);
+		} finally {
+			const stopped = service.stop();
+			releasePreviews.resolve();
+			await stopped;
+		}
 	});
 
 	it('does not auto-boot shutdown targets during refresh but supports preview, acknowledgement, and mutation', async () => {

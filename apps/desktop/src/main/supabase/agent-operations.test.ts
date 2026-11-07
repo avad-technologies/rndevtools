@@ -299,6 +299,48 @@ describe('supabase up', () => {
 });
 
 describe('supabase down, ls, status, env, log', () => {
+	it('stops a lane-only stack after explicit down even while the releasing Codex chat stays in its worktree', async () => {
+		const { h, repo, stackId } = await setup();
+		h.agents.sessions = [fakeSession(CODEX.sessionId, repo, 'codex')];
+		h.lanes.lanes = [
+			fakeLane({
+				id: LANE_ID,
+				worktreePath: repo,
+				agent: { ...CODEX, lastSeenAt: h.clock.now },
+			}),
+		];
+		await h.engine.ensureForLane({
+			laneId: LANE_ID,
+			worktreePath: repo,
+			branch: 'main',
+			environmentId: 'development',
+			policy: 'auto',
+		});
+		await h.settle();
+		expect(h.engine.stackStore.record(stackId)?.holds).toEqual([]);
+		h.lanes.lanes = [];
+		h.engine.detachLane(LANE_ID);
+		await h.settle();
+		const down = await agent(
+			h,
+			{ operation: 'down', target: { worktreePath: repo } },
+			context(CODEX)
+		);
+		expect(down).toMatchObject({ released: true, stopping: true, keptBy: [] });
+		expect(h.engine.stackStore.record(stackId)?.releasedHolders).toContainEqual(
+			{ holder: CODEX }
+		);
+		await h.advance(30_000);
+		const deadline = h.engine.stackStore.record(stackId)?.releasedAt;
+		await agent(
+			h,
+			{ operation: 'down', target: { worktreePath: repo } },
+			context(CODEX)
+		);
+		expect(h.engine.stackStore.record(stackId)?.releasedAt).toBe(deadline);
+		await h.advance(31_000);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
+	});
 	it('drops the session hold; the stack stops after the linger unless others hold it', async () => {
 		const { h, repo, stackId } = await setup();
 		await agent(h, up(repo));
@@ -585,5 +627,171 @@ describe('agent bookkeeping', () => {
 				5
 			)
 		).resolves.toBeUndefined();
+	});
+});
+
+describe('independent actor release ownership', () => {
+	const childA = { kind: 'codex', sessionId: 'released-child-a' } as const;
+	const childB = { kind: 'codex', sessionId: 'released-child-b' } as const;
+	const rootActor = { kind: 'codex', sessionId: 'root-session' } as const;
+	const down = (repo: string): SupabaseAgentOperation => ({
+		operation: 'down',
+		target: { worktreePath: repo },
+	});
+	async function laneOnly() {
+		const { h, repo, stackId } = await setup();
+		h.agents.sessions = [childA, childB, rootActor].map((actor) =>
+			fakeSession(actor.sessionId, repo, actor.kind)
+		);
+		h.lanes.lanes = [fakeLane({ id: LANE_ID, worktreePath: repo })];
+		await h.engine.ensureForLane({
+			laneId: LANE_ID,
+			worktreePath: repo,
+			branch: 'main',
+			environmentId: 'development',
+			policy: 'auto',
+		});
+		await h.settle();
+		return { h, repo, stackId };
+	}
+	it('keeps two child releases through root up/down and resumes only the actor that asks', async () => {
+		const { h, repo, stackId } = await laneOnly();
+		await agent(h, down(repo), context(childA));
+		await agent(h, down(repo), context(childB));
+		await agent(h, up(repo), context(rootActor));
+		const rootDown = await agent(h, down(repo), context(rootActor));
+		expect(rootDown).toMatchObject({
+			released: true,
+			stopping: false,
+			keptBy: [`lane ${LANE_ID.slice(0, 13)}`],
+		});
+		await agent(h, up(repo), context(childA));
+		expect(
+			h.engine.stackStore
+				.record(stackId)
+				?.releasedHolders?.map((entry) => entry.holder)
+		).toEqual([childB, rootActor]);
+		h.lanes.lanes = [];
+		h.engine.detachLane(LANE_ID);
+		await h.settle();
+		const final = await agent(h, down(repo), context(childA));
+		expect(final).toMatchObject({ stopping: true, keptBy: [] });
+		const deadline = h.engine.stackStore.record(stackId)?.releasedAt;
+		await h.advance(30_000);
+		await agent(h, down(repo), context(childA));
+		expect(h.engine.stackStore.record(stackId)?.releasedAt).toBe(deadline);
+		await h.advance(31_000);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
+	});
+	it('preserves releases across background lane attachment and durable reload', async () => {
+		const { h, repo, stackId } = await laneOnly();
+		await agent(h, down(repo), context(childA));
+		await agent(h, down(repo), context(childB));
+		h.engine.attachLane({
+			laneId: LANE_ID,
+			stackId,
+			worktreePath: repo,
+			agent: childA,
+		});
+		await h.engine.reconcileHolds();
+		await h.settle();
+		const { SupabaseStackStore } = await import('./stack-store');
+		const reloaded = new SupabaseStackStore({
+			directory: path.join(h.userData, 'supabase'),
+			now: () => h.clock.now,
+		});
+		await reloaded.load();
+		expect(
+			reloaded.record(stackId)?.releasedHolders?.map((entry) => entry.holder)
+		).toEqual([childA, childB]);
+		expect(h.engine.stackStore.record(stackId)?.releasedAt).toBeUndefined();
+		expect(h.cli.stacks.get(stackId)?.running).toBe(true);
+	});
+	it('does not let released actors bypass an unrelated active stored holder', async () => {
+		const { h, repo, stackId } = await laneOnly();
+		await agent(h, down(repo), context(childA));
+		await agent(h, down(repo), context(childB));
+		await agent(h, up(repo), context(rootActor));
+		h.lanes.lanes = [];
+		h.engine.detachLane(LANE_ID);
+		await h.settle();
+		const result = await agent(h, down(repo), context(childA));
+		expect(result).toMatchObject({
+			stopping: false,
+			keptBy: [expect.stringMatching(/Codex/)],
+		});
+		await h.advance(61_000);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(true);
+	});
+	it('projects the exact synthetic up scope without clearing sibling scopes', async () => {
+		const { h, repo, stackId } = await laneOnly();
+		const synthetic = { kind: 'codex', sessionId: 'mcp-scoped' } as const;
+		const src = path.join(repo, 'src');
+		const docs = path.join(repo, 'docs');
+		await h.engine.stackStore.updateRecord(stackId, (record) => ({
+			...record,
+			releasedHolders: [
+				{ holder: synthetic, sessionCwd: src },
+				{ holder: synthetic, sessionCwd: docs },
+				{ holder: childB },
+			],
+		}));
+		await agent(
+			h,
+			up(repo),
+			context(synthetic, { synthetic: true, sessionCwd: `${src}/` })
+		);
+		expect(h.engine.stackStore.record(stackId)?.releasedHolders).toEqual([
+			{ holder: synthetic, sessionCwd: docs },
+			{ holder: childB },
+		]);
+	});
+	it('releases only known cwd-only keepalives from cached SessionEnd scope', async () => {
+		const { h, stackId } = await laneOnly();
+		const other = await h.repository('other');
+		const otherId = await h.identity(other);
+		const base = h.engine.stackStore.record(stackId);
+		if (!base) throw new Error('missing stack');
+		await h.engine.stackStore.upsertRecord({
+			...base,
+			id: otherId,
+			projectRoot: other,
+			worktreePath: other,
+			appPaths: [other],
+			holds: [],
+		});
+		const calls = h.processCalls();
+		const result = await h.engine.releaseHolder({ holder: childA });
+		expect(result).toMatchObject({
+			releasedStackIds: [stackId],
+			pendingStops: [],
+		});
+		expect(h.processCalls()).toBe(calls);
+		expect(
+			h.engine.stackStore
+				.record(stackId)
+				?.releasedHolders?.map((entry) => entry.holder)
+		).toEqual([childA]);
+		expect(
+			h.engine.stackStore.record(otherId)?.releasedHolders
+		).toBeUndefined();
+	});
+	it('keeps synthetic SessionEnd without cwd a no-op and scopes a supplied cwd', async () => {
+		const { h, repo, stackId } = await laneOnly();
+		const synthetic = { kind: 'codex', sessionId: 'mcp-session-end' } as const;
+		const calls = h.processCalls();
+		expect(await h.engine.releaseHolder({ holder: synthetic })).toEqual({
+			releasedStackIds: [],
+			pendingStops: [],
+		});
+		expect(h.processCalls()).toBe(calls);
+		const result = await h.engine.releaseHolder({
+			holder: synthetic,
+			sessionCwd: path.join(repo, 'src'),
+		});
+		expect(result.releasedStackIds).toEqual([stackId]);
+		expect(h.engine.stackStore.record(stackId)?.releasedHolders).toEqual([
+			{ holder: synthetic, sessionCwd: path.join(repo, 'src') },
+		]);
 	});
 });

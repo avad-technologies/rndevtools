@@ -12,8 +12,8 @@ func TestCatalogInvariants(t *testing.T) {
 	servicePattern := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$`)
 	categoryIDs := make(map[string]struct{})
 	allCategories := Categories()
-	if len(allCategories) != 15 {
-		t.Fatalf("category count = %d, want 15", len(allCategories))
+	if len(allCategories) != 16 {
+		t.Fatalf("category count = %d, want 16", len(allCategories))
 	}
 	for _, category := range allCategories {
 		if _, duplicate := categoryIDs[category.ID]; duplicate {
@@ -32,18 +32,17 @@ func TestCatalogInvariants(t *testing.T) {
 		}
 	}
 
-	// SimSlim v0.12.2 moved assistantd and gamed from slimmable labels to
-	// restore-only AlwaysEnabled services (alongside sharingd). The slimmable
-	// universe is therefore 168 and the managed universe 168 + 3.
-	if len(ManagedServiceIDs()) != 171 {
-		t.Fatalf("managed allowlist count = %d, want 171", len(ManagedServiceIDs()))
+	// v0.14.0 adds five slimmable labels; assistantd, gamed, and sharingd
+	// remain restore-only. The managed universe is 173 + 3.
+	if len(ManagedServiceIDs()) != 176 {
+		t.Fatalf("managed allowlist count = %d, want 176", len(ManagedServiceIDs()))
 	}
 	maximum, err := DesiredServiceIDs("maximum-density")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(maximum) != 168 {
-		t.Fatalf("maximum profile count = %d, want 168 plus three restore-only labels", len(maximum))
+	if len(maximum) != 173 {
+		t.Fatalf("maximum profile count = %d, want 173 plus three restore-only labels", len(maximum))
 	}
 }
 

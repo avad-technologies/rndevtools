@@ -30,6 +30,9 @@ var Features = []Feature{
 	{ID: "app-store", Name: "App Store", Labels: []string{"com.apple.appstored", "com.apple.itunesstored"}},
 	{ID: "universal-links", Name: "Universal links / associated domains", Labels: []string{"com.apple.swcd"}},
 	{ID: "spotlight", Name: "Spotlight & Settings search", Labels: []string{"com.apple.searchd", "com.apple.searchtoold"}},
+	// Files and the document picker load Recents through a Spotlight query
+	// that searchd serves; without it the tab shows "Content Unavailable".
+	{ID: "files-recents", Name: "Files & document picker Recents", Labels: []string{"com.apple.searchd"}},
 	{ID: "siri", Name: "Siri & speech", Labels: []string{"com.apple.assistantd", "com.apple.corespeechd"}},
 	{ID: "icloud", Name: "iCloud sync", Labels: []string{"com.apple.cloudd"}},
 	{ID: "keychain-sync", Name: "iCloud Keychain", Labels: []string{"com.apple.akd"}},
@@ -50,6 +53,8 @@ var Features = []Feature{
 	{ID: "news", Name: "News", Labels: []string{"com.apple.newsd"}},
 	{ID: "game-center", Name: "Game Center", Labels: []string{"com.apple.gamed"}},
 	{ID: "find-my", Name: "Find My", Labels: []string{"com.apple.findmy.findmylocated"}},
+	{ID: "mdm", Name: "Declarative device management", Labels: []string{"com.apple.remotemanagementd", "com.apple.RemoteManagementAgent"}},
+	{ID: "app-clips", Name: "App Clips", Labels: []string{"com.apple.ClipServices.clipserviced"}},
 	{ID: "screen-time", Name: "Screen Time", Labels: []string{"com.apple.ScreenTimeAgent"}},
 }
 

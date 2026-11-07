@@ -3,6 +3,7 @@ import {
 	readdir,
 	readFile,
 	realpath,
+	rm,
 	stat,
 	writeFile,
 } from 'node:fs/promises';
@@ -13,6 +14,7 @@ import {
 	type SupabaseOperation,
 	stackStatus,
 	supabaseActionAvailability,
+	supabaseDesktopError,
 	supabaseOperationSchema,
 	supabaseStateSchema,
 } from '../../shared/supabase-protocol';
@@ -26,6 +28,7 @@ import {
 	fakeResolvedCli,
 	fakeSession,
 } from './engine.test-support';
+import * as gitHead from './git-head';
 import { SupabaseJobStore, supabaseArgvDigest } from './job-store';
 import type { SupabaseOperationContext } from './service-ports';
 
@@ -1463,6 +1466,206 @@ describe('SupabaseEngine cadence', () => {
 });
 
 describe('SupabaseEngine state', () => {
+	it('projects lane backend health without assembling state or probing through the lane cycle', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('backend-projection');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		const stack = h.engine
+			.getState()
+			.stacks.find((candidate) => candidate.id === stackId);
+		if (!stack?.apiUrl) throw new Error('Ready backend fixture missing.');
+		const previous = {
+			policy: 'auto' as const,
+			status: 'ready' as const,
+			stackId,
+			apiUrl: stack.apiUrl,
+			appEnvNames: [],
+			warnings: [],
+		};
+		const calls = h.processCalls();
+		const assemble = vi.spyOn(h.engine, 'getState').mockImplementation(() => {
+			throw new Error('Recursive state assembly');
+		});
+		try {
+			expect(h.engine.describeLaneBackend(previous)).toEqual(previous);
+			expect(assemble).not.toHaveBeenCalled();
+			expect(h.processCalls()).toBe(calls);
+		} finally {
+			assemble.mockRestore();
+		}
+		await runToEnd(h, { kind: 'stop', stackIds: [stackId] });
+		h.engine.getState();
+		expect(h.engine.describeLaneBackend(previous).status).toBe('stopped');
+		const ensured = await h.engine.ensureForLane({
+			worktreePath: repo,
+			branch: 'main',
+			environmentId: 'development',
+			policy: 'required',
+			waitMs: 45_000,
+		});
+		expect(ensured.summary.status).toBe('ready');
+		expect(h.engine.describeLaneBackend(ensured.summary).status).toBe('ready');
+	});
+
+	it('retains managed worktree facts when the bounded lane listing drops them', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('managed');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		// A lane can end while its backend stays held. The UI's bounded
+		// worktree list must not become the backend's ownership registry.
+		h.lanes.worktrees = [];
+		h.lanes.repositories = [];
+		await h.engine.refreshRepositories({ fresh: true });
+		expect(h.engine.factsForStack(stackId)).toMatchObject({
+			worktreePath: repo,
+			expectedStackId: stackId,
+			mode: { value: 'managed' },
+		});
+	});
+
+	it('recovers managed worktree facts from durable records after desktop restart', async () => {
+		const before = await createEngineHarness({ enabled: true, start: false });
+		const repo = await before.repository('managed');
+		await before.engine.start();
+		await before.settle();
+		const stackId = await startStack(before, repo);
+		const record = before.engine.stackStore.record(stackId);
+		if (!record) throw new Error('Managed stack was not recorded.');
+		await before.engine.stop();
+
+		const after = await createEngineHarness({ enabled: true, start: false });
+		await after.engine.stackStore.load();
+		await after.engine.stackStore.upsertRecord(record);
+		await after.engine.start();
+		await after.settle();
+		expect(after.engine.factsForStack(stackId)).toMatchObject({
+			worktreePath: repo,
+			expectedStackId: stackId,
+			mode: { value: 'managed' },
+		});
+	});
+
+	it('does not replace a removed managed checkout with an ancestor repository', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		await h.repository('parent');
+		const repo = await h.repository('parent/child');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		await rm(path.join(repo, '.git'), { recursive: true });
+		h.lanes.worktrees = [];
+		h.lanes.repositories = [];
+		await h.engine.refreshRepositories({ fresh: true });
+		expect(h.engine.factsForStack(stackId)).toBeUndefined();
+		expect(h.engine.allFacts()).toEqual([]);
+	});
+
+	it('prioritizes an explicitly requested worktree over dormant saved repositories', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('saved-0');
+		await h.engine.start();
+		await h.settle();
+		const stackId = await startStack(h, repo);
+		const template = h.engine.stackStore.record(stackId);
+		if (!template) throw new Error('Managed stack was not recorded.');
+		const records = [template];
+		for (let index = 1; index < 32; index++) {
+			const worktreePath = await h.repository(`saved-${index}`);
+			records.push({
+				...template,
+				id: await h.identity(worktreePath),
+				worktreePath,
+				projectRoot: path.join(worktreePath, 'supabase'),
+				appPaths: [worktreePath],
+			});
+		}
+		await h.engine.stackStore.upsertRecords(records);
+		const requested = await h.repository('requested');
+		h.lanes.worktrees = [];
+		h.lanes.repositories = [];
+		expect(await h.engine.worktreeFacts(requested)).toMatchObject({
+			worktreePath: requested,
+			expectedStackId: await h.identity(requested),
+			mode: { value: 'managed' },
+		});
+		// A recovered active lane receives the same priority even when absent
+		// from the UI worktree listing and preceded by 32 dormant records.
+		const requestedRecord = {
+			...template,
+			id: await h.identity(requested),
+			worktreePath: requested,
+			projectRoot: path.join(requested, 'supabase'),
+			appPaths: [requested],
+		};
+		const restarted = await createEngineHarness({
+			enabled: true,
+			start: false,
+		});
+		await restarted.engine.stackStore.load();
+		await restarted.engine.stackStore.upsertRecords([
+			...records,
+			requestedRecord,
+		]);
+		restarted.lanes.lanes = [fakeLane({ worktreePath: requested })];
+		await restarted.engine.start();
+		await restarted.settle();
+		expect(restarted.engine.factsForStack(requestedRecord.id)).toMatchObject({
+			worktreePath: requested,
+			mode: { value: 'managed' },
+		});
+	});
+
+	it('does not recover Git metadata for a disabled recorded repository', async () => {
+		const readHead = vi.spyOn(gitHead, 'readGitHead');
+		try {
+			const h = await createEngineHarness({ enabled: true, start: false });
+			const repo = await h.repository('managed');
+			await h.engine.start();
+			await h.settle();
+			const stackId = await startStack(h, repo);
+			const repositoryId = h.engine.stackStore.record(stackId)?.repositoryId;
+			if (!repositoryId)
+				throw new Error('Repository identity was not recorded.');
+			await h.engine.policyStore.setRepositoryMode(repositoryId, 'off');
+			h.lanes.worktrees = [];
+			h.lanes.repositories = [];
+			readHead.mockClear();
+			await h.engine.refreshRepositories({ fresh: true });
+			expect(readHead).not.toHaveBeenCalled();
+		} finally {
+			readHead.mockRestore();
+		}
+	});
+
+	it('does not resolve CLIs when disabled during recorded worktree recovery', async () => {
+		const original = gitHead.readGitHead;
+		const readHead = vi.spyOn(gitHead, 'readGitHead');
+		try {
+			const h = await createEngineHarness({ enabled: true, start: false });
+			const repo = await h.repository('managed');
+			await h.engine.start();
+			await h.settle();
+			await startStack(h, repo);
+			h.lanes.worktrees = [];
+			h.lanes.repositories = [];
+			const held = holdFirst(original);
+			readHead.mockImplementation(held.call);
+			const refresh = h.engine.refreshRepositories({ fresh: true });
+			await h.until(held.held);
+			await turnOff(h);
+			const calls = h.resolver.resolveCalls;
+			held.release();
+			await refresh;
+			expect(h.resolver.resolveCalls).toBe(calls);
+		} finally {
+			readHead.mockRestore();
+		}
+	});
+
 	it('bumps the revision only when the visible state changes', async () => {
 		const h = await createEngineHarness({ enabled: true, start: false });
 		const repo = await h.repository('repo');
@@ -1633,6 +1836,88 @@ describe('SupabaseEngine exposure', () => {
 		expect(lsof()).toBeGreaterThan(before);
 		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
 		expect(stateOf(h, stackId)?.exposure.verdict).toBe('lan-exposed');
+		expect(h.engine.stackStore.record(stackId)?.lastError?.title).toBe(
+			'Stack listened on your network'
+		);
+		expect(
+			h.engine.stackStore
+				.activity()
+				.find((entry) => entry.id.startsWith('supabase-exposure-stop-'))
+		).toMatchObject({
+			kind: 'stop',
+			stackIds: [stackId],
+			outcome: 'complete',
+			errorCode: 'refused',
+			requestedBy: 'automatic',
+		});
+	});
+
+	it('persists a periodic exposure timeout and its stop without a lifecycle job', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('repo');
+		await h.engine.start();
+		await h.engine.settle();
+		const stackId = await startStack(h, repo);
+		const jobs = h.engine.jobStore.jobs().length;
+		const stops = h.cli.count('stack stop');
+		h.discovery.checkExposure = async () => ({
+			status: 'unavailable',
+			reason: 'timeout',
+			detail: 'raw-probe-detail-must-stay-private',
+		});
+		await h.advance(5 * 60_000 + 15_000);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(false);
+		expect(h.cli.count('stack stop')).toBe(stops + 1);
+		expect(h.engine.jobStore.jobs()).toHaveLength(jobs);
+		expect(stateOf(h, stackId)?.lastError).toMatchObject({
+			code: 'refused',
+			title: 'Exposure could not be verified',
+			message: expect.stringContaining('listener probe: timeout'),
+		});
+		const activity = h.engine.stackStore
+			.activity()
+			.filter((entry) => entry.id.startsWith('supabase-exposure-stop-'));
+		expect(activity).toHaveLength(1);
+		expect(activity[0]).toMatchObject({
+			kind: 'stop',
+			stackIds: [stackId],
+			outcome: 'complete',
+			errorCode: 'refused',
+			requestedBy: 'automatic',
+		});
+		const saved = await readFile(
+			path.join(h.userData, 'supabase', 'stacks.json'),
+			'utf8'
+		);
+		expect(saved).toContain('listener probe: timeout');
+		expect(saved).toContain(activity[0]?.id);
+		expect(saved).not.toContain('raw-probe-detail-must-stay-private');
+	});
+
+	it('records a failed protective stop without claiming the stack stopped', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('repo');
+		await h.engine.start();
+		await h.engine.settle();
+		const stackId = await startStack(h, repo);
+		h.discovery.exposureUnavailable = true;
+		vi.spyOn(h.engine, 'stopStep').mockResolvedValue({
+			ok: false,
+			error: supabaseDesktopError('refused', 'The protective stop failed.'),
+		});
+		const result = await h.engine.enforceExposure(stackId, undefined);
+		expect(result.ok).toBe(false);
+		expect(h.cli.stacks.get(stackId)?.running).toBe(true);
+		expect(h.engine.stackStore.record(stackId)?.lastError?.message).toContain(
+			'RN Devtools could not stop it'
+		);
+		expect(h.engine.stackStore.activity()[0]).toMatchObject({
+			kind: 'stop',
+			stackIds: [stackId],
+			outcome: 'failed',
+			errorCode: 'refused',
+			requestedBy: 'automatic',
+		});
 	});
 });
 
@@ -2815,6 +3100,34 @@ describe('SupabaseEngine lifecycle', () => {
 });
 
 describe('SupabaseEngine branch follow', () => {
+	it('follows once while the agent keeps working in the same checkout', async () => {
+		const h = await createEngineHarness({ enabled: true, start: false });
+		const repo = await h.repository('repo');
+		h.agents.sessions = [fakeSession('session-a', repo)];
+		const lane = fakeLane({ worktreePath: repo });
+		h.lanes.lanes = [lane];
+		await h.engine.start();
+		await h.engine.settle();
+		await agentUp(h, repo);
+		const oldId = await h.identity(repo);
+		h.engine.attachLane({
+			laneId: lane.id,
+			stackId: oldId,
+			worktreePath: repo,
+		});
+		await h.checkout(repo, 'feat-x');
+		await h.advance(46_000);
+		const newId = await h.identity(repo);
+		expect(h.cli.stacks.get(newId)?.running).toBe(true);
+		expect(h.engine.attachment(lane.id)?.stackId).toBe(newId);
+		const restarts = h.lanes.metroRestarts.length;
+		const stops = h.cli.count('stack stop');
+		expect(restarts).toBeGreaterThan(0);
+		await h.advance(5 * 60_000);
+		expect(h.lanes.metroRestarts).toHaveLength(restarts);
+		expect(h.cli.count('stack stop')).toBe(stops);
+	});
+
 	it('follows a held worktree to its new branch once HEAD settles for 30 s', async () => {
 		const h = await createEngineHarness({ enabled: true, start: false });
 		const repo = await h.repository('repo');
@@ -2879,7 +3192,7 @@ describe('SupabaseEngine branch follow', () => {
 		const oldId = await h.identity(repo);
 		await h.checkout(repo, 'feat-x');
 		// The new branch has a broken migration: every create fails.
-		for (let index = 0; index < 32; index += 1) {
+		for (let index = 0; index < 4; index += 1) {
 			h.cli.replyNext('stack start', MIGRATION_FAILED);
 		}
 		await h.advance(5 * 60_000);
@@ -2890,8 +3203,11 @@ describe('SupabaseEngine branch follow', () => {
 		// A minute, then two, then four: not one try per 15 s tick.
 		expect(creates()).toBe(3);
 		expect(h.cli.stacks.get(oldId)?.running).toBe(true);
-		await h.advance(60 * 60_000);
-		expect(creates()).toBeLessThanOrEqual(7);
+		// The fourth try is four minutes after the third, around 7m45s.
+		await h.advance(2 * 60_000);
+		expect(creates()).toBe(3);
+		await h.advance(60_000);
+		expect(creates()).toBe(4);
 	});
 
 	it('follows once a failed follow succeeds on its next try', async () => {
@@ -3184,7 +3500,7 @@ describe('SupabaseEngine lane holds', () => {
 		expect(atRoot?.cwdKeepers).toEqual([]);
 		expect(atRoot?.clocks).toEqual({});
 
-		// From a sibling checkout the holder is gone, on a clock for that lane.
+		// A recent thread in a sibling checkout does not prove this holder exited.
 		h.agents.sessions = [fakeSession('5d1b8f40-codex', `${repo}-2`, 'codex')];
 		await h.engine.reconcileHolds();
 		const sibling = h.engine.holdsOf(stackId);
@@ -3193,9 +3509,15 @@ describe('SupabaseEngine lane holds', () => {
 				live: false,
 			}
 		);
-		expect(Object.keys(sibling?.clocks ?? {})).toEqual([
-			`codex:${synthetic.sessionId}@${repo}`,
-		]);
+		expect(sibling?.clocks).toEqual({});
+		expect(sibling?.autoStopAt).toBeUndefined();
+		h.agents.sessions = [];
+		h.clock.now += 24 * 60 * 60_000;
+		await h.engine.reconcileHolds();
+		expect(h.engine.holdsOf(stackId)?.clocksPaused).toBe(true);
+		expect(h.engine.holdsOf(stackId)?.autoStopAt).toBeUndefined();
+		expect(h.cli.stacks.get(stackId)?.running).toBe(true);
+		expect(h.cli.count('stack stop')).toBe(0);
 	});
 });
 

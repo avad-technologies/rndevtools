@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DeviceHolder } from '../../shared/device-hold';
 import {
 	formatHoldDuration,
+	isPathInside,
 	isSyntheticHolder,
 } from '../../shared/device-hold';
 import {
@@ -355,6 +356,9 @@ async function up(
 						: {}),
 				},
 				...(hold ? { hold } : {}),
+				...(hold && context.sessionCwd
+					? { holdSessionCwd: context.sessionCwd }
+					: {}),
 				...(holder
 					? {
 							capacityRequester: {
@@ -509,6 +513,7 @@ async function down(
 	const released = holder
 		? await engine.stackStore.releaseHolder(holder, {
 				stackIds,
+				releaseUnheldTargets: true,
 				...(context.sessionCwd ? { sessionCwd: context.sessionCwd } : {}),
 			})
 		: [];
@@ -1035,15 +1040,48 @@ export async function releaseSupabaseHolder(
 	if (isSyntheticHolder(holder) && input.sessionCwd === undefined) {
 		return { releasedStackIds: [], pendingStops: [] };
 	}
+	// SessionEnd can release an implicit cwd keeper without a stored `up` hold.
+	// Use only cached sessions and existing records: no filesystem/probe work
+	// enters this caller's two-second release budget.
+	const sessionCwd =
+		input.sessionCwd ??
+		engine.deps.agents
+			.sessions()
+			.find(
+				(session) =>
+					session.kind === holder.kind && session.sessionId === holder.sessionId
+			)?.cwd;
+	const stackIds = engine.stackStore
+		.records()
+		.filter((record) => {
+			const directory = record.worktreePath ?? record.projectRoot;
+			const within =
+				sessionCwd !== undefined && isPathInside(sessionCwd, directory);
+			const scoped =
+				!isSyntheticHolder(holder) ||
+				within ||
+				(sessionCwd !== undefined && isPathInside(directory, sessionCwd));
+			const ownsHold =
+				scoped &&
+				record.holds.some(
+					(hold) =>
+						hold.agent.kind === holder.kind &&
+						hold.agent.sessionId === holder.sessionId
+				);
+			return ownsHold || (record.origin !== 'external' && within);
+		})
+		.map((record) => record.id);
 	const released = await engine.stackStore.releaseHolder(holder, {
-		...(input.sessionCwd ? { sessionCwd: input.sessionCwd } : {}),
+		stackIds,
+		releaseUnheldTargets: true,
+		...(sessionCwd ? { sessionCwd } : {}),
 	});
 	const pendingStops = released.filter((stackId) => {
 		const record = engine.stackStore.record(stackId);
 		if (!record || !engine.isLive(stackId)) return false;
 		const holds = engine.holdsIgnoring(record, {
 			holder,
-			...(input.sessionCwd ? { sessionCwd: input.sessionCwd } : {}),
+			...(sessionCwd ? { sessionCwd } : {}),
 		});
 		return !holds.held;
 	});

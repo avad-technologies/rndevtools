@@ -26,6 +26,44 @@ describe('agent CLI protocol', () => {
 		).toMatchObject({ limit: 100 });
 	});
 
+	it('requires an exact UDID for explicit Simulator lifecycle operations', () => {
+		expect(
+			agentCliRequestSchema.safeParse(
+				request({ kind: 'simulators', operation: 'boot', udid: UDID })
+			).success
+		).toBe(false);
+		for (const operation of ['boot', 'shutdown']) {
+			expect(
+				agentCliRequestSchema.safeParse(
+					request({ kind: 'simulator', operation, udid: UDID })
+				).success
+			).toBe(true);
+			expect(
+				agentCliRequestSchema.safeParse(
+					request({ kind: 'simulator', operation })
+				).success
+			).toBe(false);
+		}
+		for (const fields of [
+			{ operation: 'erase', udid: UDID },
+			{ operation: 'shutdown', udid: 'booted' },
+			{ operation: 'list', udid: UDID },
+			{ operation: 'boot', udid: UDID, includeUnavailable: false },
+			{
+				operation: 'boot',
+				udid: UDID,
+				agent: { kind: 'codex', sessionId: 'other' },
+			},
+			{ operation: 'boot', udid: UDID, assertLifecycleOwnership: true },
+		]) {
+			expect(
+				agentCliRequestSchema.safeParse(
+					request({ kind: 'simulator', ...fields })
+				).success
+			).toBe(false);
+		}
+	});
+
 	it('rejects arbitrary shell-shaped commands and unknown fields', () => {
 		expect(
 			agentCliRequestSchema.safeParse(

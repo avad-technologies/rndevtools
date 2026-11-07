@@ -57,7 +57,7 @@ type RecordedCommand = {
 class FakeProvider implements SimulatorHostProvider {
 	readonly commands: RecordedCommand[] = [];
 	readonly opened: string[] = [];
-	deviceState: 'booted' | 'shutdown' = 'booted';
+	deviceState: 'booted' | 'booting' | 'shutdown' = 'booted';
 	deviceName = 'Example Test';
 	blockVideo = false;
 	failKeychain = false;
@@ -202,6 +202,64 @@ afterEach(async () => {
 });
 
 describe('simulator service', () => {
+	it('rechecks the lifecycle owner after a queued device job acquires the mutation lease', async () => {
+		const provider = new FakeProvider();
+		const runSimctl = provider.runSimctl.getMockImplementation();
+		if (!runSimctl) throw new Error('Missing fake runner');
+		let markEntered = () => {};
+		const entered = new Promise<void>((resolve) => {
+			markEntered = resolve;
+		});
+		let releaseShutdown = () => {};
+		const released = new Promise<void>((resolve) => {
+			releaseShutdown = resolve;
+		});
+		provider.runSimctl.mockImplementation(async (args, options) => {
+			if (args[0] === 'shutdown') {
+				markEntered();
+				await released;
+			}
+			return runSimctl(args, options);
+		});
+		const { service } = await createService(provider);
+		let ownsDevice = true;
+		const assertLifecycleOwnership = vi.fn(() => {
+			if (!ownsDevice) throw new Error('Simulator ownership changed.');
+		});
+		try {
+			const first = service.runAction(
+				parsedAction({
+					actionId: 'hold-device',
+					kind: 'device.shutdown',
+					udid: UDID,
+				})
+			);
+			await entered;
+			const queued = service.runAction(
+				parsedAction({
+					actionId: 'queued-boot',
+					kind: 'device.boot',
+					udid: UDID,
+				}),
+				{ assertLifecycleOwnership }
+			);
+			expect(queued.accepted).toBe(true);
+			expect(assertLifecycleOwnership).not.toHaveBeenCalled();
+			ownsDevice = false;
+			releaseShutdown();
+			await waitForJob(service, first.jobId ?? '');
+			const failed = await waitForJob(service, queued.jobId ?? '', 'failed');
+			expect(failed.message).toBe('Simulator ownership changed.');
+			expect(provider.commands.map((command) => command.args)).toEqual([
+				['shutdown', UDID],
+			]);
+			expect(provider.opened).toEqual([]);
+		} finally {
+			releaseShutdown();
+			await service.stop();
+		}
+	});
+
 	it('creates, boots, and opens only the device returned by Xcode', async () => {
 		const provider = new FakeProvider();
 		const originalRun = provider.runSimctl.getMockImplementation();
@@ -416,6 +474,51 @@ describe('simulator service', () => {
 		expect(provider.commands).toHaveLength(2);
 		await service.stop();
 	});
+
+	it.each([true, false])(
+		'waits passively for an in-progress boot (still owned: %s)',
+		async (stillOwned) => {
+			const provider = new FakeProvider();
+			const { service } = await createService(provider);
+			// Recovery must use fresh execution-time state.
+			provider.deviceState = 'booting';
+			const assertLifecycleOwnership = vi.fn();
+			if (!stillOwned) {
+				assertLifecycleOwnership
+					.mockImplementationOnce(() => {})
+					.mockImplementationOnce(() => {
+						throw new Error('Simulator ownership changed.');
+					});
+			}
+			try {
+				const receipt = service.runAction(
+					parsedAction({
+						actionId: 'retry-boot',
+						kind: 'device.boot',
+						udid: UDID,
+					}),
+					{ assertLifecycleOwnership }
+				);
+				const job = await waitForJob(
+					service,
+					receipt.jobId ?? '',
+					stillOwned ? 'complete' : 'failed'
+				);
+				expect(provider.commands.map(({ args }) => args)).toEqual([
+					['bootstatus', UDID],
+				]);
+				expect(assertLifecycleOwnership).toHaveBeenCalledTimes(2);
+				expect(assertLifecycleOwnership).toHaveBeenCalledBefore(
+					provider.runSimctl
+				);
+				expect(provider.opened).toEqual(stillOwned ? [UDID] : []);
+				if (!stillOwned)
+					expect(job.message).toBe('Simulator ownership changed.');
+			} finally {
+				await service.stop();
+			}
+		}
+	);
 
 	it('rejects a target removed from the fresh execution-time inventory', async () => {
 		const provider = new FakeProvider();

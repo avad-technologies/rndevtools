@@ -23,6 +23,7 @@ type Command string
 const (
 	CommandDoctor     Command = "doctor"
 	CommandSimulators Command = "simulators"
+	CommandSimulator  Command = "simulator"
 	CommandApps       Command = "apps"
 	CommandScreen     Command = "screen"
 	CommandElements   Command = "elements"
@@ -71,6 +72,7 @@ func Commands() []Command {
 	return []Command{
 		CommandDoctor,
 		CommandSimulators,
+		CommandSimulator,
 		CommandApps,
 		CommandScreen,
 		CommandElements,

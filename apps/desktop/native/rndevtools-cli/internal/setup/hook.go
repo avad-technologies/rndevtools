@@ -68,15 +68,20 @@ func readPreToolUse(input io.Reader) (shellCall, bool) {
 		Cwd       string `json:"cwd"`
 		ToolInput struct {
 			Command string `json:"command"`
+			Cmd     string `json:"cmd"`
 		} `json:"tool_input"`
 	}
 	if err := json.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&payload); err != nil {
 		return shellCall{}, false
 	}
-	if payload.ToolName != "Bash" {
+	switch payload.ToolName {
+	case "Bash":
+		return shellCall{command: payload.ToolInput.Command, cwd: payload.Cwd}, true
+	case "exec_command", "functions.exec_command":
+		return shellCall{command: payload.ToolInput.Cmd, cwd: payload.Cwd}, true
+	default:
 		return shellCall{}, false
 	}
-	return shellCall{command: payload.ToolInput.Command, cwd: payload.Cwd}, true
 }
 
 func evaluateShellCall(call shellCall) HookDecision {

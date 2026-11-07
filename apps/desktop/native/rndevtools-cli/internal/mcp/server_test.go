@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -650,7 +651,7 @@ func TestOnlyToolsThatOnlyObserveAreReadOnly(t *testing.T) {
 		readOnly[tool.Name] = tool.Annotations["readOnlyHint"] == true
 	}
 	// jobs can cancel another session's job; slimming applies profiles.
-	for _, name := range []string{"jobs", "slimming", "lane", "input", "act", "claim", "release", "record", "network", "recipe", "native", "supabase"} {
+	for _, name := range []string{"simulator", "jobs", "slimming", "lane", "input", "act", "claim", "release", "record", "network", "recipe", "native", "supabase"} {
 		if readOnly[name] {
 			t.Errorf("%s changes state but is marked read-only", name)
 		}
@@ -669,6 +670,46 @@ func TestOnlyToolsThatOnlyObserveAreReadOnly(t *testing.T) {
 	}
 	if len(listed) != count || len(listed) == 0 {
 		t.Fatalf("ReadOnlyTools %v must name every read-only tool (%d)", listed, count)
+	}
+}
+
+func TestSimulatorLifecycleToolIsSeparateFromReadOnlySimulators(t *testing.T) {
+	tools := make(map[string]Tool)
+	for _, tool := range Tools() {
+		tools[tool.Name] = tool
+	}
+	listing := tools["simulators"]
+	listFields := listing.InputSchema["properties"].(map[string]any)
+	if listing.Title != "List Simulators" || listing.Annotations["readOnlyHint"] != true || listing.Annotations["destructiveHint"] != false || len(listFields) != 1 || listFields["include-unavailable"] == nil {
+		t.Fatalf("legacy simulators metadata changed: %#v", listing)
+	}
+	if !slices.Contains(ReadOnlyTools(), "simulators") || slices.Contains(ReadOnlyTools(), "simulator") {
+		t.Fatalf("read-only grants are not preserved: %v", ReadOnlyTools())
+	}
+	lifecycle := tools["simulator"]
+	properties := lifecycle.InputSchema["properties"].(map[string]any)
+	operation := properties["operation"].(map[string]any)
+	if !slices.Equal(operation["enum"].([]string), []string{"boot", "shutdown"}) || !slices.Equal(lifecycle.InputSchema["required"].([]string), []string{"operation", "udid"}) {
+		t.Fatalf("simulator lifecycle metadata missing: %#v", lifecycle)
+	}
+	if lifecycle.Annotations["readOnlyHint"] != false || lifecycle.Annotations["destructiveHint"] != true || !strings.Contains(lifecycle.Description, "already claimed") {
+		t.Fatalf("simulator ownership or mutation hint missing: %#v", lifecycle)
+	}
+}
+
+func TestSimulatorLifecycleToolUsesNativeSessionAndExactUDID(t *testing.T) {
+	server, calls := newTestServer(t, func(r protocol.Request) (protocol.Response, error) {
+		return okResponse(r, `{"completed":true}`)
+	}, nil, map[string]string{"CODEX_THREAD_ID": "owned-session"})
+	responses := exchange(t, server,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"simulator","arguments":{"operation":"shutdown","udid":"`+udid+`"}}}`,
+	)
+	if responses[0]["result"].(map[string]any)["isError"] != false || len(*calls) != 1 {
+		t.Fatalf("unexpected lifecycle response: %v, calls: %d", responses, len(*calls))
+	}
+	call := (*calls)[0].request
+	if string(call.Command) != `{"kind":"simulator","operation":"shutdown","udid":"`+udid+`"}` || call.Agent["sessionId"] != "owned-session" {
+		t.Fatalf("wrong lifecycle request: %s, agent: %v", call.Command, call.Agent)
 	}
 }
 

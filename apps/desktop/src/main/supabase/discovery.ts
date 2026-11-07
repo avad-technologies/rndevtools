@@ -775,7 +775,9 @@ export function createSupabaseDiscovery(
 			protocol === 'tcp' ? ['-iTCP', '-sTCP:LISTEN'] : ['-iUDP'];
 		const result = await run({
 			executable: LSOF,
-			args: ['-nP', '-w', '-a', '-p', list, ...selection, '-F', 'pcnPt'],
+			// Socket fields come from the kernel. Avoid unrelated pathname
+			// stat/readlink calls hanging on a disconnected filesystem.
+			args: ['-nP', '-w', '-b', '-a', '-p', list, ...selection, '-F', 'pcnPt'],
 			...BUDGETS.lsof,
 		});
 		if (result.kind === 'error') return runFailure(result);

@@ -12,6 +12,7 @@ import type {
 	AgentOperation,
 	AgentState,
 } from '../shared/agent-protocol';
+import type { AgentSetupReport } from '../shared/agent-setup-protocol';
 import {
 	type DeviceAccessDecision,
 	isPathInside,
@@ -69,9 +70,10 @@ import {
 	supabaseDoctorInfoSchema,
 } from '../shared/supabase-protocol';
 import { AgentCliError, type AgentCliHandler } from './agent-cli-service';
-import { TERMINAL_JOB_STATUSES, waitForJob } from './job-wait';
+import { type JobService, TERMINAL_JOB_STATUSES, waitForJob } from './job-wait';
 import { NativeHostResponseError } from './native-host-client';
 import type { NativePlanResult } from './native-plan';
+import type { SimulatorActionContext } from './simulator-service';
 import { sanitizeSupabaseText } from './supabase/cli-redact';
 import type {
 	SupabaseReleaseResult,
@@ -132,7 +134,7 @@ type SimulatorPort = {
 	refresh: () => Promise<SimulatorState>;
 	runAction: (
 		action: SimulatorAction,
-		context?: { selectedPath?: string }
+		context?: SimulatorActionContext
 	) => SimulatorActionReceipt;
 	cancelJob: (jobId: string) => boolean;
 	subscribe: (listener: (state: SimulatorState) => void) => () => void;
@@ -221,6 +223,7 @@ export type AgentSupabasePort = Pick<
 >;
 
 export type AgentCommandRouterDependencies = {
+	agentSetup?: () => Promise<AgentSetupReport>;
 	broker: BrokerPort;
 	simulator: SimulatorPort;
 	slimming: SlimmingPort;
@@ -441,7 +444,7 @@ async function runSimulatorAction(
 	action: SimulatorAction,
 	signal: AbortSignal,
 	wait = true,
-	actionContext?: { selectedPath?: string }
+	actionContext?: SimulatorActionContext
 ): Promise<SimulatorActionReceipt | SimulatorJob> {
 	const receipt = service.runAction(action, actionContext);
 	if (!receipt.accepted || !receipt.jobId) {
@@ -471,17 +474,61 @@ async function runSlimmingAction(
 			retryable: true,
 		});
 	}
-	return await waitForJob(service, receipt.jobId, signal, { abortError });
+	// A mutation may reboot several devices and outlive the socket deadline.
+	// Return its durable job instead of losing the handle while it runs on.
+	return await waitForAgentJob(service, receipt.jobId, signal, 20_000);
+}
+
+/** A wait timeout ends observation, not the background operation. */
+async function waitForAgentJob<T extends SimulatorJob | SlimmingJob>(
+	service: JobService<T>,
+	jobId: string,
+	signal: AbortSignal,
+	timeoutMs: number,
+	{ cancelOnAbort = false }: { cancelOnAbort?: boolean } = {}
+): Promise<T> {
+	const observer = new AbortController();
+	const cancel = () => service.cancelJob(jobId);
+	if (cancelOnAbort) signal.addEventListener('abort', cancel, { once: true });
+	try {
+		if (signal.aborted) {
+			if (cancelOnAbort) cancel();
+			throw abortError();
+		}
+		const settled = await settleBy(
+			waitForJob(service, jobId, AbortSignal.any([signal, observer.signal]), {
+				abortError,
+			}),
+			Date.now() + timeoutMs
+		);
+		if (signal.aborted) throw abortError();
+		if (settled && 'error' in settled) throw settled.error;
+		if (settled && 'value' in settled) return settled.value;
+		const job = service
+			.getState()
+			.jobs.find((candidate) => candidate.id === jobId);
+		if (job) return job;
+		throw new AgentCliError({
+			code: 'job_lost',
+			message: 'The requested job is no longer available.',
+			retryable: true,
+		});
+	} finally {
+		if (cancelOnAbort) signal.removeEventListener('abort', cancel);
+		observer.abort();
+	}
 }
 
 function ensureComplete<T extends { status: string; message: string }>(
-	job: T
+	job: T,
+	recovery?: string
 ): T {
 	if (job.status === 'complete') return job;
 	throw new AgentCliError({
 		code: job.status === 'cancelled' ? 'cancelled' : 'action_failed',
 		message: job.message,
 		retryable: job.status !== 'needs-attention',
+		...(recovery ? { recovery } : {}),
 	});
 }
 
@@ -845,6 +892,49 @@ function assertDeviceAccess(
 	});
 }
 
+/** Lifecycle changes require an existing hold with an exact session owner. */
+function assertSimulatorLifecycleOwnership(
+	agents: AgentPort | undefined,
+	udid: string,
+	actor: SessionIdentity | undefined
+): string {
+	if (!actor || isSyntheticHolder(actor)) {
+		throw new AgentCliError({
+			code: 'agent_required',
+			message:
+				'Simulator boot and shutdown require the identity of the session that owns the device.',
+			retryable: false,
+			recovery:
+				'Run rndevtools from the native agent session that owns the claim or lane, or use RN Devtools desktop controls.',
+		});
+	}
+	const key = udid.toUpperCase();
+	const hold = agents?.getState().holds[key];
+	if (!hold || hold.simulatorUdid.toUpperCase() !== key) {
+		throw new AgentCliError({
+			code: 'device_claim_required',
+			message:
+				'Claim this Simulator or start its lane before booting or shutting it down.',
+			retryable: true,
+			recovery: `Run rndevtools claim --udid ${udid} from this session, then retry.`,
+		});
+	}
+	if (
+		hold.holder?.kind !== actor.kind ||
+		hold.holder.sessionId !== actor.sessionId
+	) {
+		throw new AgentCliError({
+			code: 'device_held',
+			message:
+				'This Simulator is held by another session or the desktop operator.',
+			retryable: true,
+			recovery:
+				'Run rndevtools agents to see the owner. Use a Simulator this session already owns, or ask its owner to release it.',
+		});
+	}
+	return hold.simulatorUdid;
+}
+
 /**
  * Which agent session started each recording, so that session can always
  * stop it. Starting one needs no hold, since it only watches the screen, and
@@ -1052,6 +1142,7 @@ function touchedSimulators(
 		return device?.info.simulatorUdid ? [device.info.simulatorUdid] : [];
 	};
 	switch (command.kind) {
+		case 'simulator':
 		case 'apps':
 		case 'capture':
 		case 'record':
@@ -1435,6 +1526,7 @@ export function createAgentCommandRouter(
 }
 
 function createRoutes({
+	agentSetup,
 	broker,
 	simulator,
 	slimming,
@@ -1651,14 +1743,28 @@ function createRoutes({
 					plan.configuration === 'Debug'
 						? ''
 						: ` --configuration ${plan.configuration}`;
-				const buildCommand = `npx expo run:ios${configurationFlag}${target ? ` --device ${target.udid}` : ''} --no-bundler`;
+				// Even --no-bundler opens the dev client. Reserve a lane first so
+				// Expo never opens this app against another project's port 8081.
+				const buildLane = lanes
+					?.getState()
+					.lanes.find(
+						(lane) =>
+							laneAppDirectory(lane) === plan.projectRoot &&
+							(!target || lane.simulatorUdid === target.udid) &&
+							lane.metro === 'ready'
+					);
+				const buildCommand = buildLane
+					? `npx expo run:ios${configurationFlag} --device ${buildLane.simulatorUdid} --port ${buildLane.port} --no-bundler`
+					: undefined;
+				const startLaneAdvice =
+					'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.';
 				const recommendation =
-					installed === true
-						? 'installed: the Simulator already has this native build; start or launch a lane.'
-						: plan.cache === 'hit'
-							? target
-								? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
-								: 'cached: a binary for this fingerprint exists; pass --udid to install it.'
+					plan.cache === 'hit'
+						? target
+							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
+							: 'cached: a binary for this fingerprint exists; pass --udid to install it.'
+						: !buildCommand
+							? `build: ${startLaneAdvice}`
 							: plan.cache === 'miss'
 								? `build: no cached binary for this fingerprint; run \`${buildCommand}\` once (the build cache will store it for every other worktree).`
 								: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${buildCommand}\`.`;
@@ -1674,20 +1780,14 @@ function createRoutes({
 				// Installing can replace the dev client a lane runs, so only the
 				// device's holder may.
 				assertDeviceAccess(agents, target.udid, context.agent);
-				if (installed) {
-					return {
-						...plan,
-						simulatorUdid: target.udid,
-						installed: true,
-						action: 'already-installed',
-					};
-				}
+				// app.list proves a bundle exists, not its native fingerprint.
+				// An explicit install must refresh an older binary of that bundle.
 				if (plan.cache !== 'hit' || !plan.artifactPath) {
 					throw new AgentCliError({
 						code: 'cache_miss',
 						message: `No cached binary for fingerprint ${plan.fingerprintHash}; build it first.`,
 						retryable: false,
-						recovery: buildCommand,
+						recovery: buildCommand ?? startLaneAdvice,
 					});
 				}
 				const job = ensureComplete(
@@ -1712,6 +1812,13 @@ function createRoutes({
 				};
 			}
 			case 'doctor': {
+				const setupCheck = agentSetup
+					? await agentSetup().catch(() => ({
+							status: 'not-checked',
+							message:
+								'Agent configuration could not be checked. Open Agents → Setup checks to retry.',
+						}))
+					: undefined;
 				const [simulatorState, slimmingState] = await Promise.all([
 					simulator.refresh(),
 					slimming.refresh(),
@@ -1723,6 +1830,7 @@ function createRoutes({
 					.map(compactConnectedSession);
 				return {
 					broker: brokerSummary,
+					...(setupCheck ? { agentSetup: setupCheck } : {}),
 					connectedDevices: connectedSessions.length,
 					connectedSessions,
 					simulator: simulatorState.capability,
@@ -1737,6 +1845,56 @@ function createRoutes({
 					await simulator.refresh(),
 					command.includeUnavailable
 				);
+			}
+			case 'simulator': {
+				if (context.signal.aborted) throw abortError();
+				const assertOwnership = () =>
+					assertSimulatorLifecycleOwnership(
+						agents,
+						command.udid,
+						context.agent
+					);
+				// The service refreshes inventory inside the per-device lease.
+				const udid = assertOwnership();
+				const receipt = (await runSimulatorAction(
+					simulator,
+					{
+						actionId: actionId(context.requestId),
+						kind:
+							command.operation === 'boot' ? 'device.boot' : 'device.shutdown',
+						udid,
+					},
+					context.signal,
+					false,
+					{ assertLifecycleOwnership: assertOwnership }
+				)) as SimulatorActionReceipt;
+				const jobId =
+					receipt.jobId ?? required('The Simulator did not return a job ID.');
+				const job = await waitForAgentJob(
+					simulator,
+					jobId,
+					context.signal,
+					20_000,
+					{ cancelOnAbort: true }
+				);
+				if (TERMINAL_JOB_STATUSES.has(job.status)) {
+					ensureComplete(
+						job,
+						`Run rndevtools jobs --operation get --job-id ${jobId} for the failure and verify the device state with rndevtools simulators.`
+					);
+				}
+				return {
+					operation: command.operation,
+					udid,
+					completed: job.status === 'complete',
+					jobId,
+					job,
+					...(job.status === 'complete'
+						? {}
+						: {
+								next: `Use rndevtools wait --condition job --job-id ${jobId} to follow this operation.`,
+							}),
+				};
 			}
 			case 'apps': {
 				const fresh = await simulator.refresh();
@@ -1827,17 +1985,23 @@ function createRoutes({
 						.getState()
 						.jobs.find((job) => job.id === jobId);
 					if (simulatorJob) {
-						return await waitForJob(simulator, jobId, context.signal, {
-							abortError,
-						});
+						return await waitForAgentJob(
+							simulator,
+							jobId,
+							context.signal,
+							command.timeoutMs
+						);
 					}
 					const slimmingJob = slimming
 						.getState()
 						.jobs.find((job) => job.id === jobId);
 					if (slimmingJob) {
-						return await waitForJob(slimming, jobId, context.signal, {
-							abortError,
-						});
+						return await waitForAgentJob(
+							slimming,
+							jobId,
+							context.signal,
+							command.timeoutMs
+						);
 					}
 					throw new AgentCliError({
 						code: 'target_not_found',
@@ -2074,11 +2238,17 @@ function createRoutes({
 						assertDeviceAccess(agents, udid, context.agent);
 					}
 				}
-				const job = ensureComplete(
-					await runSlimmingAction(slimming, action, context.signal)
-				);
+				const job = await runSlimmingAction(slimming, action, context.signal);
+				if (TERMINAL_JOB_STATUSES.has(job.status)) ensureComplete(job);
 				const state = slimming.getState();
 				return {
+					completed: job.status === 'complete',
+					...(job.status === 'complete'
+						? {}
+						: {
+								jobId: job.id,
+								next: `SimSlim is still running. Use wait --condition job --job-id ${job.id} to follow it; do not start another mutation.`,
+							}),
 					job,
 					statusBySimulator: Object.fromEntries(
 						canonicalUdids.map((udid) => [udid, state.statusBySimulator[udid]])

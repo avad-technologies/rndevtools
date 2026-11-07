@@ -250,6 +250,28 @@ describe('planSupabaseFollows', () => {
 		).toEqual([[OLD]]);
 	});
 
+	it('does not follow an already superseded stack again just because a session remains in its worktree', () => {
+		const old = {
+			...records.get(OLD),
+			flags: { supersededAt: NOW },
+		} as SupabaseStackRecord;
+		const cwdOnly = stack({
+			holds: [],
+			cwdKeepers: [
+				{ agent: { kind: 'codex', sessionId: 'session-a', synthetic: false } },
+			],
+		});
+		const input = {
+			now: NOW + 5 * 60_000,
+			records: new Map([[OLD, old]]),
+			stacks: [cwdOnly],
+		};
+		expect(plan(input)).toEqual({ due: [] });
+		// An explicit follow or a new live hold still carries user intent.
+		expect(plan({ ...input, force: OLD }).due).toHaveLength(1);
+		expect(plan({ ...input, stacks: [stack()] }).due).toHaveLength(1);
+	});
+
 	it('waits longer after each failed follow to the same stack', () => {
 		const first = nextSupabaseFollowRetry(undefined, NEW, NOW);
 		expect(first).toEqual({

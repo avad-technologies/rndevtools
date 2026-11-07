@@ -8,6 +8,11 @@ emits exactly one newline-terminated JSON response to standard output, and
 exits. Electron main closes stdin after writing. Unknown envelope and payload
 fields are rejected.
 
+The Go helper inspects the inherited authorization descriptor before wrapping
+it and owns only a close-on-exec duplicate of a valid pipe. Standalone read-only
+requests therefore never register a finalizer for an absent descriptor that the
+Go runtime may later reuse. Invalid channels still deny mutations.
+
 ```json
 {
   "protocolVersion": 2,
@@ -128,7 +133,7 @@ cross the native boundary as arbitrary service lists.
     "hostArchitecture": "arm64 | x64",
     "helperVersion": "0.1.0",
     "helperBuildCommit": "40-hex-commit-or-dirty-aware-source-identity",
-    "catalogVersion": "simslim-v0.12.2-6518ba7e-rndevtools.1-presets.3"
+    "catalogVersion": "simslim-v0.14.0-7e374b38-rndevtools.1-presets.3"
   },
   "verifiedOperations": []
 }
@@ -242,7 +247,8 @@ read-only and accepts one of these exact payloads:
   desired managed sets, delta, verification evidence, and a new
   `checkpointToken` bound to the operation, canonical profile/desired set,
   Simulator, tuple, current state, random preparation ID, and the unique
-  executable basenames of to-disable launchd jobs observed running in the
+  executable basenames (or label-qualified launcher identities such as
+  `xpcproxy_sim+com.apple.parsecd`) of to-disable launchd jobs observed in the
   exact Simulator process tree during preparation. A shutdown target is
   temporarily booted for this inspection and independently restored before
   preparation responds.
@@ -280,7 +286,14 @@ probe still fails closed. It applies only the computed delta, reboots only when
 needed, verifies the exact managed override set, and requires every
 desired-disabled launchd job registration to be absent. Immediately before the
 transition it rebinds every currently running to-disable label's single PID and
-program to a unique basename in the exact-UDID process tree. Those fresh
+program to a unique basename in the exact-UDID process tree. A shared
+`xpcproxy_sim` launcher instead requires its exact label from a bounded argv
+read restricted to launcher PIDs already in that tree. Only the qualified
+launcher/label pair is retained; raw argv and environments are never returned.
+Unresolved launcher identities and invalid process names trigger bounded fresh
+launchd/tree reads at commit, never acceptance of the unresolved snapshot. They
+fail closed when retries are exhausted; cancellation stops the reads. Unresolved
+launcher identity also fails closed during verification. Those fresh
 commit-time roots, rather than the earlier preparation snapshot, must all be
 absent after the reboot. Missing, duplicated, or ambiguous PID/program/tree
 mappings fail before mutation. This proof is deliberately scoped to managed
