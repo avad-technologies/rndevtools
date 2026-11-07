@@ -223,6 +223,15 @@ function closeUpgrade(socket: Duplex, status: number, message: string): void {
 	socket.destroy();
 }
 
+function closeHttpServer(server: HttpServer): Promise<void> {
+	return new Promise((resolve) => {
+		server.close(() => resolve());
+		// Stop accepting first, then drop active HTTP requests too. A client
+		// that leaves a request unfinished must not hold shutdown open.
+		server.closeAllConnections();
+	});
+}
+
 export class DesktopBroker {
 	readonly #host: string;
 	readonly #requestedPort: number;
@@ -536,7 +545,7 @@ export class DesktopBroker {
 			isUnspecifiedAddress(bound.address) &&
 			!this.#allowWildcardBind
 		) {
-			await new Promise<void>((resolve) => server.close(() => resolve()));
+			await closeHttpServer(server);
 			webSocketServer.close();
 			throw new Error(
 				`The broker bind address resolved to ${bound.address}, which listens on every interface. Set RNDEVTOOLS_ALLOW_WILDCARD=true to allow it.`
@@ -901,14 +910,13 @@ export class DesktopBroker {
 		const httpServer = this.#httpServer;
 		this.#webSocketServer = undefined;
 		this.#httpServer = undefined;
+		const httpClosed = httpServer ? closeHttpServer(httpServer) : undefined;
 		if (webSocketServer) {
 			for (const client of webSocketServer.clients) client.terminate();
 			await new Promise<void>((resolve) =>
 				webSocketServer.close(() => resolve())
 			);
 		}
-		if (httpServer) {
-			await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-		}
+		await httpClosed;
 	}
 }
