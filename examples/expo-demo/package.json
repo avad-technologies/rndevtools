@@ -7,7 +7,8 @@
 		"lint": "biome check src",
 		"typecheck": "tsc --noEmit",
 		"verify:bundle": "expo export --platform ios --platform android --output-dir ./build && rndevtools-verify-bundle ./build",
-		"quality": "pnpm lint && pnpm typecheck && pnpm verify:seam && pnpm verify:scene",
+		"quality": "pnpm lint && pnpm typecheck && pnpm verify:seam && pnpm verify:scene && pnpm verify:probe",
+		"verify:probe": "node --test scripts/database-probe.test.mjs",
 		"verify:scene": "node --test scripts/scene-lifecycle.test.mjs",
 		"verify:seam": "node scripts/verify-prune-seam.mjs"
 	},

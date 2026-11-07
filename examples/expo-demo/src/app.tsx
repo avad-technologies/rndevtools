@@ -6,21 +6,28 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 // The only devtools import in the app. See src/devtools/host.tsx for why that
 // matters: it is the seam Metro cuts for production builds.
 import { DevtoolsHost } from '@/devtools/host';
+import { checkProbeNotes, readProbeIdentity } from './database-probe';
+import probeConfig from './database-probe-config.json';
 
 const queryClient = new QueryClient();
 
-const laneLabel = 'B';
+const probeIdentity = readProbeIdentity(probeConfig);
 const apiUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const publishableKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const probeMessages = {
+	unconfigured: 'Connected. Set a QA label to check database isolation.',
+	'expected-only': 'PASS: expected QA marker only',
+	'missing-expected': 'FAIL: expected QA marker is missing',
+	'foreign-marker': 'FAIL: found a marker from another QA lane',
+	malformed: 'FAIL: unexpected notes response',
+};
 
 function DatabaseProbe() {
-	const [result, setResult] = useState('Connecting to local Supabase...');
+	const [result, setResult] = useState('Connecting to local Supabase…');
 	const [notes, setNotes] = useState<string[]>([]);
 	const refresh = useCallback(async () => {
-		if (!apiUrl || !publishableKey) {
-			setResult('FAIL: lane did not inject the local API URL and key');
-			return;
-		}
+		if (!apiUrl || !publishableKey) return;
+		setResult('Checking local database…');
 		try {
 			const response = await fetch(
 				`${apiUrl}/rest/v1/notes?select=body&order=id`,
@@ -30,28 +37,11 @@ function DatabaseProbe() {
 				},
 			);
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			const data: unknown = await response.json();
-			if (!Array.isArray(data)) throw new Error('Expected notes array');
-			const bodies = data.flatMap((row: unknown) =>
-				typeof row === 'object' &&
-				row !== null &&
-				'body' in row &&
-				typeof row.body === 'string'
-					? [row.body]
-					: [],
-			);
-			setNotes(bodies);
-			const own = bodies.includes(`Lane ${laneLabel}: isolated database`);
-			const other = bodies.some(
-				(body) =>
-					/^Lane [AB]:/.test(body) && !body.startsWith(`Lane ${laneLabel}:`),
-			);
-			setResult(
-				own && !other
-					? 'PASS: own database, no cross-lane data'
-					: 'FAIL: unexpected database contents',
-			);
+			const checked = checkProbeNotes(await response.json(), probeIdentity);
+			setNotes(checked.notes);
+			setResult(probeMessages[checked.status]);
 		} catch (error) {
+			setNotes([]);
 			setResult(
 				`FAIL: ${error instanceof Error ? error.message : 'Request failed'}`,
 			);
@@ -60,32 +50,45 @@ function DatabaseProbe() {
 	useEffect(() => {
 		void refresh();
 	}, [refresh]);
+	const hasBackendConfig = Boolean(apiUrl && publishableKey);
 	return (
 		<View style={styles.probe}>
-			<Text style={styles.title}>Isolated lane {laneLabel}</Text>
-			<Text selectable style={styles.endpoint}>
-				{apiUrl ?? 'API URL missing'}
+			<Text style={styles.title}>
+				{probeIdentity
+					? `Local database · ${probeIdentity.label}`
+					: 'Local database'}
 			</Text>
+			{apiUrl ? (
+				<Text selectable style={styles.endpoint}>
+					{apiUrl}
+				</Text>
+			) : null}
 			<Text
 				accessibilityLabel="Database isolation result"
 				style={styles.result}
 			>
-				{result}
+				{hasBackendConfig
+					? result
+					: apiUrl || publishableKey
+						? 'Local Supabase needs both a URL and publishable key.'
+						: 'Local Supabase is off. Start a managed lane to check its database.'}
 			</Text>
 			{notes.map((body) => (
 				<Text key={body} style={styles.body}>
 					{body}
 				</Text>
 			))}
-			<Pressable
-				accessibilityRole="button"
-				onPress={() => {
-					void refresh();
-				}}
-				style={styles.button}
-			>
-				<Text style={styles.buttonText}>Refresh database</Text>
-			</Pressable>
+			{hasBackendConfig ? (
+				<Pressable
+					accessibilityRole="button"
+					onPress={() => {
+						void refresh();
+					}}
+					style={styles.button}
+				>
+					<Text style={styles.buttonText}>Refresh database</Text>
+				</Pressable>
+			) : null}
 		</View>
 	);
 }
