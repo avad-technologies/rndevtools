@@ -92,6 +92,28 @@ describe('sanitizeSupabaseText', () => {
 		);
 	});
 
+	it('preserves URL schemes, adjacent prefixes and authority syntax while redacting passwords', () => {
+		expect(
+			line('POSTGRES+tls.v2-foo://db-user:pa@ss@db.example.com:5432/db')
+		).toBe('POSTGRES+tls.v2-foo://db-user:[REDACTED]@db.example.com:5432/db');
+		expect(line('(123+.-PoStGrEs://:pw%40data@[::1]/db)')).toBe(
+			'(123+.-PoStGrEs://:[REDACTED]@[::1]/db)'
+		);
+		expect(line('ssh://db-user:@localhost/path')).toBe(
+			'ssh://db-user:[REDACTED]@localhost/path'
+		);
+	});
+
+	it('redacts a URL after a long plain-text run', () => {
+		const plain = 'x'.repeat(100_000);
+		expect(
+			line(
+				`${plain} postgres://db-user:db-pass@localhost/db`,
+				plain.length + 100
+			)
+		).toBe(`${plain} postgres://db-user:[REDACTED]@localhost/db`);
+	});
+
 	it('bounds the result without splitting a surrogate pair', () => {
 		expect(line('x'.repeat(10_000), 100)).toHaveLength(100);
 		expect(line('x'.repeat(10_000), 100).endsWith('…')).toBe(true);
