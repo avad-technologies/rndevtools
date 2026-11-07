@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
 	Lane,
@@ -2135,6 +2136,80 @@ describe('LaneService', () => {
 				expect(service.getState().lanes[0]?.metro).toBe('ready')
 			);
 			verify.mockRestore();
+		});
+
+		describe('shutdown during startup reconciliation', () => {
+			let health: ReturnType<typeof deferred<boolean>>;
+
+			beforeEach(async () => {
+				await service.runOperation({
+					actionId: 'op-before-shutdown',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+				await service.stop();
+				health = deferred<boolean>();
+				const probing = deferred<void>();
+				metro.isHealthy = () => {
+					probing.resolve();
+					return health.promise;
+				};
+				store = new LaneStore(root);
+				service = new LaneService({
+					store,
+					simulator,
+					metro,
+					worktrees,
+					now: () => now,
+				});
+				await service.start();
+				await probing.promise;
+			});
+
+			it('discards a health result received after stop without waiting for the probe', async () => {
+				const write = vi.spyOn(store, 'upsert');
+				const stopping = service.stop();
+				try {
+					await expect(
+						Promise.race([stopping, nextTurn('pending')])
+					).resolves.toBeUndefined();
+				} finally {
+					health.resolve(true);
+					await stopping;
+				}
+				await nextTurn();
+				expect(write).not.toHaveBeenCalled();
+				expect(metro.stopped).toEqual([]);
+			});
+
+			it('drains the durable write already started by reconciliation', async () => {
+				const writing = deferred<void>();
+				const writeAllowed = deferred<void>();
+				const upsert = store.upsert.bind(store);
+				vi.spyOn(store, 'upsert').mockImplementation(async (lane) => {
+					writing.resolve();
+					await writeAllowed.promise;
+					await upsert(lane);
+				});
+				health.resolve(true);
+				await writing.promise;
+				const stopping = service.stop();
+				try {
+					await expect(
+						Promise.race([stopping, nextTurn('pending')])
+					).resolves.toBe('pending');
+				} finally {
+					writeAllowed.resolve();
+					await stopping;
+				}
+				const reopened = new LaneStore(root);
+				await reopened.start();
+				expect(reopened.lanes()[0]?.metro).toBe('ready');
+				expect(metro.stopped).toEqual([]);
+			});
 		});
 
 		it.each(['another app directory', 'ownership probe timeout'] as const)(

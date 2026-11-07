@@ -373,6 +373,8 @@ export class LaneService {
 	readonly #backendRecords = new Map<string, LaneBackendRecord>();
 	/** Aborted by stop(): work the lanes do on their own ends with it. */
 	readonly #lifecycle = new AbortController();
+	/** Maintenance that has already committed to changing a durable lease. */
+	readonly #maintenanceWrites = new Set<Promise<void>>();
 	#worktreeCache: LaneWorktree[] = [];
 	#revision = 0;
 	#updatedAt: number;
@@ -449,6 +451,7 @@ export class LaneService {
 		await this.#store.start();
 		await this.#reconcile();
 		await this.refresh().catch(() => undefined);
+		if (this.#stopped) return;
 		// Ownership probes can take seconds. The window awaits start(), so
 		// adopt surviving PIDs in the background, before any backend restore.
 		// Until proven, reconcile leaves them starting and never opens an app.
@@ -468,7 +471,7 @@ export class LaneService {
 			)
 		);
 		void Promise.allSettled(adoptions)
-			.then(() => (this.#stopped ? undefined : this.#reconcile()))
+			.then(() => this.#reconcile())
 			.catch(() => undefined);
 		this.#reconcileTimer = setInterval(() => {
 			void this.#reconcile();
@@ -480,6 +483,9 @@ export class LaneService {
 		this.#stopped = true;
 		this.#lifecycle.abort();
 		if (this.#reconcileTimer) clearInterval(this.#reconcileTimer);
+		// Probes can finish on their own. Wait only for maintenance that has
+		// already started a write or an expired hold's release.
+		await Promise.allSettled(this.#maintenanceWrites);
 		// Metro processes are detached on purpose; they keep serving the agents
 		// that started them after the desktop app quits.
 	}
@@ -2000,6 +2006,15 @@ export class LaneService {
 		);
 	}
 
+	async #trackMaintenanceWrite(write: Promise<void>): Promise<void> {
+		this.#maintenanceWrites.add(write);
+		try {
+			await write;
+		} finally {
+			this.#maintenanceWrites.delete(write);
+		}
+	}
+
 	/**
 	 * Refreshes the Metro liveness of every lane and releases abandoned ones.
 	 *
@@ -2010,6 +2025,7 @@ export class LaneService {
 	 * stopped, and the device returns to the pool.
 	 */
 	async #reconcile(): Promise<void> {
+		if (this.#stopped) return;
 		let changed = false;
 		const holds = this.#holds?.();
 		const now = this.#now();
@@ -2023,6 +2039,7 @@ export class LaneService {
 			}
 		}
 		for (const lane of this.#store.lanes()) {
+			if (this.#stopped) return;
 			const hold = holds?.get(lane.simulatorUdid.toUpperCase());
 			if (
 				hold?.laneId === lane.id &&
@@ -2030,9 +2047,8 @@ export class LaneService {
 				hold.releaseAt !== undefined &&
 				now >= hold.releaseAt
 			) {
-				await this.stopLane(
-					lane.id,
-					'Agent session exit grace period elapsed'
+				await this.#trackMaintenanceWrite(
+					this.stopLane(lane.id, 'Agent session exit grace period elapsed')
 				).catch(() => undefined);
 				changed = true;
 				continue;
@@ -2046,6 +2062,7 @@ export class LaneService {
 						: (await this.#metro.isHealthy(lane.port, lane.metroPid))
 							? 'ready'
 							: 'starting';
+			if (this.#stopped) return;
 			// The probe awaited; write back onto the lane as it is now, and not
 			// at all if it was stopped or got a new Metro meanwhile.
 			const current = this.#store.get(lane.id);
@@ -2054,10 +2071,13 @@ export class LaneService {
 				current.metroPid === lane.metroPid &&
 				liveStatus !== current.metro
 			) {
-				await this.#store.upsert({ ...current, metro: liveStatus });
+				await this.#trackMaintenanceWrite(
+					this.#store.upsert({ ...current, metro: liveStatus })
+				);
 				changed = true;
 			}
 		}
+		if (this.#stopped) return;
 		// Only stopLane removes lanes and it forgets their backends; this is the
 		// backstop for anything that slipped past it.
 		const laneIds = new Set(this.#store.lanes().map((lane) => lane.id));
@@ -2229,10 +2249,10 @@ export class LaneService {
 				!this.#stoppingLanes.has(lane.id)
 			) {
 				this.#metroIdentityErrors.set(lane.id, message);
-				await this.#store
-					.upsert({ ...current, metro: 'starting' })
-					.catch(() => undefined);
-				this.#touch();
+				await this.#trackMaintenanceWrite(
+					this.#store.upsert({ ...current, metro: 'starting' })
+				).catch(() => undefined);
+				if (!this.#stopped) this.#touch();
 			}
 			throw new Error(message, { cause: error });
 		}
