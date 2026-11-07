@@ -22,6 +22,7 @@ func TestValidateMatchesServerCommandUnion(t *testing.T) {
 	tests := map[protocol.Command]string{
 		protocol.CommandDoctor:     `{"kind":"doctor"}`,
 		protocol.CommandSimulators: `{"kind":"simulators","includeUnavailable":true}`,
+		protocol.CommandSimulator:  `{"kind":"simulator","operation":"boot","udid":"` + testUDID + `"}`,
 		protocol.CommandApps:       `{"kind":"apps","udid":"` + testUDID + `"}`,
 		protocol.CommandScreen:     `{"kind":"screen","target":{"deviceId":"device-1"}}`,
 		protocol.CommandElements:   `{"kind":"elements","target":{"udid":"` + testUDID + `"},"query":"button","limit":10}`,
@@ -233,6 +234,55 @@ func TestCommandsWithoutFieldsNeverReadStdin(t *testing.T) {
 	// A command with fields still merges stdin with its flags.
 	if !strings.Contains(Usage(protocol.CommandSimulators), "JSON command object on stdin") {
 		t.Fatal("commands with fields still document stdin")
+	}
+}
+
+func TestSimulatorLifecycleWithBothFlagsNeverReadsStdin(t *testing.T) {
+	for _, operation := range []string{"boot", "shutdown"} {
+		args := []string{"--operation", operation, "--udid", testUDID}
+		parsed, err := Parse(protocol.CommandSimulator, args, unreadable{t}, true)
+		want := `{"kind":"simulator","operation":"` + operation + `","udid":"` + testUDID + `"}`
+		if err != nil || string(parsed.Command) != want {
+			t.Fatalf("%s: parsed %s, error %v; want %s", operation, parsed.Command, err, want)
+		}
+	}
+}
+
+func TestSimulatorLifecycleReadsMissingUDIDFromClosedJSONStdin(t *testing.T) {
+	parsed, err := Parse(protocol.CommandSimulator, []string{"--operation", "boot"}, strings.NewReader(`{"udid":"`+testUDID+`"}`), true)
+	want := `{"kind":"simulator","operation":"boot","udid":"` + testUDID + `"}`
+	if err != nil || string(parsed.Command) != want {
+		t.Fatalf("parsed %s, error %v; want %s", parsed.Command, err, want)
+	}
+}
+
+func TestSimulatorsPreservesLegacyListAndJSONStdin(t *testing.T) {
+	for input, want := range map[string]string{
+		"":                            `{"kind":"simulators"}`,
+		`{"includeUnavailable":true}`: `{"includeUnavailable":true,"kind":"simulators"}`,
+	} {
+		parsed, err := Parse(protocol.CommandSimulators, nil, strings.NewReader(input), true)
+		if err != nil || string(parsed.Command) != want {
+			t.Fatalf("input %q: parsed %s, error %v; want %s", input, parsed.Command, err, want)
+		}
+	}
+	if _, err := Parse(protocol.CommandSimulators, nil, strings.NewReader(`{"operation":"boot","udid":"`+testUDID+`"}`), true); err == nil {
+		t.Fatal("legacy simulators accepted a lifecycle request")
+	}
+}
+
+func TestValidateSimulatorRejectsUnsupportedOrAmbiguousLifecycleRequests(t *testing.T) {
+	for _, fields := range []string{
+		`"operation":"boot"`,
+		`"udid":"` + testUDID + `"`,
+		`"operation":"shutdown","udid":"booted"`,
+		`"operation":"erase","udid":"` + testUDID + `"`,
+		`"operation":"boot","udid":"` + testUDID + `","includeUnavailable":false`,
+		`"operation":"boot","udid":"` + testUDID + `","agent":{"kind":"codex","sessionId":"owner"}`,
+	} {
+		if err := Validate(json.RawMessage(`{"kind":"simulator",`+fields+`}`), protocol.CommandSimulator); err == nil {
+			t.Errorf("accepted invalid simulator command: %s", fields)
+		}
 	}
 }
 

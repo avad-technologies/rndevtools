@@ -73,6 +73,19 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 			IncludeUnavailable *bool  `json:"includeUnavailable,omitempty"`
 		}
 		return decodeAndCheckKind(encoded, expectedKind, &value, valueKind(&value.Kind))
+	case protocol.CommandSimulator:
+		var value struct {
+			Kind      string `json:"kind"`
+			Operation string `json:"operation"`
+			UDID      string `json:"udid"`
+		}
+		if err := decodeAndCheckKind(encoded, expectedKind, &value, valueKind(&value.Kind)); err != nil {
+			return err
+		}
+		if value.Operation != "boot" && value.Operation != "shutdown" {
+			return errors.New("simulator operation must be boot or shutdown")
+		}
+		return validateUDID(value.UDID)
 	case protocol.CommandApps:
 		var value struct {
 			Kind string `json:"kind"`

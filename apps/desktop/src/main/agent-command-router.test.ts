@@ -4,7 +4,11 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentOperation, AgentState } from '../shared/agent-protocol';
 import { createDemoDevice } from '../shared/demo-data';
-import { decideDeviceAccess, resolveDeviceHolds } from '../shared/device-hold';
+import {
+	type DeviceHold,
+	decideDeviceAccess,
+	resolveDeviceHolds,
+} from '../shared/device-hold';
 import {
 	DEFAULT_LANE_ENVIRONMENTS,
 	type Lane,
@@ -47,6 +51,7 @@ import {
 } from './agent-command-router';
 import { AgentService } from './agent-service';
 import { NativeHostResponseError } from './native-host-client';
+import type { SimulatorActionContext } from './simulator-service';
 import type {
 	SupabaseAgentContext,
 	SupabaseReleaseResult,
@@ -397,6 +402,197 @@ describe('agent command router', () => {
 		);
 		expect(fleet).toMatchObject({
 			devices: [{ udid: UDID, name: 'Agent Lane' }],
+		});
+	});
+
+	describe('owned Simulator lifecycle', () => {
+		const owner: Holder = { kind: 'codex', sessionId: 'simulator-owner' };
+		const asOwner = { ...context, agent: owner };
+		const boot = { kind: 'simulator', operation: 'boot', udid: UDID } as const;
+		const jobId = 'simulator-recovery-job';
+
+		function ownedHold(via: DeviceHold['via'] = 'claim'): DeviceHold {
+			return {
+				simulatorUdid: UDID,
+				via,
+				holder: owner,
+				holderLive: true,
+				...(via === 'lane' ? { laneId: 'lane-1' } : {}),
+			};
+		}
+
+		function lifecycle(
+			hold?: DeviceHold,
+			status: 'running' | 'complete' | 'failed' = 'complete'
+		) {
+			const { dependencies, setSimulator } = fixture();
+			const state: AgentState = {
+				revision: 1,
+				updatedAt: now,
+				sessions: [],
+				byDevice: {},
+				claims: [],
+				holds: hold ? { [UDID]: hold } : {},
+				discovery: { claude: 'ok', codex: 'ok' },
+			};
+			const runAction = vi.fn(
+				(action: SimulatorAction, _actionContext?: SimulatorActionContext) => {
+					setSimulator(
+						simulatorStateSchema.parse({
+							...simulatorState(),
+							jobs: [
+								{
+									id: jobId,
+									actionId: action.actionId,
+									kind: action.kind,
+									deviceUdid: UDID,
+									status,
+									progressSequence: 1,
+									phase: status === 'running' ? 'executing' : status,
+									createdAt: now,
+									startedAt: now,
+									...(status !== 'running' ? { finishedAt: now + 1 } : {}),
+									message:
+										status === 'failed' ? 'xcrun timed out.' : 'Simulator job.',
+								},
+							],
+						})
+					);
+					return { actionId: action.actionId, accepted: true, jobId };
+				}
+			);
+			const cancelJob = vi.fn(() => true);
+			const touch = vi.fn();
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: { ...dependencies.simulator, runAction, cancelJob },
+				agents: {
+					getState: () => state,
+					refresh: async () => state,
+					runOperation: async () => state,
+					touch,
+				},
+			});
+			return { handler, runAction, cancelJob, touch, state };
+		}
+
+		it('lists with the legacy no-operation command without identity or a mutation', async () => {
+			const { handler, runAction, touch } = lifecycle();
+			await expect(
+				handler({ kind: 'simulators', includeUnavailable: false }, context)
+			).resolves.toMatchObject({ devices: [{ udid: UDID }] });
+			expect(runAction).not.toHaveBeenCalled();
+			expect(touch).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['boot', 'claim'],
+			['shutdown', 'lane'],
+		] as const)(
+			'uses the typed %s action on the device held by this session’s %s',
+			async (operation, via) => {
+				const { handler, runAction, touch, state } = lifecycle(ownedHold(via));
+				await expect(
+					handler({ ...boot, operation }, asOwner)
+				).resolves.toMatchObject({
+					operation,
+					udid: UDID,
+					completed: true,
+					jobId,
+				});
+				expect(runAction).toHaveBeenCalledOnce();
+				expect(runAction).toHaveBeenCalledWith(
+					expect.objectContaining({ kind: `device.${operation}`, udid: UDID }),
+					expect.objectContaining({
+						assertLifecycleOwnership: expect.any(Function),
+					})
+				);
+				expect(touch).toHaveBeenCalledWith(owner, UDID);
+				const guard = runAction.mock.calls[0]?.[1]?.assertLifecycleOwnership;
+				expect(guard).toBeDefined();
+				expect(guard).not.toThrow();
+				state.holds = {};
+				expect(guard).toThrow(/Claim this Simulator/);
+			}
+		);
+
+		it('denies a free device, a foreign or operator hold, and shared or missing identities', async () => {
+			const free = lifecycle();
+			await expect(free.handler(boot, asOwner)).rejects.toMatchObject({
+				code: 'device_claim_required',
+				recovery: expect.stringContaining('claim --udid'),
+			});
+			expect(free.runAction).not.toHaveBeenCalled();
+
+			for (const hold of [
+				{
+					...ownedHold(),
+					holder: { kind: 'codex' as const, sessionId: 'other-session' },
+					holderLive: false,
+					releaseAt: 1,
+				},
+				{ ...ownedHold('lane'), holder: undefined },
+			]) {
+				const denied = lifecycle(hold);
+				await expect(denied.handler(boot, asOwner)).rejects.toMatchObject({
+					code: 'device_held',
+					recovery: expect.stringContaining('agents'),
+				});
+				expect(denied.runAction).not.toHaveBeenCalled();
+			}
+
+			const shared = {
+				kind: 'codex' as const,
+				sessionId: 'mcp-codex-mcp-client',
+			};
+			const denied = lifecycle({ ...ownedHold('lane'), holder: shared });
+			for (const requester of [context, { ...context, agent: shared }]) {
+				await expect(denied.handler(boot, requester)).rejects.toMatchObject({
+					code: 'agent_required',
+					recovery: expect.stringContaining('native agent session'),
+				});
+			}
+			expect(denied.runAction).not.toHaveBeenCalled();
+		});
+
+		it('returns a pending job after the observation window and leaves it running', async () => {
+			vi.useFakeTimers();
+			try {
+				const { handler, cancelJob } = lifecycle(ownedHold(), 'running');
+				const pending = handler(boot, asOwner);
+				await vi.advanceTimersByTimeAsync(20_000);
+				await expect(pending).resolves.toMatchObject({
+					completed: false,
+					jobId,
+					next: expect.stringContaining(jobId),
+				});
+				expect(cancelJob).not.toHaveBeenCalled();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('cancels a submitted lifecycle job when the caller aborts', async () => {
+			const { handler, runAction, cancelJob } = lifecycle(
+				ownedHold(),
+				'running'
+			);
+			const controller = new AbortController();
+			const pending = handler(boot, { ...asOwner, signal: controller.signal });
+			await vi.waitFor(() => expect(runAction).toHaveBeenCalledOnce());
+			controller.abort();
+			await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+			expect(cancelJob).toHaveBeenCalledExactlyOnceWith(jobId);
+		});
+
+		it('reports the job and recovery when the native action times out', async () => {
+			const { handler } = lifecycle(ownedHold(), 'failed');
+			await expect(handler(boot, asOwner)).rejects.toMatchObject({
+				code: 'action_failed',
+				message: 'xcrun timed out.',
+				retryable: true,
+				recovery: expect.stringContaining(jobId),
+			});
 		});
 	});
 

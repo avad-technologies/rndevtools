@@ -18,6 +18,7 @@ var toolOrder = []protocol.Command{
 	protocol.CommandLane,
 	protocol.CommandSupabase,
 	protocol.CommandSimulators,
+	protocol.CommandSimulator,
 	protocol.CommandCapture,
 	protocol.CommandInput,
 	protocol.CommandElements,
@@ -41,20 +42,21 @@ var toolOrder = []protocol.Command{
 // validates everything again; this only lets a client refuse an obviously
 // incomplete call before a round trip.
 var requiredFields = map[protocol.Command][]string{
-	protocol.CommandLane:     {"operation"},
-	protocol.CommandSupabase: {"operation"},
-	protocol.CommandApps:     {"udid"},
-	protocol.CommandCapture:  {"udid"},
-	protocol.CommandInput:    {"udid", "kind"},
-	protocol.CommandRecord:   {"udid", "operation"},
-	protocol.CommandNetwork:  {"operation"},
-	protocol.CommandRecipe:   {"operation"},
-	protocol.CommandJobs:     {"operation"},
-	protocol.CommandSlimming: {"operation"},
-	protocol.CommandNative:   {"operation", "worktree"},
-	protocol.CommandClaim:    {"udid"},
-	protocol.CommandAct:      {"tool", "action-command"},
-	protocol.CommandWait:     {"condition"},
+	protocol.CommandLane:      {"operation"},
+	protocol.CommandSupabase:  {"operation"},
+	protocol.CommandSimulator: {"operation", "udid"},
+	protocol.CommandApps:      {"udid"},
+	protocol.CommandCapture:   {"udid"},
+	protocol.CommandInput:     {"udid", "kind"},
+	protocol.CommandRecord:    {"udid", "operation"},
+	protocol.CommandNetwork:   {"operation"},
+	protocol.CommandRecipe:    {"operation"},
+	protocol.CommandJobs:      {"operation"},
+	protocol.CommandSlimming:  {"operation"},
+	protocol.CommandNative:    {"operation", "worktree"},
+	protocol.CommandClaim:     {"udid"},
+	protocol.CommandAct:       {"tool", "action-command"},
+	protocol.CommandWait:      {"condition"},
 }
 
 type meta struct {
@@ -130,6 +132,11 @@ var toolMeta = map[protocol.Command]meta{
 		title:       "List Simulators",
 		description: "List the iOS Simulators on this Mac with name, udid, runtime, state (booted or shutdown), lanes, and attached agents. Call this first to choose a udid for lane up, input, or capture; prefer a booted device nobody else has claimed.",
 		readOnly:    true,
+	},
+	protocol.CommandSimulator: {
+		title: "Boot or Shut Down an Owned Simulator",
+		description: "Boot or shut down one exact Simulator UDID already claimed by this agent session or assigned to its lane. " +
+			"Shutdown preserves the lane, Metro, local backend, and Simulator data. Follow a returned jobId with wait. Shared MCP identities must use the CLI from the native session that owns the device.",
 	},
 	protocol.CommandCapture: {
 		title:       "Screenshot a Simulator",

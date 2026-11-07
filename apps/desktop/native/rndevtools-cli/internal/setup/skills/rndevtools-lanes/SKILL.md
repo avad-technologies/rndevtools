@@ -98,6 +98,25 @@ a private local socket.
   the error names which gate refused. Applying reboots the device, so prefer
   `lane up --slim` for the device a lane is about to use.
 
+## Recover a Simulator you already hold
+
+If a launch is blocked by a Simulator that stopped responding, use its exact
+UDID from your existing claim or lane. Shutdown preserves the lane, Metro,
+local backend, and Simulator data. Follow each pending job before moving on.
+
+```bash
+rndevtools simulator --operation shutdown --udid <UDID>
+rndevtools wait --condition job --job-id <jobId>  # if shutdown is pending
+rndevtools simulator --operation boot --udid <UDID>
+rndevtools wait --condition job --job-id <jobId>  # if boot is pending
+rndevtools lane --operation launch --lane-id <laneId>
+```
+
+`simulators` lists devices. Use `simulator` with both flags for lifecycle
+operations in automation that leaves stdin open. Both lifecycle operations
+require an exact owning session identity. If MCP reports a shared identity,
+run the CLI from the native agent session that owns the lane or claim.
+
 ## Start a worktree on a Simulator
 
 ```bash
