@@ -8,6 +8,7 @@ import {
 	type SlimmingAction,
 	slimmingActionSchema,
 } from '../shared/slimming-protocol';
+import { waitForJob as waitForPublishedJob } from './job-wait';
 import {
 	type SimHelperCompatibility,
 	SimHelperError,
@@ -835,7 +836,17 @@ describe('slimming service', () => {
 	});
 
 	it('makes room for new work by dropping the oldest finished jobs, and refuses only while 100 are active', async () => {
-		const { service } = await createService();
+		const { helper, service } = await createService();
+		const releasePreviews = deferred();
+		const previewProfile = helper.previewProfile.getMockImplementation();
+		if (!previewProfile) throw new Error('Fake profile preview is missing.');
+		helper.previewProfile
+			.mockImplementationOnce(previewProfile)
+			.mockImplementationOnce(previewProfile)
+			.mockImplementation(async (...args) => {
+				await releasePreviews.promise;
+				return previewProfile(...args);
+			});
 		const preview = (actionId: string) =>
 			service.runAction(
 				action({
@@ -845,29 +856,37 @@ describe('slimming service', () => {
 					profileId: PROFILE,
 				})
 			);
-		// Read-only jobs run one at a time, so 100 accepted at once are all active.
-		const active = Array.from({ length: 100 }, (_, index) =>
-			preview(`preview-${index}`)
-		);
-		expect(active.every((receipt) => receipt.accepted)).toBe(true);
-		expect(preview('preview-overflow')).toMatchObject({
-			accepted: false,
-			error: 'The 100-job Slimming queue is full.',
-		});
-		for (const receipt of active)
-			await waitForJob(service, receipt.jobId ?? '');
+		try {
+			// Read-only jobs run one at a time, so 100 accepted at once are all active.
+			const active = Array.from({ length: 100 }, (_, index) =>
+				preview(`preview-${index}`)
+			);
+			expect(active.every((receipt) => receipt.accepted)).toBe(true);
+			expect(preview('preview-overflow')).toMatchObject({
+				accepted: false,
+				error: 'The 100-job Slimming queue is full.',
+			});
+			const secondJobId = active[1]?.jobId ?? '';
+			const second = await waitForPublishedJob(
+				service,
+				secondJobId,
+				AbortSignal.timeout(2_000),
+				{ abortError: () => new Error(`Job ${secondJobId} did not finish.`) }
+			);
+			expect(second.status).toBe('complete');
 
-		// A session that already ran 100 jobs keeps working.
-		const next = preview('preview-after');
-		expect(next.accepted).toBe(true);
-		expect((await waitForJob(service, next.jobId ?? '')).status).toBe(
-			'complete'
-		);
-		const actionIds = service.getState().jobs.map((job) => job.actionId);
-		expect(actionIds).toHaveLength(100);
-		expect(actionIds).not.toContain('preview-0');
-		expect(actionIds.at(-1)).toBe('preview-after');
-		await service.stop();
+			// Only the first two previews finish. A new job evicts the older one
+			// while the other finished record and all active jobs stay put.
+			expect(preview('preview-after').accepted).toBe(true);
+			expect(service.getState().jobs.map((job) => job.actionId)).toEqual([
+				...active.slice(1).map((receipt) => receipt.actionId),
+				'preview-after',
+			]);
+		} finally {
+			const stopped = service.stop();
+			releasePreviews.resolve();
+			await stopped;
+		}
 	});
 
 	it('does not auto-boot shutdown targets during refresh but supports preview, acknowledgement, and mutation', async () => {

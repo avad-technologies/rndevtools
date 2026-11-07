@@ -3192,7 +3192,7 @@ describe('SupabaseEngine branch follow', () => {
 		const oldId = await h.identity(repo);
 		await h.checkout(repo, 'feat-x');
 		// The new branch has a broken migration: every create fails.
-		for (let index = 0; index < 32; index += 1) {
+		for (let index = 0; index < 4; index += 1) {
 			h.cli.replyNext('stack start', MIGRATION_FAILED);
 		}
 		await h.advance(5 * 60_000);
@@ -3203,8 +3203,11 @@ describe('SupabaseEngine branch follow', () => {
 		// A minute, then two, then four: not one try per 15 s tick.
 		expect(creates()).toBe(3);
 		expect(h.cli.stacks.get(oldId)?.running).toBe(true);
-		await h.advance(60 * 60_000);
-		expect(creates()).toBeLessThanOrEqual(7);
+		// The fourth try is four minutes after the third, around 7m45s.
+		await h.advance(2 * 60_000);
+		expect(creates()).toBe(3);
+		await h.advance(60_000);
+		expect(creates()).toBe(4);
 	});
 
 	it('follows once a failed follow succeeds on its next try', async () => {
