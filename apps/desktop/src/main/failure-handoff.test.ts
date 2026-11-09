@@ -164,6 +164,25 @@ describe('local subscription handoff', () => {
 			claudeConfig: null,
 		});
 	});
+	it.each(['claude', 'codex'] as const)(
+		'asks for %s with Cancel as the default button, so Return never opens a session',
+		async (client) => {
+			await fakeClient(client);
+			const confirm = vi.fn(async () => false);
+			await make({ confirm }).run(record, request(client, 'fix'));
+			expect(confirm).toHaveBeenCalledWith(
+				expect.objectContaining({
+					buttons: [
+						'Cancel',
+						client === 'claude' ? 'Open Claude Code' : 'Open Codex',
+					],
+					defaultId: 0,
+					cancelId: 0,
+					noLink: true,
+				})
+			);
+		}
+	);
 	it('cancels without writing tasks or opening a terminal', async () => {
 		await fakeClient('codex');
 		const openTerminal = vi.fn();

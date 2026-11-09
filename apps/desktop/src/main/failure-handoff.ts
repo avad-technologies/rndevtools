@@ -94,6 +94,41 @@ export function handoffArguments(
 			];
 }
 
+/**
+ * The message box that asks before an agent session opens. Cancel is the
+ * first button and the default, so Return never opens one, as in the other
+ * confirmations: a session sends diagnostics off the Mac, and in fix mode it
+ * can edit the project.
+ */
+type HandoffConfirmation = {
+	type: 'question';
+	title: string;
+	message: string;
+	detail: string;
+	buttons: [cancel: string, open: string];
+	defaultId: 0;
+	cancelId: 0;
+	noLink: true;
+};
+
+function handoffConfirmation(
+	record: FailureRecord,
+	{ client, mode }: Pick<HandoffRequest, 'client' | 'mode'>,
+	project: string
+): HandoffConfirmation {
+	const name = client === 'claude' ? 'Claude Code' : 'Codex';
+	return {
+		type: 'question',
+		title: `Open ${name}`,
+		message: `${mode === 'fix' ? 'Investigate and fix' : 'Investigate'} with ${name}?`,
+		detail: `${record.title}\n\nProject: ${project}\n\nOpens an interactive terminal using your existing subscription login. ${mode === 'fix' ? 'The agent may edit this project and run checks, subject to its normal approval prompts.' : 'The agent starts in read-only or plan mode.'} Review its results there before marking this failure resolved.`,
+		buttons: ['Cancel', `Open ${name}`],
+		defaultId: 0,
+		cancelId: 0,
+		noLink: true,
+	};
+}
+
 export function subscriptionEnvironment(
 	inherited: NodeJS.ProcessEnv
 ): NodeJS.ProcessEnv {
@@ -124,12 +159,8 @@ export class FailureHandoff {
 		private readonly dependencies: {
 			directory: string;
 			projects: () => readonly string[];
-			confirm: (input: {
-				client: string;
-				mode: string;
-				project: string;
-				title: string;
-			}) => Promise<boolean>;
+			/** Shows the message box; true once the operator chose to open. */
+			confirm: (dialog: HandoffConfirmation) => Promise<boolean>;
 			openTerminal: (script: string) => Promise<void>;
 			toolPath?: typeof resolveToolPath;
 			loginShellPath?: typeof readLoginShellPath;
@@ -228,12 +259,9 @@ export class FailureHandoff {
 				`Sign in to ${request.client === 'claude' ? 'Claude Code with Claude.ai' : 'Codex with ChatGPT'} before opening this task. Subscription login could not be verified.`
 			);
 		if (
-			!(await this.dependencies.confirm({
-				client: request.client === 'claude' ? 'Claude Code' : 'Codex',
-				mode: request.mode,
-				project,
-				title: record.title,
-			}))
+			!(await this.dependencies.confirm(
+				handoffConfirmation(record, request, project)
+			))
 		)
 			return { cancelled: true };
 		if ((await realpath(request.project)) !== project)

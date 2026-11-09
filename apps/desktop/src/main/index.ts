@@ -1559,18 +1559,9 @@ if (!app.requestSingleInstanceLock()) {
 							.worktrees.map((worktree) => worktree.path) ?? []),
 					]),
 				],
-				confirm: async ({ client, mode, project, title }) => {
-					const result = await dialog.showMessageBox({
-						type: 'question',
-						title: `Open ${client}`,
-						message: `${mode === 'fix' ? 'Investigate and fix' : 'Investigate'} with ${client}?`,
-						detail: `${title}\n\nProject: ${project}\n\nOpens an interactive terminal using your existing subscription login. ${mode === 'fix' ? 'The agent may edit this project and run checks, subject to its normal approval prompts.' : 'The agent starts in read-only or plan mode.'} Review its results there before marking this failure resolved.`,
-						buttons: ['Cancel', `Open ${client}`],
-						defaultId: 1,
-						cancelId: 0,
-					});
-					return result.response === 1;
-				},
+				// The handoff builds the whole message box, Cancel default included.
+				confirm: async (options) =>
+					(await dialog.showMessageBox(options)).response === 1,
 				openTerminal: async (script) => {
 					const error = await shell.openPath(script);
 					if (error)
