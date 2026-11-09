@@ -837,6 +837,9 @@ describe('LaneService', () => {
 			launch: false,
 		});
 		expect(receipt.error).toBe('CoreSimulator refused to boot.');
+		// No lane was stored, so the receipt names none.
+		expect(receipt).not.toHaveProperty('lane');
+		expect(receipt).not.toHaveProperty('cancelled');
 		expect(metro.started).toHaveLength(0);
 		expect(service.getState().lanes).toHaveLength(0);
 	});
@@ -1016,6 +1019,8 @@ describe('LaneService', () => {
 			controller.signal
 		);
 		expect(result.completed).toBe(false);
+		expect(result.cancelled).toBe(true);
+		expect(result).not.toHaveProperty('lane');
 		expect(metro.started).toEqual([]);
 	});
 
@@ -1208,6 +1213,13 @@ describe('LaneService', () => {
 		expect(simulator.actions.map((action) => action.kind)).toEqual([
 			'device.boot',
 		]);
+		// The lane reads as stopped at once, in the receipt that names it too:
+		// only a lane up, which starts Metro again, can launch it now.
+		expect(service.getState().lanes[0]?.metro).toBe('stopped');
+		expect(receipt.lane).toMatchObject({
+			id: service.getState().lanes[0]?.id,
+			metro: 'stopped',
+		});
 	});
 
 	it('times out a Metro that never answers /status', async () => {
@@ -1229,6 +1241,11 @@ describe('LaneService', () => {
 		expect(receipt.completed).toBe(false);
 		expect(receipt.error).toMatch(/did not become ready/);
 		expect(service.getState().lanes[0]?.metro).toBe('starting');
+		// The lane exists and keeps its lease, so the receipt names it for a
+		// lane up or launch to try again.
+		expect(receipt.lane?.id).toBe(service.getState().lanes[0]?.id);
+		expect(receipt.lane?.port).toBe(8_100);
+		expect(receipt).not.toHaveProperty('cancelled');
 	});
 
 	it("launches deep links through the lane scheme and refreshes the holder's attribution", async () => {
@@ -1957,6 +1974,35 @@ describe('LaneService', () => {
 			const reopened = new LaneStore(root);
 			await reopened.start();
 			expect(reopened.lanes()).toEqual([]);
+		});
+
+		it('names the lane it stored when a lane up is cancelled during its launch, and says it was cancelled', async () => {
+			metro.healthyPorts.add(8_100);
+			const held = holdUrlOpen();
+			const controller = new AbortController();
+			const starting = service.runOperation(
+				{
+					actionId: 'op-cancel-up',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: true,
+				},
+				controller.signal
+			);
+			await held.opening;
+			controller.abort();
+			const receipt = await starting;
+			expect(receipt).toMatchObject({
+				completed: false,
+				cancelled: true,
+				error: 'Lane operation cancelled.',
+			});
+			// The lane outlives the cancelled launch, so a lane up or launch can
+			// open it again.
+			expect(receipt.lane?.id).toBe(service.getState().lanes[0]?.id);
+			held.release();
 		});
 
 		it('keeps the Metro that replaced the checked one while the dev client opened', async () => {
@@ -3499,6 +3545,9 @@ describe('LaneService', () => {
 				});
 				expect(launch.completed).toBe(false);
 				expect(launch.error).toContain('requires its local backend');
+				// The receipt says where the backend stands and names the lane.
+				expect(launch.backend).toMatchObject({ policy: 'required' });
+				expect(launch.lane?.id).toBe(started.lane?.id);
 				expect(simulator.actions).toHaveLength(actions);
 				backends.runtimeState = healthy;
 				lanes.backendsChanged();
@@ -4140,7 +4189,8 @@ describe('LaneService', () => {
 			const failed = await up();
 			expect(failed.completed).toBe(false);
 			expect(failed.error).toMatch(/is not installed on this Simulator/);
-			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
+			expect(failed.lane?.id).toBe(laneId);
+			expect(failed.lane?.backend).not.toHaveProperty('launch');
 			expect(kinds().slice(4)).toEqual(['app.list']);
 
 			// A Metro restart for the backend relaunches the dev client in the
@@ -4805,8 +4855,10 @@ describe('LaneService', () => {
 				'device.boot',
 				'app.list',
 			]);
-			// The lease survives so the operator can build and relaunch.
+			// The lease survives so the operator can build and relaunch, and the
+			// receipt names the lane to relaunch.
 			expect(service.getState().lanes).toHaveLength(1);
+			expect(receipt.lane?.id).toBe(service.getState().lanes[0]?.id);
 		});
 
 		it('skips the check when the worktree declares no bundle identifier', async () => {
@@ -5110,6 +5162,7 @@ describe('LaneService', () => {
 				expect(receipt.error).toBe(
 					`com.example.app could not be terminated before ${how === 'deep link' ? 'the URL' : 'its dev client'} opened, so the launch stopped there: xcrun failed with exit code 1. Metro on port 8100 is still running.`
 				);
+				expect(receipt.lane?.id).toBe(laneId);
 				expect(kindsSince(mark)).toEqual(['app.list', 'app.terminate']);
 				expect(service.getState().lanes[0]?.lastLaunchedAt).toBe(now);
 			}
@@ -5149,6 +5202,8 @@ describe('LaneService', () => {
 			const receipt = await launched;
 			expect(receipt.completed).toBe(false);
 			expect(receipt.error).toBe('Lane operation cancelled.');
+			expect(receipt.cancelled).toBe(true);
+			expect(receipt.lane?.id).toBe(laneId);
 			expect(cancelled).toEqual(['simulator-held-terminate']);
 			expect(kinds()).not.toContain('url.open');
 			expect(metro.notes).toEqual([]);
@@ -5189,6 +5244,7 @@ describe('LaneService', () => {
 			const launched = await launching;
 			expect(launched.completed).toBe(false);
 			expect(launched.error).toBe(`Lane ${laneId} does not exist.`);
+			expect(launched).not.toHaveProperty('lane');
 			// The device is free now: this launch no longer touches it.
 			expect(kinds()).toEqual(['device.boot', 'app.list']);
 		});
@@ -5225,6 +5281,8 @@ describe('LaneService', () => {
 				expect(refusedAgain.error).toBe(
 					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first launch restarts the app; or run this without restart.`
 				);
+				// Not a failed launch: retrying it as one would fail again.
+				expect(refusedAgain.lane).toBeUndefined();
 			}
 			expect(kindsSince(mark)).toEqual([]);
 		});
@@ -5273,6 +5331,12 @@ describe('LaneService', () => {
 			expect(settled.error).toMatch(
 				/^com\.example\.app could not be terminated before its dev client opened/
 			);
+			// The settled start stored its lane before the launch failed, and its
+			// receipt names it.
+			expect(settled.lane).toMatchObject({
+				worktreePath: THIRD_WORKTREE,
+				simulatorUdid: CLONE_UDID,
+			});
 			expect(kinds().slice(-2)).toEqual(['app.list', 'app.terminate']);
 		});
 	});

@@ -23,6 +23,7 @@ import {
 	type LaneOperation,
 	type LaneOperationReceipt,
 	type LaneState,
+	type LaneView,
 	laneAppDirectory,
 } from '../shared/lane-protocol';
 import type {
@@ -1111,12 +1112,87 @@ function laneForTarget(
 	return lane;
 }
 
-function laneReceiptResult(receipt: LaneOperationReceipt) {
+/** How a lane up or launch asked for the launch its receipt reports on. */
+type LaneLaunchAsk = {
+	operation: 'up' | 'launch';
+	restart?: boolean | undefined;
+	url?: string | undefined;
+};
+
+/** `value` as one shell word: as it is when nothing in it needs quoting. */
+function shellWord(value: string): string {
+	return /^[\w./@%+=:,-]+$/.test(value)
+		? value
+		: `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * What to run once the cause of a launch that failed on a stored lane is
+ * fixed. Lane up is idempotent: it starts the lane's Metro again when it
+ * exited and ensures its backend, then launches, so a lane up is retried as
+ * itself. Its retry leaves the udid out, as a first lane up does: lane up
+ * for the app's directory resumes its lane on whichever Simulator the lane
+ * runs on. Lane launch only opens the app against a running Metro and a
+ * backend that serves it, so it is retried as itself only then, and through
+ * lane up otherwise. A deep link is named, never repeated: it may hold a
+ * token.
+ */
+function laneRetryRecovery(
+	lane: LaneView,
+	asked: LaneLaunchAsk,
+	{ cancelled, backendFailed }: { cancelled: boolean; backendFailed: boolean }
+): string {
+	const restart = asked.restart ? ' --restart' : '';
+	const environment =
+		lane.environment === 'development'
+			? ''
+			: ` --environment ${lane.environment}`;
+	const up = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}${restart}`;
+	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}`;
+	const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
+	const run = cancelled ? 'Run' : 'Once the cause is fixed, run';
+	if (asked.operation === 'up') {
+		return `The lane keeps its Simulator and port ${lane.port}. ${run} \`${up}\` to launch it again; it starts Metro again first if Metro exited. ${log}`;
+	}
+	if (lane.metro === 'stopped' || backendFailed) {
+		// lane up opens the dev client (restarting the app when asked), so
+		// only a deep link is left to open after it.
+		const then =
+			asked.url !== undefined ? `, then \`${launch}\` with the same --url` : '';
+		return backendFailed
+			? `Lane ${lane.id} requires its local backend, and lane launch does not start it. ${run} \`${up}\` to start the backend and open the dev client${then}. ${log}`
+			: `Metro for lane ${lane.id} is not running, and lane launch does not start it. ${run} \`${up}\` to start Metro again and open the dev client${then}. ${log}`;
+	}
+	return `The lane keeps its Simulator and its Metro on port ${lane.port}. ${run} \`${launch}${restart}\`${asked.url !== undefined ? ' with the same --url' : ''} to open it again. ${log}`;
+}
+
+/**
+ * A lane receipt as the CLI result, or the typed error of one that failed.
+ * `asked` is how a lane up or launch asked for its launch. When that launch
+ * failed on a stored lane (Metro exited or never answered, no dev client, a
+ * terminate that failed, a cancel), the error names the lane and the
+ * recovery the command that opens it again: a lane up gives its caller no
+ * lane id otherwise.
+ */
+function laneReceiptResult(
+	receipt: LaneOperationReceipt,
+	asked?: LaneLaunchAsk
+) {
 	if (!receipt.completed) {
+		const code = receipt.cancelled ? 'cancelled' : 'lane_failed';
+		const error = receipt.error ?? 'The lane operation did not complete.';
+		const lane = receipt.lane;
+		if (!asked || !lane) {
+			throw new AgentCliError({ code, message: error, retryable: true });
+		}
 		throw new AgentCliError({
-			code: receipt.cancelled ? 'cancelled' : 'lane_failed',
-			message: receipt.error ?? 'The lane operation did not complete.',
+			code,
+			message: `Lane ${lane.id} did not launch: ${error}`,
 			retryable: true,
+			recovery: laneRetryRecovery(lane, asked, {
+				cancelled: receipt.cancelled === true,
+				backendFailed: receipt.backend?.policy === 'required',
+			}),
 		});
 	}
 	const { state: _state, actionId: _actionId, ...rest } = receipt;
@@ -1473,26 +1549,30 @@ function supabaseDoctor(
 /**
  * What lane up says about the worktree's local Supabase: the job to follow
  * while it is still starting, and why a lane that required it failed.
+ * `asked` is how the lane up asked for its launch (see laneReceiptResult).
  */
-function laneUpResult(receipt: LaneOperationReceipt) {
+function laneUpResult(receipt: LaneOperationReceipt, asked: LaneLaunchAsk) {
 	const backend = receipt.backend;
 	if (
 		!receipt.completed &&
 		!receipt.cancelled &&
 		backend?.policy === 'required'
 	) {
+		const failure =
+			receipt.error ??
+			backend.reasonText ??
+			"The lane requires this worktree's local Supabase, which did not start.";
 		throw new AgentCliError({
 			code: 'lane_failed',
-			message:
-				receipt.error ??
-				backend.reasonText ??
-				"The lane requires this worktree's local Supabase, which did not start.",
+			message: receipt.lane
+				? `Lane ${receipt.lane.id} did not launch: ${failure}`
+				: failure,
 			retryable: true,
 			recovery:
 				'Call supabase --operation up for this worktree to see why its stack cannot start, or run lane up with backend auto to start the lane without it.',
 		});
 	}
-	const result = laneReceiptResult(receipt);
+	const result = laneReceiptResult(receipt, asked);
 	if (backend?.status !== 'starting' || backend.jobId === undefined) {
 		return result;
 	}
@@ -2370,7 +2450,10 @@ function createRoutes({
 								next: `No free Simulator: ${receipt.deviceRequest.message} RN Devtools is asking the user to start this lane on an existing Simulator or a new clone. Poll lane --operation ls; the deviceRequests entry with id ${receipt.deviceRequest.id} reports fulfilled with a laneId, or dismissed.`,
 							};
 						}
-						return laneUpResult(receipt);
+						return laneUpResult(receipt, {
+							operation: 'up',
+							restart: command.restart,
+						});
 					}
 					case 'launch': {
 						const lane = laneForTarget(lanes.getState(), command);
@@ -2387,7 +2470,11 @@ function createRoutes({
 							},
 							context.signal
 						);
-						return laneReceiptResult(receipt);
+						return laneReceiptResult(receipt, {
+							operation: 'launch',
+							restart: command.restart,
+							url: command.url,
+						});
 					}
 					case 'down': {
 						const lane = laneForTarget(lanes.getState(), command);

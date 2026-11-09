@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import type { AgentCliCommand } from '../shared/agent-cli-protocol';
 import type { AgentOperation, AgentState } from '../shared/agent-protocol';
 import { createDemoDevice } from '../shared/demo-data';
 import {
@@ -3737,6 +3738,216 @@ describe('agent command router', () => {
 				restart: true,
 			});
 			expect(operations[4]).not.toHaveProperty('restart');
+		});
+
+		/** The typed error a lane command fails with when the lane service answers `outcome`. */
+		function failure(
+			outcome: Omit<LaneOperationReceipt, 'actionId' | 'kind'>,
+			command: AgentCliCommand
+		): Promise<AgentCliError> {
+			const { dependencies } = fixture();
+			const { lanes } = lanesAnswering(outcome);
+			const handler = createAgentCommandRouter({ ...dependencies, lanes });
+			return handler(command, context).then(
+				() => {
+					throw new Error('the lane command should have failed');
+				},
+				(rejected: unknown) => rejected as AgentCliError
+			);
+		}
+
+		const timedOut =
+			'Metro on port 8100 did not become ready within 15s. Read the lane log for the bundler error.';
+		const exited =
+			'Metro for feature exited before it became ready. Read the lane log for the bundler error.';
+		const upCommand = {
+			kind: 'lane',
+			operation: 'up',
+			worktreePath: '/Users/dev/app-feature',
+			udid: UDID,
+		} as const;
+		const launchCommand = {
+			kind: 'lane',
+			operation: 'launch',
+			worktreePath: '/Users/dev/app-feature',
+		} as const;
+		// Like a first lane up, the retry leaves the udid out: lane up for the
+		// worktree resumes its lane on whichever Simulator the lane runs on.
+		const upAgain =
+			'rndevtools lane --operation up --worktree /Users/dev/app-feature';
+		const launchAgain = `rndevtools lane --operation launch --lane-id ${lane.id}`;
+		const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
+
+		it('retries a lane up that failed to launch as itself, which starts an exited Metro again', async () => {
+			const up = await failure(
+				{ completed: false, error: timedOut, lane },
+				upCommand
+			);
+			expect(up).toMatchObject({
+				code: 'lane_failed',
+				retryable: true,
+				message: `Lane ${lane.id} did not launch: ${timedOut}`,
+			});
+			expect(up.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Once the cause is fixed, run \`${upAgain}\` to launch it again; it starts Metro again first if Metro exited. ${log}`
+			);
+			const restarted = await failure(
+				{ completed: false, error: timedOut, lane },
+				{ ...upCommand, restart: true }
+			);
+			expect(restarted.recovery).toContain(
+				`run \`${upAgain} --restart\` to launch it again`
+			);
+			// The same command fits a lane whose Metro exited.
+			const dead = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...lane, metro: 'stopped' },
+				},
+				upCommand
+			);
+			expect(dead.message).toBe(`Lane ${lane.id} did not launch: ${exited}`);
+			expect(dead.recovery).toContain(`run \`${upAgain}\` to launch it again`);
+		});
+
+		it('retries a lane launch as itself while its Metro runs, and through lane up once Metro exited', async () => {
+			const linked = await failure(
+				{ completed: false, error: timedOut, lane },
+				{ ...launchCommand, url: 'checkout', restart: true }
+			);
+			expect(linked.message).toBe(
+				`Lane ${lane.id} did not launch: ${timedOut}`
+			);
+			expect(linked.recovery).toBe(
+				`The lane keeps its Simulator and its Metro on port 8100. Once the cause is fixed, run \`${launchAgain} --restart\` with the same --url to open it again. ${log}`
+			);
+
+			// lane launch never starts Metro, so retrying it would fail at once.
+			const stopped = { ...lane, metro: 'stopped' as const };
+			const dead = await failure(
+				{ completed: false, error: exited, lane: stopped },
+				launchCommand
+			);
+			expect(dead.message).toBe(`Lane ${lane.id} did not launch: ${exited}`);
+			expect(dead.recovery).toBe(
+				`Metro for lane ${lane.id} is not running, and lane launch does not start it. Once the cause is fixed, run \`${upAgain}\` to start Metro again and open the dev client. ${log}`
+			);
+			// lane up opens the dev client and restarts the app, so only the
+			// deep link is left for a lane launch after it.
+			const deadLink = await failure(
+				{ completed: false, error: exited, lane: stopped },
+				{ ...launchCommand, url: 'checkout', restart: true }
+			);
+			expect(deadLink.recovery).toContain(
+				`run \`${upAgain} --restart\` to start Metro again and open the dev client, then \`${launchAgain}\` with the same --url.`
+			);
+		});
+
+		it("retries a lane outside the default environment, for an app inside a monorepo, on the lane's own terms", async () => {
+			const nested = {
+				...lane,
+				appPath: '/Users/dev/app-feature/apps/mobile',
+				environment: 'staging',
+				port: 8_200,
+			};
+			const up = await failure(
+				{ completed: false, error: timedOut, lane: nested },
+				upCommand
+			);
+			expect(up.recovery).toContain(
+				'run `rndevtools lane --operation up --worktree /Users/dev/app-feature/apps/mobile --environment staging` to launch it again'
+			);
+			expect(up.recovery).toContain('keeps its Simulator and port 8200');
+			// A path a shell would split or expand stays one word.
+			const spaced = {
+				...lane,
+				worktreePath: "/Users/dev/Example App's $HOME",
+			};
+			const quoted = await failure(
+				{ completed: false, error: timedOut, lane: spaced },
+				upCommand
+			);
+			expect(quoted.recovery).toContain(
+				"run `rndevtools lane --operation up --worktree '/Users/dev/Example App'\\''s $HOME'` to launch it again"
+			);
+		});
+
+		it('reports a cancelled launch as cancelled, still naming the lane', async () => {
+			const cancelled = await failure(
+				{
+					completed: false,
+					cancelled: true,
+					error: 'Lane operation cancelled.',
+					lane,
+				},
+				upCommand
+			);
+			expect(cancelled).toMatchObject({
+				code: 'cancelled',
+				retryable: true,
+				message: `Lane ${lane.id} did not launch: Lane operation cancelled.`,
+			});
+			expect(cancelled.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Run \`${upAgain}\` to launch it again; it starts Metro again first if Metro exited. ${log}`
+			);
+			// A cancel before any lane was stored stays a plain cancel.
+			const early = await failure(
+				{
+					completed: false,
+					cancelled: true,
+					error: 'Lane operation cancelled.',
+				},
+				upCommand
+			);
+			expect(early).toMatchObject({
+				code: 'cancelled',
+				message: 'Lane operation cancelled.',
+			});
+			expect(early.recovery).toBeUndefined();
+		});
+
+		it('names the lane whose required backend stopped its launch, and sends lane launch to lane up', async () => {
+			const backend: NonNullable<LaneOperationReceipt['backend']> = {
+				policy: 'required',
+				status: 'failed',
+				reason: 'failed',
+				appEnvNames: [],
+				warnings: [],
+				reasonText: 'Run lane up to recover this lane before launching.',
+			};
+			const error =
+				'This lane requires its local backend, which is failed (failed). Run lane up to recover this lane before launching.';
+			const up = await failure(
+				{ completed: false, error, lane, backend },
+				upCommand
+			);
+			expect(up).toMatchObject({
+				code: 'lane_failed',
+				message: `Lane ${lane.id} did not launch: ${error}`,
+				recovery: expect.stringContaining('backend auto'),
+			});
+			const launch = await failure(
+				{ completed: false, error, lane, backend },
+				launchCommand
+			);
+			expect(launch.message).toBe(`Lane ${lane.id} did not launch: ${error}`);
+			expect(launch.recovery).toBe(
+				`Lane ${lane.id} requires its local backend, and lane launch does not start it. Once the cause is fixed, run \`${upAgain}\` to start the backend and open the dev client. ${log}`
+			);
+		});
+
+		it('keeps a failure that names no lane as it was', async () => {
+			const refused = await failure(
+				{ completed: false, error: 'CoreSimulator refused to boot.' },
+				upCommand
+			);
+			expect(refused).toMatchObject({
+				code: 'lane_failed',
+				message: 'CoreSimulator refused to boot.',
+				retryable: true,
+			});
+			expect(refused.recovery).toBeUndefined();
 		});
 	});
 

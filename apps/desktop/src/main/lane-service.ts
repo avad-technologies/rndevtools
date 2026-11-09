@@ -223,6 +223,21 @@ class LaneBackendError extends Error {
 }
 
 /**
+ * A launch, of the dev client or a deep link, that failed on a stored lane,
+ * with the failure's own message. The `lane.start`, `lane.provide-device`, or
+ * `lane.launch` receipt then names the lane, so the caller can open that lane
+ * again rather than start another.
+ */
+class LaneLaunchError extends Error {
+	readonly laneId: string;
+
+	constructor(laneId: string, cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+		this.laneId = laneId;
+	}
+}
+
+/**
  * A restart terminates the app by its bundle identifier, which a lane reads
  * from the worktree's app.json only when it starts; without it nothing names
  * the app. A lane that started without one keeps having none.
@@ -911,12 +926,18 @@ export class LaneService {
 					);
 			}
 		} catch (error) {
+			// A launch that failed on a stored lane names the lane as it is now.
+			const launch = error instanceof LaneLaunchError ? error : undefined;
+			const lane = launch ? this.#store.get(launch.laneId) : undefined;
+			const cause = launch ? launch.cause : error;
 			return laneOperationReceiptSchema.parse({
 				...base,
 				completed: false,
+				...(signal.aborted ? { cancelled: true } : {}),
 				error: safeErrorText(error),
-				...(error instanceof LaneBackendError
-					? { backend: error.summary }
+				...(lane ? { lane: this.#view(lane) } : {}),
+				...(cause instanceof LaneBackendError
+					? { backend: cause.summary }
 					: {}),
 			});
 		}
@@ -1921,6 +1942,8 @@ export class LaneService {
 	 * stays registered as a debug target on the Metro it came from. A deep
 	 * link without restart keeps the app as it is. A terminate that was asked
 	 * for and fails stops the launch; the first launch's own is best effort.
+	 * Past the lane lookup and the restart check, a failure is a
+	 * LaneLaunchError naming the lane.
 	 */
 	async launchLane(
 		laneId: string,
@@ -1933,11 +1956,28 @@ export class LaneService {
 		if (restart && !lane.bundleIdentifier) {
 			throw restartWithoutBundleIdentifier(lane.id);
 		}
+		try {
+			return await this.#launch(lane, url, agent, restart, signal);
+		} catch (error) {
+			throw new LaneLaunchError(lane.id, error);
+		}
+	}
+
+	async #launch(
+		lane: Lane,
+		url: string | undefined,
+		agent: Pick<LaneAgent, 'kind' | 'sessionId'> | undefined,
+		restart: boolean,
+		signal: AbortSignal
+	): Promise<Lane> {
+		const laneId = lane.id;
 		this.#assertRequiredBackendReady(lane);
-		const healthy = await this.#waitForMetro(lane, signal);
-		if (!healthy) {
+		const metro = await this.#waitForMetro(lane, signal);
+		if (metro !== 'ready') {
 			// The wait awaited; write onto the lane as it is now, and not at all
-			// if it was stopped or got a new Metro meanwhile.
+			// if it was stopped or got a new Metro meanwhile. A Metro that exited
+			// reads as stopped, which tells the caller that only lane up, which
+			// starts it again, can launch this lane now.
 			const current = this.#store.get(laneId);
 			if (current && current.metroPid === lane.metroPid) {
 				await this.#store.upsert({
@@ -1947,7 +1987,9 @@ export class LaneService {
 				this.#touch();
 			}
 			throw new Error(
-				`Metro on port ${lane.port} did not become ready within ${LANE_METRO_HEALTH_TIMEOUT_MS / 1_000}s. Read the lane log for the bundler error.`
+				metro === 'exited'
+					? `Metro for ${lane.branch} exited before it became ready. Read the lane log for the bundler error.`
+					: `Metro on port ${lane.port} did not become ready within ${LANE_METRO_HEALTH_TIMEOUT_MS / 1_000}s. Read the lane log for the bundler error.`
 			);
 		}
 		const target =
@@ -2567,11 +2609,15 @@ export class LaneService {
 	}
 
 	/**
-	 * Waits for the lane's own Metro to serve its port. Another packager
-	 * answering there does not count, so a lane can never be reported ready,
-	 * or its dev client launched, against another worktree's Metro.
+	 * Waits for the lane's own Metro to serve its port, and says how the wait
+	 * ended: ready, exited first, or timed out. Another packager answering
+	 * there does not count, so a lane can never be reported ready, or its dev
+	 * client launched, against another worktree's Metro.
 	 */
-	async #waitForMetro(lane: Lane, signal: AbortSignal): Promise<boolean> {
+	async #waitForMetro(
+		lane: Lane,
+		signal: AbortSignal
+	): Promise<'ready' | 'exited' | 'timeout'> {
 		this.#assertLaunchTarget(lane, signal);
 		if (!(await this.#verifyRecordedMetro(lane, { fresh: true }))) {
 			// No PID to wait for, or one that turned out to be another process's:
@@ -2592,19 +2638,17 @@ export class LaneService {
 				(await this.#metro.isHealthy(lane.port, lane.metroPid))
 			) {
 				this.#assertLaunchTarget(lane, signal);
-				return true;
+				return 'ready';
 			}
 			if (
 				lane.metroPid !== undefined &&
 				!this.#metro.isProcessRunning(lane.metroPid)
 			) {
-				throw new Error(
-					`Metro for ${lane.branch} exited before it became ready. Read the lane log for the bundler error.`
-				);
+				return 'exited';
 			}
 			await sleep(HEALTH_POLL_INTERVAL_MS, signal);
 		}
-		return false;
+		return 'timeout';
 	}
 
 	/** The lane as it is now, once it is still the one the launch checked. */

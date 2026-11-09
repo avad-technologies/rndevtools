@@ -388,8 +388,19 @@ export const laneOperationReceiptSchema = z.strictObject({
 		'lane.remove-repository',
 	]),
 	completed: z.boolean(),
+	/**
+	 * The operation stopped because it was cancelled: its caller's signal
+	 * aborted, or the user closed the repository dialog.
+	 */
 	cancelled: z.boolean().optional(),
 	error: shortTextSchema.optional(),
+	/**
+	 * The lane the operation produced or acted on. A `lane.start`,
+	 * `lane.provide-device`, or `lane.launch` whose launch (of the dev client
+	 * or a deep link) failed on a stored lane (`completed: false`) names it
+	 * too, so the caller can open that lane again; its `metro` reads
+	 * `stopped` when Metro exited, which only a lane start brings back.
+	 */
 	lane: laneViewSchema.optional(),
 	/**
 	 * The lane's local backend after a `lane.start` or `lane.provide-device`,
