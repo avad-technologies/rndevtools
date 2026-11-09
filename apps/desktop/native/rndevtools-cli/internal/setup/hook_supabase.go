@@ -111,10 +111,22 @@ func (rules *supabaseRules) homeDirectory() string {
 	return *rules.home
 }
 
-// judge walks a line's segments in the order they run, following each
-// scope's working directory: a `cd` changes it for the segments after it
-// unless it runs in a pipeline or in the background.
+// judge walks a line's segments in the order they run, each from the
+// directory it runs in (see walkDirectories).
 func (rules *supabaseRules) judge(line shellLine, cwd string) HookDecision {
+	return walkDirectories(line, cwd, rules.homeDirectory, func(index int, directory string) HookDecision {
+		return rules.judgeSegment(line, index, directory)
+	})
+}
+
+// walkDirectories visits a line's segments in the order they run, with the
+// directory each runs in ("" when unknown), following each scope's working
+// directory from cwd: a `cd` or `pushd` changes it for the segments after it
+// unless it runs in a pipeline or in the background, and a `popd` makes it
+// unknown. The cd, pushd, and popd themselves are not visited, and neither is
+// RN Devtools' own CLI, which may name commands in its arguments. home is the
+// user's home directory, for `cd` alone and `cd ~/…`.
+func walkDirectories(line shellLine, cwd string, home func() string, visit func(index int, directory string) HookDecision) HookDecision {
 	directories := map[int]string{}
 	var directoryOf func(scope int) string
 	directoryOf = func(scope int) string {
@@ -140,7 +152,7 @@ func (rules *supabaseRules) judge(line shellLine, cwd string) HookDecision {
 		switch program {
 		case "cd", "pushd":
 			if changesDirectory(segment.terminator) {
-				directories[segment.scope] = rules.changeDirectory(directory, words[1:])
+				directories[segment.scope] = changeDirectory(directory, words[1:], home)
 			}
 			continue
 		case "popd":
@@ -152,7 +164,7 @@ func (rules *supabaseRules) judge(line shellLine, cwd string) HookDecision {
 			// RN Devtools' own CLI may name these commands in its arguments.
 			continue
 		}
-		if decision := rules.judgeSegment(line, index, directory); decision.Block {
+		if decision := visit(index, directory); decision.Block {
 			return decision
 		}
 	}
@@ -166,7 +178,7 @@ func changesDirectory(terminator string) bool {
 	return terminator != "|" && terminator != "|&" && terminator != "&"
 }
 
-func (rules *supabaseRules) changeDirectory(current string, arguments []string) string {
+func changeDirectory(current string, arguments []string, home func() string) string {
 	for len(arguments) > 0 && strings.HasPrefix(arguments[0], "-") && arguments[0] != "-" {
 		if arguments[0] == "--" {
 			arguments = arguments[1:]
@@ -175,9 +187,9 @@ func (rules *supabaseRules) changeDirectory(current string, arguments []string) 
 		arguments = arguments[1:]
 	}
 	if len(arguments) == 0 {
-		return rules.homeDirectory()
+		return home()
 	}
-	return rules.resolveDirectory(current, arguments[0])
+	return resolveDirectory(current, arguments[0], home)
 }
 
 // maxPathLength bounds the directories the rules follow: no path of a real
@@ -188,13 +200,19 @@ const maxPathLength = 4096
 // resolveDirectory places target the way the shell would from base, or
 // returns "" (unknown) when it depends on something the hook cannot see.
 func (rules *supabaseRules) resolveDirectory(base string, target string) string {
-	if resolved := rules.placeDirectory(base, target); len(resolved) <= maxPathLength {
+	return resolveDirectory(base, target, rules.homeDirectory)
+}
+
+// resolveDirectory is the rules' resolveDirectory, with home the user's home
+// directory.
+func resolveDirectory(base string, target string, home func() string) string {
+	if resolved := placeDirectory(base, target, home); len(resolved) <= maxPathLength {
 		return resolved
 	}
 	return ""
 }
 
-func (rules *supabaseRules) placeDirectory(base string, target string) string {
+func placeDirectory(base string, target string, home func() string) string {
 	for _, variable := range []string{"$HOME", "${HOME}"} {
 		if target == variable || strings.HasPrefix(target, variable+"/") {
 			target = "~" + strings.TrimPrefix(target, variable)
@@ -212,11 +230,11 @@ func (rules *supabaseRules) placeDirectory(base string, target string) string {
 	case target == "" || target == "-" || strings.ContainsAny(target, "$`*?[{"):
 		return ""
 	case target == "~" || strings.HasPrefix(target, "~/"):
-		home := rules.homeDirectory()
-		if home == "" {
+		directory := home()
+		if directory == "" {
 			return ""
 		}
-		return filepath.Join(home, strings.TrimPrefix(target, "~"))
+		return filepath.Join(directory, strings.TrimPrefix(target, "~"))
 	case strings.HasPrefix(target, "~"):
 		return ""
 	case filepath.IsAbs(target):

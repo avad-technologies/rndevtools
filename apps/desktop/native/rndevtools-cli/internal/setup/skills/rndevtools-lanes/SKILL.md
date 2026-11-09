@@ -53,8 +53,9 @@ a private local socket.
   leases ports from the environment's range (`development` 8100–8199 by
   default). Do not run `expo start`, a bare `npx expo` (Expo CLI's default
   command is start, so `npx expo --port 8082` starts Metro too),
-  `react-native start`, or `expo run:ios` without `--no-bundler`: each starts
-  its own Metro, and the hook blocks them.
+  `react-native start`, `expo run:ios` without `--no-bundler`, or a package
+  script that runs one of those (`npm start`, `yarn run ios`): each starts its
+  own Metro, and the hook blocks them.
 - **Never start Supabase by hand for a lane.** When the user has turned on
   local Supabase in RN Devtools and the worktree's `supabase/config.toml`
   sets `[experimental] stack = true`, `lane --operation up` starts the

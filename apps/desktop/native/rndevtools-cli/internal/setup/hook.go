@@ -100,10 +100,13 @@ func evaluateShellCall(call shellCall) HookDecision {
 
 // evaluateShellCallWith judges each command of the line on its own, so a
 // harmless first command cannot carry a steered one past the rules: first the
-// Simulator and Metro rules, then the Supabase rules, which read steering.json
-// only when the line runs supabase or kills processes. The line is declined
-// when the word rules find a steered command, when the text rule matches and
-// is not excused, or when the Supabase rules decline it.
+// Simulator and Metro rules, then the package-script rules, which read a
+// package.json only for the scripts a line runs, then the Supabase rules,
+// which read steering.json only when the line runs supabase or kills
+// processes. The line is declined when the word rules find a steered
+// command, when the text rule matches and is not excused, when a package
+// script the line runs would be declined, or when the Supabase rules decline
+// it.
 func evaluateShellCallWith(call shellCall, environment supabaseEnvironment) (decision HookDecision) {
 	defer func() {
 		// A rule that breaks fails open, like a payload the hook cannot read:
@@ -115,6 +118,12 @@ func evaluateShellCallWith(call shellCall, environment supabaseEnvironment) (dec
 	line := parseShellLine(call.command)
 	if decision := judgeSimulatorRules(line, 0, &scriptLedger{}); decision.Block {
 		return decision
+	}
+	if namesPackageManager(line.source) {
+		packages := packageRules{home: environment.home}
+		if decision := packages.judge(line, call.cwd); decision.Block {
+			return decision
+		}
 	}
 	rules := supabaseRules{environment: environment}
 	return rules.judge(line, call.cwd)
