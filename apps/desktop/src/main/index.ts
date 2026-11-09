@@ -770,10 +770,16 @@ function registerIpc(
 		selectRepository: selectLaneRepository,
 	});
 	// Isolated fixture homes are allowed only in unpackaged demo tests.
-	const agentConfigHome =
-		!app.isPackaged && process.env.RNDEVTOOLS_DEMO === 'true'
-			? (process.env.RNDEVTOOLS_AGENT_CHECK_HOME ?? app.getPath('home'))
-			: app.getPath('home');
+	const agentFixtures =
+		!app.isPackaged && process.env.RNDEVTOOLS_DEMO === 'true';
+	const agentConfigHome = agentFixtures
+		? (process.env.RNDEVTOOLS_AGENT_CHECK_HOME ?? app.getPath('home'))
+		: app.getPath('home');
+	// Setup's closing doctor dials the socket under the real home, which in a
+	// test is an installed RN Devtools rather than this desktop; tests skip it.
+	const agentSetupDoctor = !(
+		agentFixtures && process.env.RNDEVTOOLS_AGENT_SETUP_DOCTOR === 'off'
+	);
 	agentSetupCheckService = new AgentSetupCheckService({
 		home: agentConfigHome,
 		executable: async () =>
@@ -839,7 +845,9 @@ function registerIpc(
 				resourceDirectory: nativeResourceDirectory,
 				appVersion: app.getVersion(),
 			});
-			return runAgentCliSetup(cli.executablePath, agentConfigHome);
+			return runAgentCliSetup(cli.executablePath, agentConfigHome, {
+				doctor: agentSetupDoctor,
+			});
 		},
 	});
 	const appearanceHandlers = createAppearanceIpcHandlers({

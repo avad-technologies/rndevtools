@@ -76,7 +76,9 @@ minutes. An unknown operation, a plan without `--finding-id`, an apply or undo
 without `--plan-id`, or a relative path is a usage error (`invalid_arguments`,
 exit 2); a check or repair that cannot run is `agent_check_failed` (exit 7). Repairs are local CLI/UI actions, not an MCP capability that changes
 another agent's configuration without a user review. `--config-home` supports
-isolated setup tests without changing the process's home directory.
+isolated setup tests without changing the process's home directory; pass
+`--no-doctor` to `rndevtools setup` in such a test, because its closing doctor
+dials the socket under the real home.
 
 ## Coverage limits
 

@@ -1,5 +1,28 @@
-import { describe, expect, it } from 'vitest';
-import { summarizeAgentCliSetup } from './agent-cli-setup';
+import { describe, expect, it, vi } from 'vitest';
+import { runAgentCliSetup, summarizeAgentCliSetup } from './agent-cli-setup';
+
+const { execFile } = vi.hoisted(() => ({
+	execFile: vi.fn(
+		(
+			_file: string,
+			_args: string[],
+			_options: object,
+			callback: (error: null, result: { stdout: string }) => void
+		) =>
+			callback(null, {
+				stdout: JSON.stringify({
+					executable: '/x',
+					changes: [],
+					doctor: {
+						ok: false,
+						skipped: true,
+						message: 'Skipped (--no-doctor).',
+					},
+				}),
+			})
+	),
+}));
+vi.mock('node:child_process', () => ({ execFile }));
 
 describe('summarizeAgentCliSetup', () => {
 	it('turns the CLI report into short lines with home-relative paths', () => {
@@ -65,5 +88,27 @@ describe('summarizeAgentCliSetup', () => {
 			'Agents will reach RN Devtools once it is running (socket missing).',
 		]);
 		expect(() => summarizeAgentCliSetup('{"nope":1}', '/Users/me')).toThrow();
+	});
+
+	it('skips the closing doctor on request and says so', async () => {
+		// An isolated test home's setup would otherwise dial the socket under
+		// the real home: an installed RN Devtools, not the desktop under test.
+		await expect(
+			runAgentCliSetup('/x/rndevtools', '/fixture', { doctor: false })
+		).resolves.toEqual([
+			'Setup skipped its RN Devtools desktop connection check.',
+		]);
+		expect(execFile).toHaveBeenLastCalledWith(
+			'/x/rndevtools',
+			['setup', '--config-home', '/fixture', '--no-doctor'],
+			expect.anything(),
+			expect.any(Function)
+		);
+		await runAgentCliSetup('/x/rndevtools', '/Users/me');
+		expect(execFile.mock.lastCall?.[1]).toEqual([
+			'setup',
+			'--config-home',
+			'/Users/me',
+		]);
 	});
 });

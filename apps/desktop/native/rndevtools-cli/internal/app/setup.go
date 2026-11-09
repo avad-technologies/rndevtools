@@ -50,6 +50,9 @@ Flags:
   --dry-run                          Print the plan; change nothing.
   --no-link                          Do not touch ~/.local/bin.
   --no-hook                          Do not install the agent hooks.
+  --no-doctor                        Skip the closing doctor check (for tests:
+                                     it dials the desktop under your real
+                                     home, whatever --config-home says).
   --executable <path>                Register this binary instead of the
                                      running one (for packaged installs).
   --config-home <dir>                Absolute configuration home (for testing).
@@ -63,6 +66,7 @@ func runSetup(config Config) int {
 	dryRun := flags.Bool("dry-run", false, "")
 	noLink := flags.Bool("no-link", false, "")
 	noHook := flags.Bool("no-hook", false, "")
+	noDoctor := flags.Bool("no-doctor", false, "")
 	executable := flags.String("executable", "", "")
 	configHome := flags.String("config-home", "", "")
 	help := flags.Bool("help", false, "")
@@ -123,7 +127,10 @@ func runSetup(config Config) int {
 		writeLocalError(config.Stderr, "setup_failed", err.Error(), false, "", "")
 		return ExitInternal
 	}
-	health := setupDoctor(config)
+	health := map[string]any{"ok": false, "skipped": true, "message": "The desktop connection check was skipped (--no-doctor)."}
+	if !*noDoctor {
+		health = setupDoctor(config)
+	}
 	after, _ := setup.CheckAgents(checkOptions)
 	writeJSON(config.Stdout, map[string]any{
 		"dryRun":              *dryRun,
