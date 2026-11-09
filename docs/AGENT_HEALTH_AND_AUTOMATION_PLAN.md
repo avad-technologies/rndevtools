@@ -2,7 +2,7 @@
 
 Status: the initial agent configuration check and reversible repairs are
 implemented locally on 2026-11-06; see [current behavior and limits](AGENT_SETUP_CHECK.md).
-The 2026-11-05 audit below is historical research. Automation-provider adapters
+The 2026-11-05 investigation below is historical research. Automation-provider adapters
 and comprehensive managed-policy/loaded-tool inspection remain proposals.
 
 ## Decision
@@ -21,26 +21,28 @@ on feature lists or enable several independent default controllers.
 
 ## What the investigation established
 
-The audit is recorded in
-[`host-audit-2026-11-05.json`](../artifacts/agent-health-research/host-audit-2026-11-05.json).
+The investigation compared a development setup's coding-agent configuration
+with RN Devtools' setup and steering code. Its observations are restated here as
+conditions any installation can present, without details of the machine
+inspected.
 
 | Observation | Implication |
 | --- | --- |
-| RN Devtools MCP `doctor` succeeded in the current Codex chat; two apps and two local backends were present. | Current MCP reachability is proven. Agent configuration completeness is a separate check. |
-| SimView is enabled in both inspected Claude Code and Codex user configurations. Its installed skill describes starting an XCTest runner on connection. | Report confirmed capability overlap, not a claim that interference has occurred. |
-| Neither inspected client has RN Devtools PreToolUse/SessionEnd hooks. No managed routing instruction block is installed in the inspected global/project files. | Offer routing setup and hook verification; distinguish these from working MCP registration. |
-| An installed Expo dev-client skill recommends `simctl install booted` and manual Metro startup. | Flag conflicting instructions for review. Do not disable all Expo documentation. |
-| Installed Maestro is 1.40.3. Its current release page resolves to 2.12.1; 2.6.0 introduced specific parallel iOS fixes. | A dependency existing on PATH is insufficient; detect capability/version mismatch. No Maestro upgrade or device test was performed. |
+| An RN Devtools MCP `doctor` call can succeed from a running coding-agent chat. | That proves MCP reachability from that chat. Agent configuration completeness is a separate check. |
+| Another simulator controller can be enabled in the same Claude Code and Codex user configurations, and its skill can start an XCTest runner as soon as it connects. | Report confirmed capability overlap, not a claim that interference has occurred. |
+| A client can have a working RN Devtools MCP registration but neither its PreToolUse/SessionEnd hooks nor the managed routing instruction block in its global or project instruction files. | Offer routing setup and hook verification; distinguish these from working MCP registration. |
+| An Expo dev-client skill can recommend `simctl install booted` and manual Metro startup. | Flag conflicting instructions for review. Do not disable all Expo documentation. |
+| An installed Maestro can predate 2.6.0, which introduced specific parallel iOS fixes; 2.12.1 was the current release at the time. | A dependency existing on PATH is insufficient; detect capability/version mismatch. No Maestro upgrade or device test was performed. |
 | RN Devtools `elements` reads the connected React Native SDK's component inventory. | It does not provide a general native accessibility tree for arbitrary apps or system UI. That is a concrete reason to evaluate another backend. |
 
-At the time of the initial audit, setup ended with a direct desktop-socket doctor call. Its
+At the time of the investigation, setup ended with a direct desktop-socket doctor call. Its
 `ok` records a successful response, while the desktop UI summarizes it as a
 working connection. It does not inspect competing integrations or prove that a
 fresh Claude/Codex session discovered the registered MCP. Source:
 [`internal/app/setup.go`](../apps/desktop/native/rndevtools-cli/internal/app/setup.go)
 and [`agent-cli-setup.ts`](../apps/desktop/src/main/agent-cli-setup.ts).
 
-At the time of the initial audit, the steering hook parsed only `tool_name: Bash` with
+At the time of the investigation, the steering hook parsed only `tool_name: Bash` with
 `tool_input.command`. Synthetic `exec_command` and competing MCP payloads pass
 through. This is a parser limitation, not proof of the event shape emitted by
 every Codex version. The client adapter needs version-specific fixtures and an
@@ -265,8 +267,9 @@ remain explicit user actions.
 precedence, project trust, plugin-server policy, disabled entries, aliases,
 duplicate skills, symlink cycles, managed settings, unsupported schemas and
 redaction. A generic Supabase/Expo documentation skill must not become a
-confirmed controller conflict. Run the read-only scan against this Mac and
-compare the findings with the recorded audit.
+confirmed controller conflict. Run the read-only scan on a development machine
+whose client configuration is known, and compare its findings with that
+configuration.
 
 **2. Repairs and UI.** Exercise preview/apply/recheck/undo in temporary client
 homes. Cover stale plans, concurrent writes, malformed input, read-only files,
@@ -302,7 +305,7 @@ passes, regardless of which one is fastest.
 fresh account with the downloaded packaged app, supported Xcode/runtime and
 client versions. Verify installation, client discovery, configuration repair,
 reload, basic input and the two-lane example. The example/native artifact must
-be supplied through a versioned reproducible test fixture, not depend on this
+be supplied through a versioned reproducible test fixture, not depend on a
 developer's checkout, caches, PATH, credentials or signing installation. Keep
 the existing stable toolchain and the currently tested Xcode 27.1/iOS 27 tuple
 as separate matrix entries. Scope unsupported hardware/features explicitly.

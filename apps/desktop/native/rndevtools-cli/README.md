@@ -612,8 +612,12 @@ desktop's own native stacks and exposure checks are the real controls.
 
 ## Provenance
 
-The implementation is first-party RN Devtools code. It uses only the Go
-1.27 standard library and contains no SimSlim source or catalog data. Go runtime
-and standard-library attribution is reproduced in
-`apps/desktop/THIRD_PARTY_NOTICES.md`. See `PROVENANCE.md` for the full source,
-dependency, build, and release record.
+The implementation is first-party RN Devtools code built on the Go 1.27
+standard library and one external module, go-toml v2.4.3
+(`github.com/pelletier/go-toml/v2`, MIT), which validates and edits Codex's
+TOML configuration in place. go-toml is vendored; the native build and the Go
+check verify every vendored file against `VENDORED_SOURCE_SHA256SUMS`, whose
+own SHA-256 they pin, before compiling anything. The CLI contains no SimSlim
+source or catalog data. Go runtime, standard-library, and go-toml attribution
+is reproduced in `apps/desktop/THIRD_PARTY_NOTICES.md`. See `PROVENANCE.md` for
+the full source, dependency, build, and release record.

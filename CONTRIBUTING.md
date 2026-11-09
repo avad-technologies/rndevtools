@@ -32,9 +32,10 @@ tests hang on GitHub's hosted runners, so they run locally
 - Add focused tests for behaviour changes and run the affected workspace's
   `quality` gate.
 - Conventional Commit messages, small PRs.
-- Do not touch `apps/desktop/native/rndevtools-sim-helper/vendor/**` or the
-  SHA-256 manifests beside it. They are byte-anchored; see that directory's
-  `PROVENANCE.md` for the update procedure.
+- Do not touch `apps/desktop/native/rndevtools-sim-helper/vendor/**`,
+  `apps/desktop/native/rndevtools-cli/vendor/**`, or the SHA-256 manifests
+  beside them. They are byte-anchored; see each directory's `PROVENANCE.md`
+  for the update procedure.
 
 ## Reporting a security issue
 
