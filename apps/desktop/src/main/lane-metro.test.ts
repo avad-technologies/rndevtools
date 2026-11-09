@@ -624,6 +624,27 @@ describe('Metro stop', () => {
 		expect(metro.isProcessRunning(pid)).toBe(true);
 	});
 
+	it("kills the lane's own Metro when forced, after the same identity proof", async () => {
+		const { metro, pid, asked } = supervisor(
+			METRO_COMMAND,
+			realpathSync(root),
+			lsofIdentity(root)
+		);
+		const exited = once(holder, 'exit');
+		await metro.stop(pid, 8_100, root, { force: true });
+		expect((await exited)[1]).toBe('SIGKILL');
+		expect(asked).toEqual(['/bin/ps', '/usr/sbin/lsof']);
+	});
+
+	it('refuses to force a reused PID that is no Metro at all', async () => {
+		const { metro, pid } = supervisor('/bin/sleep 30');
+		await expect(
+			metro.stop(pid, 8_100, root, { force: true })
+		).rejects.toBeInstanceOf(NotLaneMetroError);
+		expect(metro.isProcessRunning(pid)).toBe(true);
+		expect(holder.signalCode).toBeNull();
+	});
+
 	it('fails closed when the process cannot be inspected', async () => {
 		const { metro, pid } = supervisor(METRO_COMMAND);
 		const error = await metro.stop(pid, 8_100, root).then(

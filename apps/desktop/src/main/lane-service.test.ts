@@ -1396,6 +1396,99 @@ describe('LaneService', () => {
 		expect(service.getState().lanes).toHaveLength(1);
 	});
 
+	describe('a Metro that outlives its SIGTERM', () => {
+		let laneId: string;
+		let pid: number;
+		let signals: Array<{ pid: number; force: boolean }>;
+		let advance: NodeJS.Timeout | undefined;
+
+		beforeEach(async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-stubborn-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			laneId = started.lane?.id as string;
+			pid = started.lane?.metroPid as number;
+			signals = [];
+			// The stop waits on the injected clock; move it past every deadline.
+			advance = setInterval(() => {
+				now += 1_000;
+			}, 5);
+		});
+
+		afterEach(() => {
+			clearInterval(advance);
+		});
+
+		function stop() {
+			return service.runOperation({
+				actionId: `op-stubborn-stop-${signals.length}`,
+				kind: 'lane.stop',
+				laneId,
+			});
+		}
+
+		it("is killed once proven to be the lane's Metro again, and the lane goes", async () => {
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(true);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(false);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('is left alone once its PID names another process, and the lane goes', async () => {
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (options?.force) {
+					throw new NotLaneMetroError(
+						`Process ${target} is no longer the Metro serving port ${port}; refusing to stop it.`
+					);
+				}
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(true);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('keeps the lane when it outlives SIGKILL too, so a later stop can finish it', async () => {
+			const original = metro.stop;
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(false);
+			expect(stopped.error).toBe(
+				`Metro ${pid} on port 8100 did not exit after SIGTERM and SIGKILL. The lane was kept so it can be stopped again.`
+			);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([laneId]);
+			metro.stop = original;
+			expect((await stop()).completed).toBe(true);
+			expect(service.getState().lanes).toEqual([]);
+		});
+	});
+
 	it('keeps a lane whose worktree moved under its running Metro, leaving that Metro alone', async () => {
 		const checkout = path.join(root, 'checkout');
 		const appDirectory = path.join(checkout, 'apps', 'mobile');

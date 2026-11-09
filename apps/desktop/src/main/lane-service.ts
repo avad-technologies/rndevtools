@@ -92,6 +92,13 @@ const CLOCK_POLL_INTERVAL_MS = 250;
 /** How long a Metro restart waits for the old Metro to let go of the port. */
 const METRO_EXIT_TIMEOUT_MS = 10_000;
 const METRO_EXIT_POLL_INTERVAL_MS = 100;
+/**
+ * How long a lane stop waits for Metro to exit after SIGTERM before it kills
+ * it. Expo itself forces its exit about 4 s after a signal it handles.
+ */
+const METRO_STOP_GRACE_MS = 5_000;
+/** How long a stop waits for a killed Metro to be gone. */
+const METRO_KILL_GRACE_MS = 2_000;
 const MAX_BACKEND_REASON_LENGTH = 1_024;
 
 export type LaneSimulatorPort = {
@@ -1923,20 +1930,7 @@ export class LaneService {
 		const laneId = lane.id;
 		await this.#recordMetroStop(lane, reason);
 		if (lane.metroPid !== undefined) {
-			try {
-				await this.#metro.stop(
-					lane.metroPid,
-					lane.port,
-					laneAppDirectory(lane)
-				);
-			} catch (error) {
-				// A PID that now names some other process proves the lane's own
-				// Metro is gone, which is all a stop wants. A PID whose owner could
-				// not be checked keeps the lane, as does an Expo on the lane's port
-				// serving from elsewhere: it may be the lane's own Metro after its
-				// worktree moved, and dropping the lane would orphan it.
-				if (!(error instanceof NotLaneMetroError)) throw error;
-			}
+			await this.#stopMetroUntilGone(lane, lane.metroPid);
 		}
 		await this.#store.remove(laneId);
 		this.#verifiedMetros.delete(laneId);
@@ -1945,6 +1939,58 @@ export class LaneService {
 		// and nothing it does can keep the lane alive.
 		this.#releaseBackend(laneId);
 		this.#touch();
+	}
+
+	/**
+	 * Stops a lane's Metro and waits for it to exit, so a stopped lane never
+	 * leaves a Metro that no lane knows of. One that outlives its SIGTERM by
+	 * METRO_STOP_GRACE_MS is proven to be the lane's Metro again and killed.
+	 * Throws, keeping the lane and so its lease, when the PID cannot be proven
+	 * to be the lane's Metro or the Metro outlives SIGKILL too.
+	 */
+	async #stopMetroUntilGone(lane: Lane, pid: number): Promise<void> {
+		for (const force of [false, true]) {
+			try {
+				await this.#metro.stop(
+					pid,
+					lane.port,
+					laneAppDirectory(lane),
+					force ? { force } : undefined
+				);
+			} catch (error) {
+				// A PID that now names some other process proves the lane's own
+				// Metro is gone, which is all a stop wants. A PID whose owner could
+				// not be checked keeps the lane, as does an Expo on the lane's port
+				// serving from elsewhere: it may be the lane's own Metro after its
+				// worktree moved, and dropping the lane would orphan it.
+				if (error instanceof NotLaneMetroError) return;
+				throw error;
+			}
+			if (
+				await this.#waitForPidExit(
+					pid,
+					force ? METRO_KILL_GRACE_MS : METRO_STOP_GRACE_MS
+				)
+			) {
+				return;
+			}
+		}
+		throw new Error(
+			`Metro ${pid} on port ${lane.port} did not exit after SIGTERM and SIGKILL. The lane was kept so it can be stopped again.`
+		);
+	}
+
+	/**
+	 * Whether `pid` exits within `timeoutMs` on the injected clock. A stop that
+	 * started finishes even while the lanes shut down, so this never aborts.
+	 */
+	async #waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+		const deadline = this.#now() + timeoutMs;
+		while (this.#metro.isProcessRunning(pid)) {
+			if (this.#now() >= deadline) return false;
+			await sleep(METRO_EXIT_POLL_INTERVAL_MS);
+		}
+		return true;
 	}
 
 	async #recordMetroStop(lane: Lane, reason: string): Promise<void> {

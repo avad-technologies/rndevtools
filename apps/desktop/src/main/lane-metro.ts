@@ -71,8 +71,15 @@ export type MetroSupervisorPort = {
 	 * `appDirectory`. Throws NotLaneMetroError, signalling nothing, once `pid`
 	 * is proven to be some other process, and a plain error, signalling
 	 * nothing either, when it cannot tell whether `pid` is the lane's Metro.
+	 * It sends SIGTERM, or SIGKILL with `force` for a Metro that outlived its
+	 * SIGTERM; either goes only after that same proof.
 	 */
-	stop: (pid: number, port: number, appDirectory: string) => Promise<void>;
+	stop: (
+		pid: number,
+		port: number,
+		appDirectory: string,
+		options?: { force?: boolean }
+	) => Promise<void>;
 	readLogTail: (logPath: string, maxCharacters: number) => Promise<string>;
 };
 
@@ -758,14 +765,16 @@ async function stopMetro(
 	pid: number,
 	port: number,
 	appDirectory: string,
-	runCommand: CommandRunner
+	runCommand: CommandRunner,
+	force = false
 ): Promise<void> {
 	if (!(await verifyMetroOwnership(pid, port, appDirectory, runCommand)))
 		return;
+	const signal = force ? 'SIGKILL' : 'SIGTERM';
 	try {
-		process.kill(-pid, 'SIGTERM');
+		process.kill(-pid, signal);
 	} catch {
-		process.kill(pid, 'SIGTERM');
+		process.kill(pid, signal);
 	}
 }
 
@@ -830,8 +839,8 @@ export function createMetroSupervisor({
 		isProcessRunning,
 		verifyOwnership: (pid, port, appDirectory) =>
 			verifyMetroOwnership(pid, port, appDirectory, runCommand),
-		stop: (pid, port, appDirectory) =>
-			stopMetro(pid, port, appDirectory, runCommand),
+		stop: (pid, port, appDirectory, options) =>
+			stopMetro(pid, port, appDirectory, runCommand, options?.force === true),
 		readLogTail,
 	};
 }
