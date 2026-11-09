@@ -94,8 +94,10 @@ var toolMeta = map[protocol.Command]meta{
 			"ls until that request is fulfilled with a laneId). It boots the device, starts Metro, and opens the dev client; if the dev client is not " +
 			"installed the error says so and names the build command; call the native tool (operation plan) " +
 			"before building. Calling up again for the same worktree and Simulator returns the existing lane and " +
-			"relaunches. \"down\" stops Metro and releases the port (lane-id). \"ls\" lists lanes. \"launch\" re-opens " +
-			"the dev client or a deep link (lane-id, url). \"log\" tails Metro (lane-id, max-characters). Optional " +
+			"relaunches. A new lane's first launch restarts the app; pass restart to up or launch when another lane " +
+			"or a person started it. A failed launch names the lane and the command that retries it. " +
+			"\"down\" stops Metro and releases the port (lane-id). \"ls\" lists lanes. \"launch\" re-opens " +
+			"the dev client or a deep link (lane-id, url, restart). \"log\" tails Metro (lane-id, max-characters). Optional " +
 			"slim applies a SimSlim profile to the device before Metro starts (when SimSlim is enabled in RN Devtools " +
 			"and the device is free or yours); lane.slim in the result says applied, skipped (with why), or failed. " +
 			"Optional backend (auto, off, required): with auto, the development default, lane up also starts this " +

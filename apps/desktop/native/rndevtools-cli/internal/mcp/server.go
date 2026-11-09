@@ -519,7 +519,7 @@ const instructions = `RN Devtools controls the iOS Simulators on this Mac and, w
 	`Simulator: booting one for a git worktree or branch, starting Metro without colliding with ` +
 	`another agent, launching the dev client, reading or driving the running app, tapping or typing ` +
 	`on the device, taking screenshots, and cleaning up. Do not run xcrun simctl boot, shutdown, ` +
-	`openurl, install, launch, or io directly, and do not start Metro by hand: several agents share ` +
+	`openurl, install, launch, terminate, or io directly, and do not start Metro by hand: several agents share ` +
 	`these Simulators and the desktop app owns their ports and claims. A Simulator is free or held: ` +
 	`held while a lane runs on it or a session claimed it, and only the holder may run a lane on ` +
 	`it, send it input, install on it, slim it, run a recipe on it, or cancel its jobs (anyone else ` +
@@ -527,7 +527,11 @@ const instructions = `RN Devtools controls the iOS Simulators on this Mac and, w
 	`it started itself; act and network are not gated, so a hold does not keep other sessions out ` +
 	`of the app itself. Start with lane ` +
 	`(operation "up") for a worktree; leave udid out and the desktop picks a free device, or parks a ` +
-	`deviceRequest for the user when none is free (then poll lane ls). To recover a Simulator this exact session ` +
+	`deviceRequest for the user when none is free (then poll lane ls). A booted Simulator nobody holds can ` +
+	`still be one a person is using, so pass udid when the user named a device or is using one. Pass ` +
+	`restart to lane up or launch when the app on the lane's Simulator was started by another lane or by ` +
+	`hand: a dev client only re-pointed at a new Metro stays registered as a debug target on the Metro it ` +
+	`came from (a new lane restarts its app on its first launch by itself). To recover a Simulator this exact session ` +
 	`already holds, use simulator with operation "shutdown" or "boot" and its UDID. Follow a pending job before ` +
 	`starting the next operation. For a worktree with ` +
 	`supabase/config.toml, get its own database with supabase (operation "up") or lane up, which ` +

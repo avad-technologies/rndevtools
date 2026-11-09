@@ -373,6 +373,61 @@ func TestSupabaseToolFollowsLaneAndSpeaksTheWireContract(t *testing.T) {
 	}
 }
 
+func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
+	lane := Tools()[0]
+	if lane.Name != "lane" {
+		t.Fatalf("lane must be listed first, got %s", lane.Name)
+	}
+	properties := lane.InputSchema["properties"].(map[string]any)
+	restart, ok := properties["restart"].(map[string]any)
+	if !ok || restart["type"] != "boolean" {
+		t.Fatalf("lane restart parameter: %v", restart)
+	}
+	usage, _ := restart["description"].(string)
+	for _, phrase := range []string{"(up, launch)", "first launch", "another lane or a person", "debug target", "without restart keeps the app's state", "ios.bundleIdentifier"} {
+		if !strings.Contains(usage, phrase) {
+			t.Fatalf("restart description lacks %q: %s", phrase, usage)
+		}
+	}
+	for _, phrase := range []string{"pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)"} {
+		if !strings.Contains(lane.Description, phrase) {
+			t.Fatalf("lane description lacks %q", phrase)
+		}
+	}
+	// The desktop picks a free iPhone when udid is left out; nothing tells
+	// agents to always pass one.
+	if udid, _ := properties["udid"].(map[string]any)["description"].(string); !strings.Contains(udid, "Omit it to let RN Devtools pick a free iPhone") {
+		t.Fatalf("udid description: %s", udid)
+	}
+	for _, phrase := range []string{"leave udid out and the desktop picks a free device", "pass udid when the user named a device or is using one", "Pass restart to lane up or launch", "started by another lane or by hand", "launch, terminate, or io directly"} {
+		if !strings.Contains(instructions, phrase) {
+			t.Fatalf("instructions lack %q: %s", phrase, instructions)
+		}
+	}
+	if strings.Contains(instructions, "always pass") {
+		t.Fatalf("instructions must not tell agents to always pass a udid: %s", instructions)
+	}
+
+	server, calls := newTestServer(t, func(r protocol.Request) (protocol.Response, error) {
+		return okResponse(r, `{"completed":true}`)
+	}, nil, map[string]string{"CLAUDE_CODE_SESSION_ID": "sess-1"})
+	responses := exchange(t, server,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lane","arguments":{"operation":"launch","lane-id":"lane-11111111-2222-4333-8444-555555555555","restart":true}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lane","arguments":{"operation":"ls","restart":true}}}`,
+	)
+	if len(*calls) != 1 {
+		t.Fatalf("%d socket calls; lane ls with restart must not reach the socket", len(*calls))
+	}
+	launch := callWith(t, *calls, `"operation":"launch"`)
+	if string(launch.request.Command) != `{"agent":{"kind":"claude","sessionId":"sess-1"},"kind":"lane","laneId":"lane-11111111-2222-4333-8444-555555555555","operation":"launch","restart":true}` {
+		t.Fatalf("launch command: %s", launch.request.Command)
+	}
+	refused := responses[1]["result"].(map[string]any)
+	if refused["isError"] != true || !strings.Contains(fmt.Sprint(refused["content"]), "only lane up and launch accept restart") {
+		t.Fatalf("lane ls with restart must be a tool error that says why: %v", refused)
+	}
+}
+
 func TestMalformedInputIsAnsweredNotFatal(t *testing.T) {
 	server, _ := newTestServer(t, func(r protocol.Request) (protocol.Response, error) { return okResponse(r, `{}`) }, nil, nil)
 	responses := exchange(t, server, `not json`, `{"jsonrpc":"1.0","id":1,"method":"ping"}`, `{"jsonrpc":"2.0","id":2,"method":"wat"}`)

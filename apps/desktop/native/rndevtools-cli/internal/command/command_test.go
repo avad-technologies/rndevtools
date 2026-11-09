@@ -327,6 +327,52 @@ func TestLaneFlagsBuildOperationSpecificCommands(t *testing.T) {
 	}
 }
 
+func TestLaneRestartIsForUpAndLaunchOnly(t *testing.T) {
+	const laneID = "lane-11111111-2222-4333-8444-555555555555"
+	for _, arguments := range [][]string{
+		{"--operation", "up", "--worktree", "/Users/dev/app", "--restart"},
+		{"--operation", "launch", "--lane-id", laneID, "--url", "checkout", "--restart"},
+	} {
+		parsed, err := Parse(protocol.CommandLane, arguments, strings.NewReader(""), false)
+		if err != nil {
+			t.Fatalf("%v: %v", arguments, err)
+		}
+		if !strings.Contains(string(parsed.Command), `"restart":true`) {
+			t.Fatalf("restart not sent: %s", parsed.Command)
+		}
+	}
+	for _, accepted := range []string{
+		`{"kind":"lane","operation":"launch","laneId":"` + laneID + `","restart":false}`,
+		`{"kind":"lane","operation":"up","worktreePath":"/Users/dev/app","restart":false,"launch":false}`,
+		`{"kind":"lane","operation":"up","worktreePath":"/Users/dev/app","restart":true,"launch":true}`,
+	} {
+		if err := Validate(json.RawMessage(accepted), protocol.CommandLane); err != nil {
+			t.Fatalf("%s: %v", accepted, err)
+		}
+	}
+	for _, rejected := range []struct{ encoded, reason string }{
+		{`{"kind":"lane","operation":"ls","restart":true}`, "only lane up and launch accept restart"},
+		{`{"kind":"lane","operation":"down","laneId":"` + laneID + `","restart":true}`, "only lane up and launch accept restart"},
+		{`{"kind":"lane","operation":"log","laneId":"` + laneID + `","restart":false}`, "only lane up and launch accept restart"},
+		{`{"kind":"lane","operation":"up","worktreePath":"/Users/dev/app","restart":true,"launch":false}`, "cannot take restart with launch false"},
+		{`{"kind":"lane","operation":"launch","laneId":"` + laneID + `","restart":null}`, "restart must not be null"},
+		{`{"kind":"lane","operation":"launch","laneId":"` + laneID + `","restart":"yes"}`, "restart"},
+	} {
+		err := Validate(json.RawMessage(rejected.encoded), protocol.CommandLane)
+		if err == nil || !strings.Contains(err.Error(), rejected.reason) {
+			t.Fatalf("%s: want an error naming %q, got %v", rejected.encoded, rejected.reason, err)
+		}
+	}
+	// The flag parser applies the same rule before anything is sent.
+	if _, err := Parse(protocol.CommandLane, []string{"--operation", "ls", "--restart"}, strings.NewReader(""), false); err == nil ||
+		!strings.Contains(err.Error(), "only lane up and launch accept restart") {
+		t.Fatalf("lane ls --restart: %v", err)
+	}
+	if !strings.Contains(Usage(protocol.CommandLane), "--restart") {
+		t.Fatal("lane usage must list --restart")
+	}
+}
+
 func TestLaneUpNeedsOnlyAWorktree(t *testing.T) {
 	// Without a udid the desktop picks a free Simulator or parks a device
 	// request for the user; the CLI must not demand one up front.

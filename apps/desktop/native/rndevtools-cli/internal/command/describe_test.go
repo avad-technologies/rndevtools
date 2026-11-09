@@ -113,6 +113,33 @@ func TestBuildAttachesAgentToLaneUp(t *testing.T) {
 	}
 }
 
+func TestBuildTakesLaneRestartAsABoolean(t *testing.T) {
+	const laneID = "lane-11111111-2222-4333-8444-555555555555"
+	fields, _ := Describe(protocol.CommandLane)
+	var restart *Field
+	for index := range fields {
+		if fields[index].Name == "restart" {
+			restart = &fields[index]
+		}
+	}
+	if restart == nil || restart.Type != "boolean" {
+		t.Fatalf("lane restart field: %+v", restart)
+	}
+	launch, err := Build(protocol.CommandLane, map[string]any{"operation": "launch", "lane-id": laneID, "restart": true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(launch.Command), `"restart":true`) {
+		t.Fatalf("restart not built: %s", launch.Command)
+	}
+	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "launch", "lane-id": laneID, "restart": "true"}, nil); err == nil || !strings.Contains(err.Error(), "boolean") {
+		t.Fatalf("a string restart was accepted: %v", err)
+	}
+	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "log", "lane-id": laneID, "restart": true}, nil); err == nil || !strings.Contains(err.Error(), "only lane up and launch accept restart") {
+		t.Fatalf("restart on log was accepted: %v", err)
+	}
+}
+
 func TestBuildSupabaseFromToolArguments(t *testing.T) {
 	fields, _ := Describe(protocol.CommandSupabase)
 	types := map[string]string{}

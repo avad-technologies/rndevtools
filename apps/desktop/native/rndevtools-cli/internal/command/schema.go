@@ -307,6 +307,8 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 			Agent         *map[string]string `json:"agent,omitempty"`
 			// Backend is the worktree's local Supabase policy for up.
 			Backend *string `json:"backend,omitempty"`
+			// Restart terminates the lane's app before up or launch opens it.
+			Restart *bool `json:"restart,omitempty"`
 		}
 		if err := decodeAndCheckKind(encoded, expectedKind, &value, valueKind(&value.Kind)); err != nil {
 			return err
@@ -319,8 +321,11 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 				return errors.New("backend must be auto, off, or required")
 			}
 		}
-		return validateLane(value.Operation, value.WorktreePath, value.UDID, value.Environment,
-			value.PreferredPort, value.Launch, value.SlimProfileID, value.LaneID, value.URL, value.MaxCharacters, value.Agent)
+		if err := validateLane(value.Operation, value.WorktreePath, value.UDID, value.Environment,
+			value.PreferredPort, value.Launch, value.SlimProfileID, value.LaneID, value.URL, value.MaxCharacters, value.Agent); err != nil {
+			return err
+		}
+		return validateLaneRestart(value.Operation, value.Restart, value.Launch)
 	case protocol.CommandSupabase:
 		var value supabaseCommand
 		if err := decodeAndCheckKind(encoded, expectedKind, &value, valueKind(&value.Kind)); err != nil {
@@ -534,6 +539,22 @@ func validateLane(
 		if !targetsLane || udid != nil || environment != nil || preferredPort != nil || launch != nil || slimProfileID != nil || url != nil || agent != nil {
 			return errors.New("lane log takes exactly one of laneId or worktreePath, plus an optional maxCharacters")
 		}
+	}
+	return nil
+}
+
+// validateLaneRestart keeps restart to the operations that open the app: it
+// terminates the app for the launch that follows, so ls, down, and log have
+// nothing to restart, and neither has an up that does not launch.
+func validateLaneRestart(operation string, restart, launch *bool) error {
+	if restart == nil {
+		return nil
+	}
+	if operation != "up" && operation != "launch" {
+		return errors.New("only lane up and launch accept restart")
+	}
+	if *restart && launch != nil && !*launch {
+		return errors.New("lane up cannot take restart with launch false: restart terminates the app for the launch that follows")
 	}
 	return nil
 }
