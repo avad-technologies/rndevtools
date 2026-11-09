@@ -825,7 +825,7 @@ func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind sup
 	upHint := fmt.Sprintf("the rndevtools `supabase` tool (operation up, worktree %s) or `rndevtools supabase --operation up --worktree %s`", worktree, shellJoin([]string{root.worktreeRoot}))
 	switch kind {
 	case supabaseStart, supabaseRestart, supabasePrepare, supabaseDev:
-		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; lane up does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, root.runner))
+		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; `rndevtools lane --operation up` does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, root.runner))
 	case supabaseStop:
 		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Release it with the rndevtools `supabase` tool (operation down, worktree %s) or `rndevtools supabase --operation down --worktree %s`; it stops once nobody else uses it, and its data is kept.", command, worktree, shellJoin([]string{root.worktreeRoot})))
 	case supabaseDatabaseStart:
@@ -835,7 +835,7 @@ func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind sup
 		return blocked(fmt.Sprintf("Blocked `%s --runtime`: RN Devtools chooses this worktree's stack runtime, always native. Use %s to start it.", command, upHint))
 	}
 	if rules.foreignBinary(invocation, root, runDirectory) {
-		return blocked(fmt.Sprintf("Blocked `%s`: a local stack only answers the CLI build that started it, and this one is downloaded or from outside the worktree. Run `%s` from this worktree instead (cli.run in the supabase up result).", shellJoin(invocation.launcher), root.runner))
+		return blocked(fmt.Sprintf("Blocked `%s`: a local stack only answers the CLI build that started it, and this one is downloaded or from outside the worktree. Run `%s` from this worktree instead (cli.run in the result of `rndevtools supabase --operation up`).", shellJoin(invocation.launcher), root.runner))
 	}
 	createsShadow := kind == supabaseShadow || (kind == supabaseDeclarative && invocation.args.targetsLocal())
 	if createsShadow && !rules.stackReady(root) {

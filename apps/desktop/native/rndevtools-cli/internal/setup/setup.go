@@ -636,20 +636,27 @@ const (
 
 // AgentsBlock is the project-instruction text for project ("" for none). It
 // is short on purpose: the MCP tool descriptions and the skills carry the
-// detail; this only has to make an agent reach for them. A project with
-// supabase/config.toml also gets the Local Supabase paragraph, worded for
-// when RN Devtools is not managing a worktree, since agents must then start
-// their own stack the safe way.
+// detail; this only has to make an agent reach for them. Commands are spelled
+// the way the CLI parses them: an operation is the --operation flag, never a
+// positional word. A project with supabase/config.toml also gets the Local
+// Supabase paragraph, worded for when RN Devtools is not managing a worktree,
+// since agents must then start their own stack the safe way.
 func AgentsBlock(project string) string {
 	block := agentsBlockStart + `
 ## iOS Simulators
 
 Simulators on this Mac are managed by RN Devtools. Use the ` + "`rndevtools`" + ` MCP
-tools (or the ` + "`rndevtools`" + ` CLI) for anything involving a Simulator: ` + "`lane up`" + ` runs
-this worktree on its own Simulator with its own Metro port; ` + "`input`" + ` and
-` + "`capture`" + ` drive and observe the device. Never run ` + "`xcrun simctl boot`" + `,
-` + "`shutdown`" + `, ` + "`openurl`" + `, ` + "`install`" + `, ` + "`launch`" + `, or start Metro by hand: other
-agents share these devices and the desktop app owns their ports and claims.
+tools (or the ` + "`rndevtools`" + ` CLI, where an operation is always the
+` + "`--operation`" + ` flag) for anything involving a Simulator:
+` + "`rndevtools lane --operation up --worktree <app directory>`" + ` runs this
+worktree on its own Simulator with its own Metro port,
+` + "`rndevtools lane --operation launch --worktree <app directory> --restart`" + `
+starts the app fresh, and ` + "`input`" + ` and ` + "`capture`" + ` drive and observe the device.
+Leave out ` + "`--udid`" + ` unless the user named a device: RN Devtools picks a free
+iPhone. Never run ` + "`xcrun simctl boot`" + `, ` + "`shutdown`" + `, ` + "`openurl`" + `, ` + "`install`" + `,
+` + "`launch`" + `, or start Metro by hand (` + "`npx expo`" + `, ` + "`expo start`" + `, or
+` + "`expo run:ios`" + ` without ` + "`--no-bundler`" + `): other agents share these devices
+and the desktop app owns their ports and claims.
 `
 	if project != "" && isRegularFile(filepath.Join(project, "supabase", "config.toml")) {
 		block += `
@@ -657,8 +664,9 @@ agents share these devices and the desktop app owns their ports and claims.
 
 Each worktree gets its own local Supabase stack (native runtime, loopback
 only). When RN Devtools manages this worktree, use the ` + "`rndevtools`" + ` ` + "`supabase`" + `
-tool (operation up) or ` + "`lane up`" + `, which connects the app; otherwise start it
-yourself from the worktree with ` + "`" + projectRunner(project) + ` start --runtime native` + "`" + `
+tool (operation up) or ` + "`rndevtools lane --operation up`" + `, which connects the
+app; otherwise start it yourself from the worktree with
+` + "`" + projectRunner(project) + ` start --runtime native` + "`" + `
 (never without ` + "`--runtime native`" + `). Use ` + "`supabase … --local`" + ` for migrations,
 ` + "`db reset`" + `, and ` + "`gen types`" + `, against your local stack rather than a hosted
 project unless the user asks. Never run ` + "`supabase stop --all`" + `,

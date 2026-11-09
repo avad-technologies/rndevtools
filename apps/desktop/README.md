@@ -45,7 +45,7 @@ Local iOS Simulator tooling on macOS:
   worktree, Simulator, or port; Metro health, agent attribution, and the Metro
   log are visible on the fleet wall and in the Lanes panel
 - A signed `rndevtools` local-agent CLI over a current-user `0600` Unix socket,
-  including `lane up|down|ls|launch|log` and an agent skill
+  including `lane --operation up|down|ls|launch|log` and agent skills
 - Local Supabase per worktree (alpha): the Supabase tab (⌘8) tracks every native
   local Supabase stack on this Mac. For each one it shows the agent session, lane,
   Simulator and worktree/branch it belongs to. It starts, stops, resets, migrates,

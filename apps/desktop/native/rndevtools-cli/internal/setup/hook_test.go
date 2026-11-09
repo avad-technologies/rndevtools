@@ -39,6 +39,56 @@ func TestHookBlocksMutatingSimctlAndHandStartedMetro(t *testing.T) {
 	}
 }
 
+// judgeQuietly applies the steering rules to one line on a Mac whose local
+// Supabase is off, so no rule reads this machine's steering file or socket.
+func judgeQuietly(command string) HookDecision {
+	return evaluateShellCallWith(shellCall{command: command}, quietSupabaseEnvironment())
+}
+
+func TestHookGivesTheReplacementsAsTheCLIParsesThem(t *testing.T) {
+	// A Simulator the session already holds is recovered with `simulator`,
+	// which keeps its lane, Metro, and data; `lane --operation down` would
+	// end the lane. Every command is spelled with its --operation flag.
+	udid := "727CE7B2-CCBA-47A5-8803-1D61DCEBCF44"
+	for command, wants := range map[string][]string{
+		"xcrun simctl boot " + udid: {
+			"`rndevtools simulator --operation boot --udid <UDID>`", "already holds",
+			"`rndevtools lane --operation up --worktree <app directory>`",
+		},
+		"xcrun simctl shutdown " + udid: {
+			"`rndevtools simulator --operation shutdown --udid <UDID>`", "keeps its lane, Metro, and data",
+			"`rndevtools lane --operation down --worktree <app directory>` ends your lane",
+		},
+		"xcrun simctl openurl " + udid + " exp://example.com": {
+			"`rndevtools lane --operation launch --worktree <app directory> --url <path or URL>`",
+		},
+		"xcrun simctl launch " + udid + " com.example.app": {
+			"`rndevtools lane --operation launch --worktree <app directory>`", "`--restart`",
+		},
+		"xcrun simctl terminate " + udid + " com.example.app": {
+			"`rndevtools lane --operation launch --worktree <app directory> --restart`",
+			"`rndevtools input --udid <UDID> --kind button --button home`",
+		},
+		"xcrun simctl install " + udid + " ./build/ExampleApp.app": {
+			"`rndevtools native --operation plan --worktree <app directory> --udid <UDID>`",
+			"`rndevtools native --operation install --worktree <app directory> --udid <UDID>`",
+		},
+		"xcrun simctl io " + udid + " screenshot /tmp/example.png": {
+			"`rndevtools capture --udid <UDID>`", "`rndevtools record --operation start --udid <UDID>`",
+		},
+		"npx expo start": {
+			"`rndevtools lane --operation up --worktree <app directory>`", "Leave out `--udid` unless the user named a device",
+		},
+	} {
+		decision := judgeQuietly(command)
+		for _, want := range wants {
+			if !decision.Block || !strings.Contains(decision.Reason, want) {
+				t.Errorf("%q should be blocked with %q, got %+v", command, want, decision)
+			}
+		}
+	}
+}
+
 func TestSimctlVerbReadsTheGlobalOptionsBeforeTheSubcommand(t *testing.T) {
 	// simctl takes --set and --profiles, each with a path, before its
 	// subcommand. It is read past a few options, not past thousands: a line
@@ -1703,7 +1753,7 @@ func TestSupabaseManagedModeRedirectsToRNDevtools(t *testing.T) {
 		"supabase start", "supabase start --runtime native", "pnpm exec supabase start", "supabase stack start",
 		"supabase stack restart", "supabase stack prepare --runtime native", "supabase local start", "supabase dev",
 	} {
-		fixture.expect(t, in, command, "RN Devtools runs this worktree's local Supabase", up, "lane up", "`pnpm exec supabase … --local`")
+		fixture.expect(t, in, command, "RN Devtools runs this worktree's local Supabase", up, "`rndevtools lane --operation up`", "`pnpm exec supabase … --local`")
 	}
 	for _, command := range []string{"supabase stop", "pnpm exec supabase stop", "supabase stack stop", "supabase local stop"} {
 		fixture.expect(t, in, command, down, "data is kept")

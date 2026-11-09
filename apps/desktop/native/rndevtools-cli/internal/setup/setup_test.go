@@ -338,7 +338,7 @@ func TestEveryEmbeddedSkillIsInstalled(t *testing.T) {
 	supabase, _ := skillFiles.ReadFile("skills/rndevtools-supabase/SKILL.md")
 	for _, phrase := range []string{
 		"Supabase", "local database", "Postgres", "migration", "seed", "reset", "Studio", "logs",
-		`rndevtools supabase --operation up --worktree "$PWD"`, "lane up", "--local",
+		`rndevtools supabase --operation up --worktree "$PWD"`, "`lane --operation up`", "--local",
 		"--runtime native", "release --all", "Create or switch to your git branch first",
 		"Never start or stop Supabase by hand while RN Devtools manages",
 	} {
@@ -400,7 +400,7 @@ func TestAgentTextsAgreeOnAStartingBackendWithoutAJobId(t *testing.T) {
 		tools[tool.Name] = flat(tool.Description)
 	}
 	for _, row := range []struct{ text, name, phrase string }{
-		{skill("rndevtools-lanes"), "the lanes skill", "has none: wait a few seconds, then call `lane up` again"},
+		{skill("rndevtools-lanes"), "the lanes skill", "has none: wait a few seconds, then call `lane --operation up` again"},
 		{skill("rndevtools-supabase"), "the supabase skill", "has no `jobId`: wait a few seconds, then call `up` again"},
 		{tools["lane"], "the lane tool", "without one call lane up again in a few seconds"},
 		{tools["supabase"], "the supabase tool", "without one (the start is queued behind RN Devtools' own automatic start) call up again in a few seconds"},
@@ -444,7 +444,7 @@ func TestAgentsBlockAddsLocalSupabaseOnlyForSupabaseProjects(t *testing.T) {
 		}
 		agents, _ := os.ReadFile(filepath.Join(project, "AGENTS.md"))
 		block := string(agents)
-		for _, phrase := range []string{"## iOS Simulators", "## Local Supabase", "`" + runner + " start --runtime native`", "`supabase stop --all`", "`supabase status --env`", "`lane up`"} {
+		for _, phrase := range []string{"## iOS Simulators", "## Local Supabase", "`" + runner + " start --runtime native`", "`supabase stop --all`", "`supabase status --env`", "`rndevtools lane --operation up`"} {
 			if !strings.Contains(block, phrase) {
 				t.Fatalf("%s: AGENTS.md lacks %q:\n%s", lockfile, phrase, block)
 			}

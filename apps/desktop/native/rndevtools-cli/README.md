@@ -108,7 +108,7 @@ one kind of peer. Tool descriptions carry the workflow guidance a skill would
 Simulators with `xcrun simctl` directly. Argument errors come back as tool
 errors (`isError: true`) with the desktop's recovery text so the model can
 correct the call; only malformed JSON-RPC is a protocol error. Calls run
-concurrently, so a long `wait` or `lane up` never holds up a ping or another
+concurrently, so a long `wait` or `lane --operation up` never holds up a ping or another
 call, and at most four of a session's calls are with the desktop at once.
 `notifications/cancelled` stops the call it names, which gets no response:
 its socket closes, and the desktop aborts the handler at its next liveness
@@ -160,7 +160,7 @@ agents".
 | Register the MCP server | Claude Code `~/.claude.json`, Codex `~/.codex/config.toml`, Cursor `~/.cursor/mcp.json`, Kiro `~/.kiro/settings/mcp.json` | Entry is `{command: <cli>, args: ["mcp"]}`. Claude and Codex are always configured; Cursor and Kiro only when their directory exists, or when named in `--agents`. New Kiro registrations approve the read-only tools by default. Existing approval lists and enabled state are preserved. Codex TOML is parsed before editing: setup updates only the executable, arguments, and a missing/short tool timeout, preserving longer timeouts, environment, approval rules, comments, and other servers. Invalid configuration or a custom remote transport is reported as `skip` without changing it. |
 | Install the skills | `~/.claude/skills`, `~/.agents/skills` (Codex), `~/.kiro/skills` | Every `skills/*/SKILL.md` is embedded in the binary (`rndevtools-lanes` and `rndevtools-supabase`), so the installed copies always match the CLI. With `--project <dir>` they go into that repository's `.claude/skills` and `.agents/skills` instead. |
 | Agent hooks | Claude Code `~/.claude/settings.json` → `hooks`, Codex `~/.codex/hooks.json` | Two hooks, same for both agents because they send the same payload and read the same verdict. `PreToolUse` (`rndevtools hook pre-tool-use`) exits 2 (block, with the reason shown to the model) for `simctl boot`, `shutdown`, `erase`, `delete`, `openurl`, `install`, `uninstall`, `launch`, `terminate`, `io`, `privacy`, `push`, `keychain`, `status_bar`, `spawn`, `addmedia`, `clone`, and for hand-started Metro (`expo start`, `react-native start`); `simctl list` and other read-only verbs pass, and anything unparseable passes, because a hook that fails closed would lock the model out of Bash. While local Supabase is turned on in RN Devtools it also applies the [Supabase steering rules](#supabase-steering). `SessionEnd` (`rndevtools hook session-end`) releases everything the ending session holds (`release --all`) so its Simulators return to the pool at once rather than after the 10-minute grace; it never fails the agent's exit and finishes in milliseconds, inside Codex's 3-second cap. How it tells a steered command from a mention of one is described under [Simulator and Metro steering](#simulator-and-metro-steering): a match on each command's text is the baseline, the scripts a command hands on to be run are followed, and one excuse covers a mention on a line that looks as if it can only read and print text. Both agents run a hook command through a shell, so setup single-quotes the executable when its path needs it (a packaged install lives under `RN Devtools.app`). A rerun replaces only the hooks setup wrote (`<path>/rndevtools hook <event>`); other tools' hooks, and hooks you add to the same entry, stay. An event the installed build does not know exits 0 with a note on stderr, never 2. Codex runs new or changed hooks only after the user trusts them once with `/hooks`; setup says so in its report. Cursor has no hook mechanism, so for it the AGENTS.md block is the only guard. `--no-hook` skips both. |
-| AGENTS.md block | `<project>/AGENTS.md` with `--project` | A short "iOS Simulators" section between `<!-- rndevtools:start -->` / `<!-- rndevtools:end -->` markers, replaced in place on rerun when the file has exactly one start-marker line and, after it, one end-marker line (a marker quoted inside other text does not count); markers that do not pair up are reported as `skip` and the file is left alone. When the project has `supabase/config.toml`, a "Local Supabase" paragraph follows, worded for when RN Devtools is not managing a worktree: use the `supabase` tool or `lane up` when it is, otherwise start the stack with the project's runner (from its lockfile) and `--runtime native`. The report also returns the block for manual installs. |
+| AGENTS.md block | `<project>/AGENTS.md` with `--project` | A short "iOS Simulators" section between `<!-- rndevtools:start -->` / `<!-- rndevtools:end -->` markers, replaced in place on rerun when the file has exactly one start-marker line and, after it, one end-marker line (a marker quoted inside other text does not count); markers that do not pair up are reported as `skip` and the file is left alone. When the project has `supabase/config.toml`, a "Local Supabase" paragraph follows, worded for when RN Devtools is not managing a worktree: use the `supabase` tool or `rndevtools lane --operation up` when it is, otherwise start the stack with the project's runner (from its lockfile) and `--runtime native`. The report also returns the block for manual installs. |
 
 Setup finishes with the `doctor` check to verify the desktop connection. Restart
 your coding agent or reload its MCP servers after the registration changes;
@@ -181,7 +181,7 @@ need approval; setup preserves that policy rather than resetting it on upgrade.
 Routine work can run unattended: start/resume/stop a lane, install a cached dev
 client, tap/type/scroll, capture, inspect logs, wait for jobs, start/resume/stop a
 managed local Supabase stack, and reset a stack when the session is its sole live
-holder. Native builds run separately using the command from `native plan`.
+holder. Native builds run separately using the command from `native --operation plan`.
 
 RN Devtools still enforces device holds, one mutation per device, and local-only
 stack isolation. Enable Supabase and SimSlim once in the desktop. SimSlim also
@@ -405,14 +405,19 @@ so several branches and coding agents can work in parallel:
 rndevtools lane --operation up --worktree "$PWD"                 # pick a free Simulator, boot, lease a port, start Metro, launch
 rndevtools lane --operation up --worktree "$PWD" --udid <UDID>   # or name the Simulator yourself
 rndevtools lane --operation ls                                   # lanes, environments, discovered worktrees
+rndevtools lane --operation launch --worktree "$PWD" --restart   # start the app fresh on this lane's Metro
 rndevtools lane --operation launch --worktree "$PWD" --url checkout
 rndevtools lane --operation log --lane-id <lane-id>
 rndevtools lane --operation down --worktree "$PWD"
 ```
 
-`up` requires `--worktree`. Without `--udid` the desktop picks a free iPhone
-(nobody's lane, nobody's claim), booted ones first; when none is free it parks
-a device request for the user and `lane ls` reports how it was settled.
+An operation is always the `--operation` flag; the CLI rejects one written as
+a positional word. `up` requires `--worktree`. Without `--udid` the desktop
+picks a free iPhone (nobody's lane, nobody's claim), booted ones first; when
+none is free it parks a device request for the user and `lane --operation ls`
+reports how it was settled. Pass `--udid` when the user named a device or is
+using one: a booted Simulator nobody holds can still be in a person's hands.
+
 `down`, `launch`, and `log` take exactly one of `--lane-id` or `--worktree`. Lane creation fails rather than
 stealing a worktree, Simulator, or port another lane owns. The CLI attaches
 `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID` (or `RNDEVTOOLS_AGENT_SESSION_ID`)
@@ -424,6 +429,17 @@ teaches Claude Code and Codex the workflow; copy it into `.claude/skills` or
 `supabase`, and `native`; stdin JSON and MCP tool calls must send absolute
 paths, because neither shares the caller's directory.
 
+`--restart`, on `up` resuming an existing lane and on `launch`, terminates any
+running copy of the lane's app (its bundle identifier) on the lane's
+Simulator before the dev client opens, so the app starts fresh with only this
+lane's Metro; a new lane does that on its first launch without the flag.
+Terminating an app that is not running counts as success, and device holds
+apply as usual. `launch --url` without `--restart` never terminates the app,
+because a deep link keeps its state. React Native's dev client keeps an
+inspector connection to every Metro it was pointed at for as long as it runs,
+so without a restart an app re-pointed to a new port stays listed as a debug
+target on whatever Metro later takes the old port.
+
 `lane --operation up --backend auto|off|required` decides the worktree's local
 Supabase. `auto`, the default for the `development` environment, starts the
 worktree's own stack when RN Devtools manages its Supabase project and hands
@@ -433,7 +449,7 @@ the desktop applies the environment's default. The receipt's `lane.backend`
 reports `ready`, `starting` (the app launches once the stack is ready),
 `skipped`, `shadowed`, `refused`, or `failed`, with the reason. A `starting`
 backend usually carries a `jobId` (follow it with `wait --condition job`); one
-queued behind RN Devtools' own automatic start has none, and `lane up` again,
+queued behind RN Devtools' own automatic start has none, and `lane --operation up` again,
 which is idempotent, picks it up a few seconds later.
 
 `doctor` returns a bounded `connectedSessions` list. Use a returned `deviceId`

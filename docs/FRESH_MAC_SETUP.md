@@ -70,7 +70,7 @@ rndevtools supabase --operation ls
 ```
 
 Without `--udid`, RN Devtools chooses a free device. If none is available, settle
-the returned device request in the desktop and poll `lane ls`. If a result
+the returned device request in the desktop and poll `rndevtools lane --operation ls`. If a result
 contains a `jobId`, wait for that job; a timeout is an observation deadline, not
 proof that the background work stopped. A first Supabase start downloads and
 initializes services and can take several minutes.
@@ -88,7 +88,8 @@ or start the requested lane with `launch=false` and run the supplied
 The port matters: Expo still opens the app with `--no-bundler`. A matching
 bundle ID only proves that an app is installed, not that its native fingerprint
 is current. An explicit cached install refreshes that binary.
-RN Devtools owns Metro. Then run `lane --operation launch` for the lane.
+RN Devtools owns Metro. Then run `lane --operation launch --restart` for the
+lane, so the app the build opened starts fresh with the lane's Metro alone.
 
 Check all of the following before calling the Mac qualified:
 
@@ -97,7 +98,7 @@ Check all of the following before calling the Mac qualified:
 - A record written through app A appears in A and is absent from B, and vice
   versa. Separate local stacks use shared default signing keys unless per-stack
   keys are enabled; data isolation alone does not prove JWT signing isolation.
-- Relaunch each app, repeat `lane up`, and restart the desktop. The same lanes
+- Relaunch each app, repeat `rndevtools lane --operation up`, and restart the desktop. The same lanes
   should recover with their own Metro and backend. Observe jobs until terminal.
 - Restore and reapply SimSlim on a test device, then check app input, captures,
   and database access again. Retain the restore checkpoint.

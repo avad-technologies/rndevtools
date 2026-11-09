@@ -15,21 +15,31 @@ type HookDecision struct {
 	Reason string
 }
 
+// appDirectory stands for the app's directory in the commands a reason
+// gives: the hook does not know which directory of a checkout holds the app.
+const appDirectory = "<app directory>"
+
 // steeredVerbs are the simctl subcommands that mutate a Simulator or launch
-// into it, and the rndevtools operation that replaces each. Observing verbs
-// (list, getenv, get_app_container, diagnose, help) stay allowed: an agent
-// orienting itself is not the problem; two agents booting the same device is.
+// into it, and the rndevtools commands that replace each, spelled the way the
+// CLI parses them: an operation is the --operation flag, never a positional
+// word. Observing verbs (list, getenv, get_app_container, diagnose, help)
+// stay allowed: an agent orienting itself is not the problem; two agents
+// booting the same device is.
 var steeredVerbs = map[string]string{
-	"boot":       "`lane` (operation up) boots the Simulator the lane needs, or ask the user which device to use",
-	"shutdown":   "`lane` (operation down) stops a lane; leave other agents' Simulators running",
-	"erase":      "RN Devtools owns device state; ask the user before erasing a Simulator",
-	"delete":     "RN Devtools owns device state; ask the user before deleting a Simulator",
-	"openurl":    "`lane` (operation launch, url) opens deep links through the lane's scheme",
-	"install":    "`native` (operation install) installs the cached dev client; `native` plan tells you whether a build is needed",
-	"uninstall":  "ask the user before removing apps from a managed Simulator",
-	"launch":     "`lane` (operation launch) opens the dev client against the lane's Metro",
-	"terminate":  "`lane` (operation down) stops the lane; use `input` button home to leave an app",
-	"io":         "`capture` takes screenshots and `record` records video through RN Devtools",
+	"boot": "`rndevtools simulator --operation boot --udid <UDID>` boots a Simulator this session already holds (its lane's or its claim's), " +
+		"and `rndevtools lane --operation up --worktree " + appDirectory + "` boots the Simulator a new lane runs on; ask the user before booting any other device",
+	"shutdown": "`rndevtools simulator --operation shutdown --udid <UDID>` shuts down a Simulator this session holds and keeps its lane, Metro, and data, " +
+		"and `rndevtools lane --operation down --worktree " + appDirectory + "` ends your lane; leave other agents' Simulators running",
+	"erase":   "RN Devtools owns device state; ask the user before erasing a Simulator",
+	"delete":  "RN Devtools owns device state; ask the user before deleting a Simulator",
+	"openurl": "`rndevtools lane --operation launch --worktree " + appDirectory + " --url <path or URL>` opens a deep link through the lane's scheme",
+	"install": "`rndevtools native --operation plan --worktree " + appDirectory + " --udid <UDID>` says whether a build is needed, " +
+		"and `rndevtools native --operation install --worktree " + appDirectory + " --udid <UDID>` installs the cached dev client",
+	"uninstall": "ask the user before removing apps from a managed Simulator",
+	"launch":    "`rndevtools lane --operation launch --worktree " + appDirectory + "` opens the dev client against the lane's Metro; add `--restart` to start the app fresh",
+	"terminate": "`rndevtools lane --operation launch --worktree " + appDirectory + " --restart` restarts the lane's app, " +
+		"`rndevtools lane --operation down --worktree " + appDirectory + "` ends the lane, and `rndevtools input --udid <UDID> --kind button --button home` leaves an app",
+	"io":         "`rndevtools capture --udid <UDID>` takes a screenshot and `rndevtools record --operation start --udid <UDID>` records video",
 	"privacy":    "RN Devtools' permissions panel grants and resets privacy permissions",
 	"push":       "ask the user; push payloads are not part of the agent surface",
 	"keychain":   "ask the user before touching a Simulator keychain",
@@ -181,8 +191,10 @@ func simctlDecision(verb string, replacement string) HookDecision {
 
 func metroDecision() HookDecision {
 	return HookDecision{
-		Block:  true,
-		Reason: "Blocked starting Metro by hand: port 8081 is shared with other agents. Use the rndevtools `lane` tool (operation up, with this worktree's absolute path) and RN Devtools will start Metro on a leased port and open the dev client against it.",
+		Block: true,
+		Reason: "Blocked starting Metro by hand: RN Devtools leases Metro ports, and 8081 is shared with other agents. Run the app in a lane instead: " +
+			"`rndevtools lane --operation up --worktree " + appDirectory + "` (the rndevtools `lane` tool, operation up) starts Metro on a leased port " +
+			"and opens the dev client against it. Leave out `--udid` unless the user named a device: RN Devtools picks a free iPhone.",
 	}
 }
 
