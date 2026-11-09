@@ -39,6 +39,11 @@ and selective TOML undo recovers value types from the original source snapshot.
 Private previews and original bytes are stored under
 `~/Library/Application Support/RN Devtools/agent-check`, with directory mode
 0700 and file mode 0600. Reports never include environment values or credentials.
+They are kept only while undo can use them. A preview that is not applied
+within its five minutes, because it was cancelled or never confirmed, is
+deleted with its copy of the file at the next check. Undoing a repair deletes
+its record. Each scope keeps its 32 most recent repairs for undo, listed newest
+first, and applying another repair deletes the records past that.
 
 Reload the affected client after a change. In Codex, review new hooks with
 `/hooks`. **Test RN Devtools connection** performs MCP initialize, tools/list,

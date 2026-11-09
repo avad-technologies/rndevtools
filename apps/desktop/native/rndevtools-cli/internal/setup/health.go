@@ -345,6 +345,7 @@ func CheckAgents(options HealthOptions) (HealthReport, error) {
 		fingerprints.WriteString(file + "\x00" + s.files[file] + "\n")
 	}
 	s.report.Fingerprint = healthHash([]byte(fingerprints.String()))
+	healthPruneExpired(options)
 	s.report.Repairs = healthReceipts(options)
 	return s.report, nil
 }

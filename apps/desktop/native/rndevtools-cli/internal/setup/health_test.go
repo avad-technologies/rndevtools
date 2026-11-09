@@ -3,10 +3,12 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func healthFixture(t *testing.T) HealthOptions {
@@ -516,5 +518,126 @@ func TestAgentHealthFindsXcodeBuildMCPAsASimulatorController(t *testing.T) {
 	}
 	if found["codex"] != 2 || found["claude"] != 1 {
 		t.Fatalf("XcodeBuildMCP controllers found: %v in %+v", found, report.Findings)
+	}
+}
+
+// healthStoredRepair writes a repair record for options' scope with the given
+// id and apply time, as ApplyAgentFix stores one.
+func healthStoredRepair(t *testing.T, options HealthOptions, id string, appliedAt int64) {
+	t.Helper()
+	j := healthJournal{Home: options.Home, Project: options.Project, Executable: options.Executable,
+		Plan:    HealthPlan{ID: id, Client: "codex", Title: "Disable plugin in Codex"},
+		Receipt: HealthReceipt{ID: id, Client: "codex", Title: "Disable plugin in Codex", Scope: "All Codex projects", AppliedAt: appliedAt, Status: "applied"},
+		Before:  []byte("[plugins.simview]\nenabled = true\n"), Format: "toml"}
+	if err := healthSaveReceipt(options, j); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func healthHistoryFiles(t *testing.T, options HealthOptions) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(healthStateDir(options))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	files := map[string]bool{}
+	for _, entry := range entries {
+		files[entry.Name()] = true
+	}
+	return files
+}
+
+func TestAgentHealthListsRepairsNewestFirstWithinTheLimit(t *testing.T) {
+	// Repair ids are random, so the order of their files says nothing about
+	// when they were applied: the newest repair must be listed even when its
+	// id sorts after thirty-two older ones.
+	options := healthFixture(t)
+	for i := 1; i <= 40; i++ {
+		healthStoredRepair(t, options, fmt.Sprintf("check-%032x", i), int64(1_000+i))
+	}
+	newest := "check-" + strings.Repeat("f", 32)
+	healthStoredRepair(t, options, newest, 9_000)
+	report, err := CheckAgents(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Repairs) != 32 || report.Repairs[0].ID != newest {
+		t.Fatalf("want the newest of 41 repairs first, 32 in all; got %d starting with %+v", len(report.Repairs), report.Repairs[0])
+	}
+	for i := 1; i < len(report.Repairs); i++ {
+		if report.Repairs[i-1].AppliedAt < report.Repairs[i].AppliedAt {
+			t.Fatalf("repairs are not newest first: %+v", report.Repairs)
+		}
+	}
+	// Applying another repair keeps only the newest 32 records of the scope.
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	plan := healthRepair(t, options, "codex", "plugin-controller")
+	files := healthHistoryFiles(t, options)
+	summaries := 0
+	for name := range files {
+		if strings.HasSuffix(name, ".summary.json") {
+			summaries++
+			if !files[strings.TrimSuffix(name, ".summary.json")+".json"] {
+				t.Fatalf("summary %s kept without its record", name)
+			}
+		}
+	}
+	if summaries != 32 || !files[plan.ID+".summary.json"] || !files[newest+".json"] || files[fmt.Sprintf("check-%032x", 10)+".json"] {
+		t.Fatalf("history after a repair: %v", files)
+	}
+}
+
+func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T) {
+	options := healthFixture(t)
+	file := filepath.Join(options.Home, ".codex", "config.toml")
+	healthPut(t, file, "[plugins.simview]\nenabled=true\n[mcp_servers.cloud.env]\nTOKEN='sensitive-fixture'\n")
+	f := healthFinding(t, options, "codex", "plugin-controller")
+	stale, err := PlanAgentFix(options, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := PlanAgentFix(options, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A preview the user cancelled, or never applied, expires after five
+	// minutes; so does the temporary file of a write that was interrupted.
+	old := time.Now().Add(-10 * time.Minute)
+	leftover := filepath.Join(healthStateDir(options), ".rndevtools-setup-123456")
+	healthPut(t, leftover, "TOKEN='sensitive-fixture'")
+	for _, path := range []string{filepath.Join(healthStateDir(options), stale.ID+".json"), leftover} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := CheckAgents(options); err != nil {
+		t.Fatal(err)
+	}
+	files := healthHistoryFiles(t, options)
+	if files[stale.ID+".json"] || files[filepath.Base(leftover)] || !files[fresh.ID+".json"] {
+		t.Fatalf("expired previews must go and fresh ones stay: %v", files)
+	}
+	// Once a repair is undone, its copy of the original file is not needed.
+	if _, err := ApplyAgentFix(options, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	report, err := UndoAgentFix(options, fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = healthHistoryFiles(t, options)
+	if files[fresh.ID+".json"] || files[fresh.ID+".summary.json"] {
+		t.Fatalf("undo must delete the repair's record: %v", files)
+	}
+	for _, repair := range report.Repairs {
+		if repair.ID == fresh.ID {
+			t.Fatalf("an undone repair is still offered: %+v", report.Repairs)
+		}
+	}
+	for name := range files {
+		raw, _ := os.ReadFile(filepath.Join(healthStateDir(options), name))
+		if bytes.Contains(raw, []byte("sensitive-fixture")) {
+			t.Fatalf("%s still holds the original configuration", name)
+		}
 	}
 }

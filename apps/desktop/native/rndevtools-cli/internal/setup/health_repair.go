@@ -393,6 +393,129 @@ func healthRoutingBlock() string {
 func healthStateDir(options HealthOptions) string {
 	return filepath.Join(options.Home, "Library", "Application Support", "RN Devtools", "agent-check")
 }
+
+const (
+	// healthPlanLifetime is how long a preview can be applied. A preview not
+	// applied by then, because the user cancelled it or never confirmed, is
+	// deleted at the next check, with its copy of the configuration.
+	healthPlanLifetime = 5 * time.Minute
+	// healthReceiptLimit is how many repairs a scope keeps for undo, newest
+	// first: as many as the report lists and the desktop shows.
+	healthReceiptLimit = 32
+	// healthHistoryEntries bounds the repair-history entries one call reads.
+	healthHistoryEntries = 4096
+	// healthSummaryLimit bounds a repair summary file.
+	healthSummaryLimit = 4096
+)
+
+// healthHistory lists the repair history: the files in it, by name, and when
+// each was last written. It reads at most healthHistoryEntries entries.
+func healthHistory(options HealthOptions) map[string]time.Time {
+	directory, err := os.Open(healthStateDir(options))
+	if err != nil {
+		return nil
+	}
+	defer directory.Close()
+	entries, _ := directory.ReadDir(healthHistoryEntries)
+	files := make(map[string]time.Time, len(entries))
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if info, err := entry.Info(); err == nil {
+			files[entry.Name()] = info.ModTime()
+		}
+	}
+	return files
+}
+
+// healthPruneExpired deletes what an expired preview left: its record, which
+// holds a copy of the whole configuration file, and the temporary file of a
+// write that was interrupted. A record with a summary is a repair, kept for
+// undo; a record without one is a preview, or an apply that stopped before it
+// changed the configuration.
+func healthPruneExpired(options HealthOptions) {
+	files := healthHistory(options)
+	expired := time.Now().Add(-healthPlanLifetime)
+	for name, modified := range files {
+		if !modified.Before(expired) {
+			continue
+		}
+		id, isRecord := strings.CutSuffix(name, ".json")
+		preview := isRecord && healthID.MatchString(id)
+		if _, repaired := files[id+".summary.json"]; repaired {
+			preview = false
+		}
+		if preview || strings.HasPrefix(name, ".rndevtools-setup-") {
+			_ = os.Remove(filepath.Join(healthStateDir(options), name))
+		}
+	}
+}
+
+// healthScopeReceipts are the repairs of options' scope that undo can still
+// reach (a summary with its record), newest first.
+func healthScopeReceipts(options HealthOptions) []HealthReceipt {
+	files := healthHistory(options)
+	result := []HealthReceipt{}
+	for name := range files {
+		id, isSummary := strings.CutSuffix(name, ".summary.json")
+		if _, recorded := files[id+".json"]; !isSummary || !recorded || !healthID.MatchString(id) {
+			continue
+		}
+		data, _, err := healthRead(filepath.Join(healthStateDir(options), name))
+		var stored struct {
+			Project string        `json:"project"`
+			Receipt HealthReceipt `json:"receipt"`
+		}
+		if err == nil && len(data) < healthSummaryLimit && json.Unmarshal(data, &stored) == nil && stored.Project == options.Project && stored.Receipt.ID == id {
+			result = append(result, stored.Receipt)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].AppliedAt != result[j].AppliedAt {
+			return result[i].AppliedAt > result[j].AppliedAt
+		}
+		return result[i].ID > result[j].ID
+	})
+	return result
+}
+
+// healthReceipts are the scope's newest repairs, at most healthReceiptLimit.
+func healthReceipts(options HealthOptions) []HealthReceipt {
+	result := healthScopeReceipts(options)
+	if len(result) > healthReceiptLimit {
+		result = result[:healthReceiptLimit]
+	}
+	return result
+}
+
+// healthPruneReceipts deletes the scope's repairs past the newest
+// healthReceiptLimit, which the report no longer lists, and summaries left
+// without their record.
+func healthPruneReceipts(options HealthOptions) {
+	receipts := healthScopeReceipts(options)
+	for index := healthReceiptLimit; index < len(receipts); index++ {
+		healthForget(options, receipts[index].ID)
+	}
+	files := healthHistory(options)
+	for name := range files {
+		if id, isSummary := strings.CutSuffix(name, ".summary.json"); isSummary && healthID.MatchString(id) {
+			if _, recorded := files[id+".json"]; !recorded {
+				_ = os.Remove(filepath.Join(healthStateDir(options), name))
+			}
+		}
+	}
+}
+
+// healthForget deletes a repair's record, with its copy of the original
+// configuration, and then its summary.
+func healthForget(options HealthOptions, id string) {
+	if !healthID.MatchString(id) {
+		return
+	}
+	_ = os.Remove(filepath.Join(healthStateDir(options), id+".json"))
+	_ = os.Remove(filepath.Join(healthStateDir(options), id+".summary.json"))
+}
 func healthPrivateDir(options HealthOptions) (string, error) {
 	dir := healthStateDir(options)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -458,25 +581,6 @@ func healthLoad(options HealthOptions, id string) (healthJournal, error) {
 	}
 	return j, nil
 }
-func healthReceipts(options HealthOptions) []HealthReceipt {
-	result := []HealthReceipt{}
-	entries, _ := os.ReadDir(healthStateDir(options))
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".summary.json") || len(result) >= 32 {
-			continue
-		}
-		data, _, err := healthRead(filepath.Join(healthStateDir(options), entry.Name()))
-		var stored struct {
-			Project string        `json:"project"`
-			Receipt HealthReceipt `json:"receipt"`
-		}
-		if err == nil && len(data) < 4096 && json.Unmarshal(data, &stored) == nil && stored.Project == options.Project {
-			result = append(result, stored.Receipt)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].AppliedAt > result[j].AppliedAt })
-	return result
-}
 func healthSaveReceipt(options HealthOptions, j healthJournal) error {
 	if err := healthSave(options, j.Plan.ID, ".json", j); err != nil {
 		return err
@@ -509,7 +613,7 @@ func PlanAgentFix(options HealthOptions, findingID string) (HealthPlan, error) {
 			return HealthPlan{}, err
 		}
 		j.Fingerprint = report.Fingerprint
-		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(5 * time.Minute).UnixMilli()}
+		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(healthPlanLifetime).UnixMilli()}
 		if err = healthSave(options, id, ".json", j); err != nil {
 			return HealthPlan{}, err
 		}
@@ -578,7 +682,11 @@ func ApplyAgentFix(options HealthOptions, id string) (HealthReport, error) {
 			return errors.New("Configuration was not written. The recovery record was kept.")
 		}
 		j.Receipt.Status = "applied"
-		return healthSaveReceipt(options, j)
+		if err = healthSaveReceipt(options, j); err != nil {
+			return err
+		}
+		healthPruneReceipts(options)
+		return nil
 	})
 	if err != nil {
 		return HealthReport{}, err
@@ -608,8 +716,9 @@ func UndoAgentFix(options HealthOptions, id string) (HealthReport, error) {
 			return errors.New("The configuration cannot be read for undo.")
 		}
 		if bytes.Equal(current, j.Before) && present == j.Present {
-			j.Receipt.Status = "undone"
-			return healthSaveReceipt(options, j)
+			// Undone already: the record is no longer needed.
+			healthForget(options, id)
+			return nil
 		}
 		if bytes.Equal(current, j.After) {
 			if !j.Present {
@@ -632,8 +741,10 @@ func UndoAgentFix(options HealthOptions, id string) (HealthReport, error) {
 		if err != nil {
 			return err
 		}
-		j.Receipt.Status = "undone"
-		return healthSaveReceipt(options, j)
+		// An undone repair cannot be undone again, so its copy of the original
+		// configuration goes with it.
+		healthForget(options, id)
+		return nil
 	})
 	if err != nil {
 		return HealthReport{}, err
