@@ -366,7 +366,7 @@ class FakeMetro implements MetroSupervisorPort {
 }
 
 class FakeWorktrees implements WorktreeInspectorPort {
-	worktrees: DiscoveredWorktree[] = [
+	worktrees: Array<DiscoveredWorktree & { dirty: boolean }> = [
 		{ path: REPO, branch: 'main', repositoryRoot: REPO, dirty: false },
 		{ path: WORKTREE, branch: 'feature/a', repositoryRoot: REPO, dirty: true },
 		{
@@ -393,6 +393,14 @@ class FakeWorktrees implements WorktreeInspectorPort {
 		return REPO;
 	};
 	listWorktrees = async () => this.worktrees;
+	readDirty: WorktreeInspectorPort['readDirty'] = async (paths) => {
+		const dirty = new Map(
+			this.worktrees.map((worktree) => [worktree.path, worktree.dirty])
+		);
+		return new Map(
+			paths.map((checkout) => [checkout, dirty.get(checkout) ?? false])
+		);
+	};
 	readExpoIdentity = async () => this.identity;
 }
 
@@ -598,10 +606,7 @@ describe('LaneService', () => {
 		});
 		expect(
 			service.getState().worktrees.find((w) => w.path === WORKTREE)
-		).toMatchObject({
-			dirty: true,
-			laneId: receipt.lane?.id,
-		});
+		).toMatchObject({ laneId: receipt.lane?.id });
 		expect(service.getState().repositories).toEqual([REPO]);
 	});
 
@@ -1860,20 +1865,200 @@ describe('LaneService', () => {
 		);
 	});
 
-	it("asks git again for the operator's refresh, while a polled refresh may reuse dirty flags", async () => {
+	it('keeps polling and same-app lane starts responsive while dirty checks wait', async () => {
+		const start = (actionId: string) =>
+			service.runOperation({
+				actionId,
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+		const entered = deferred<void>();
+		const blocked = deferred<ReadonlyMap<string, boolean>>();
+		const dirty = vi.spyOn(worktrees, 'readDirty').mockImplementation(() => {
+			entered.resolve();
+			return blocked.promise;
+		});
+		try {
+			const first = await start('first-while-dirty');
+			await entered.promise;
+			expect(first.completed).toBe(true);
+			expect((await service.refresh()).lanes[0]?.id).toBe(first.lane?.id);
+			const resumed = await start('resume-while-dirty');
+			expect(resumed.completed).toBe(true);
+			expect(resumed.lane?.id).toBe(first.lane?.id);
+			expect(metro.started).toHaveLength(1);
+			expect(dirty).toHaveBeenCalledOnce();
+		} finally {
+			blocked.resolve(new Map());
+		}
+	});
+
+	it('ignores dirty results from an old branch or a removed checkout and refreshes the new topology', async () => {
+		const entered = deferred<void>();
+		const blocked = deferred<ReadonlyMap<string, boolean>>();
+		const current = deferred<ReadonlyMap<string, boolean>>();
+		const replaced = deferred<void>();
+		const dirty = vi
+			.spyOn(worktrees, 'readDirty')
+			.mockImplementationOnce(() => {
+				entered.resolve();
+				return blocked.promise;
+			})
+			.mockImplementationOnce(() => {
+				replaced.resolve();
+				return current.promise;
+			});
+		try {
+			await service.addRepository(REPO);
+			await entered.promise;
+			worktrees.worktrees = worktrees.worktrees
+				.filter((worktree) => worktree.path !== OTHER_WORKTREE)
+				.map((worktree) =>
+					worktree.path === WORKTREE
+						? { ...worktree, branch: 'new-branch' }
+						: worktree
+				);
+			await service.refresh();
+			blocked.resolve(
+				new Map([
+					[WORKTREE, true],
+					[OTHER_WORKTREE, true],
+				])
+			);
+			await replaced.promise;
+			const topology = service.getState().worktrees;
+			expect(topology.find((row) => row.path === WORKTREE)).toMatchObject({
+				branch: 'new-branch',
+				dirty: false,
+			});
+			expect(
+				topology.find((row) => row.path === OTHER_WORKTREE)
+			).toBeUndefined();
+			expect(dirty.mock.calls[1]?.[0]).toEqual([WORKTREE]);
+			current.resolve(new Map([[WORKTREE, true]]));
+			await vi.waitFor(() =>
+				expect(
+					service.getState().worktrees.find((row) => row.path === WORKTREE)
+				).toMatchObject({ branch: 'new-branch', dirty: true })
+			);
+		} finally {
+			blocked.resolve(new Map());
+			current.resolve(new Map());
+		}
+	});
+
+	it('waits for a new explicit dirty check behind an older background check and reuses recent results', async () => {
+		const initial = deferred<ReadonlyMap<string, boolean>>();
+		const blocked = deferred<ReadonlyMap<string, boolean>>();
+		const entered = deferred<void>();
+		const read = vi
+			.spyOn(worktrees, 'readDirty')
+			.mockImplementationOnce(() => initial.promise)
+			.mockImplementationOnce(() => {
+				entered.resolve();
+				return blocked.promise;
+			});
 		await service.addRepository(REPO);
-		const asked: Array<boolean | undefined> = [];
-		const list = worktrees.listWorktrees;
-		worktrees.listWorktrees = async (
-			_root?: string,
-			options?: { fresh?: boolean }
-		) => {
-			asked.push(options?.fresh);
-			return list();
-		};
+		expect(read).toHaveBeenCalledOnce();
+		const refreshing = service.runOperation({
+			actionId: 'op-r',
+			kind: 'lane.refresh',
+		});
+		try {
+			await expect(
+				Promise.race([refreshing, nextTurn('pending')])
+			).resolves.toBe('pending');
+			expect(read).toHaveBeenCalledOnce();
+			initial.resolve(new Map([[WORKTREE, true]]));
+			await entered.promise;
+			await expect(
+				Promise.race([refreshing, nextTurn('pending')])
+			).resolves.toBe('pending');
+			await service.refresh();
+			expect(read).toHaveBeenCalledTimes(2);
+		} finally {
+			initial.resolve(new Map());
+			blocked.resolve(new Map());
+		}
+		const receipt = await refreshing;
+		expect(
+			receipt.state?.worktrees.find((row) => row.path === WORKTREE)?.dirty
+		).toBe(false);
 		await service.refresh();
-		await service.runOperation({ actionId: 'op-r', kind: 'lane.refresh' });
-		expect(asked).toEqual([false, true]);
+		expect(read).toHaveBeenCalledTimes(2);
+		now += 30_001;
+		await service.refresh();
+		await vi.waitFor(() =>
+			expect(
+				service.getState().worktrees.find((row) => row.path === WORKTREE)?.dirty
+			).toBe(true)
+		);
+		expect(read).toHaveBeenCalledTimes(3);
+	});
+
+	it('aborts dirty checks on stop and discards late results', async () => {
+		const entered = deferred<AbortSignal | undefined>();
+		const blocked = deferred<ReadonlyMap<string, boolean>>();
+		const read = vi
+			.spyOn(worktrees, 'readDirty')
+			.mockImplementation((_paths, signal) => {
+				entered.resolve(signal);
+				return blocked.promise;
+			});
+		await service.addRepository(REPO);
+		const signal = await entered.promise;
+		const revision = service.getState().revision;
+		const stopping = service.stop();
+		try {
+			await expect(
+				Promise.race([stopping, nextTurn('pending')])
+			).resolves.toBeUndefined();
+			expect(signal?.aborted).toBe(true);
+		} finally {
+			blocked.resolve(new Map([[WORKTREE, true]]));
+			await stopping;
+		}
+		await nextTurn();
+		expect(read).toHaveBeenCalledOnce();
+		expect(service.getState().revision).toBe(revision);
+	});
+
+	it('discards an in-flight topology listing after its repository is removed', async () => {
+		await service.addRepository(REPO);
+		await vi.waitFor(() =>
+			expect(
+				service.getState().worktrees.find((row) => row.path === WORKTREE)?.dirty
+			).toBe(true)
+		);
+		const entered = deferred<void>();
+		const blocked = deferred<typeof worktrees.worktrees>();
+		vi.spyOn(worktrees, 'listWorktrees').mockImplementationOnce(() => {
+			entered.resolve();
+			return blocked.promise;
+		});
+		const older = service.refresh();
+		await entered.promise;
+		const listener = vi.fn();
+		service.subscribe(listener);
+		const removing = service.runOperation({
+			actionId: 'remove-while-listing',
+			kind: 'lane.remove-repository',
+			repositoryRoot: REPO,
+		});
+		try {
+			await vi.waitFor(() => expect(store.repositories()).toEqual([]));
+		} finally {
+			blocked.resolve(worktrees.worktrees);
+			await older;
+		}
+		const removed = await removing;
+		expect(removed.state?.worktrees).toEqual([]);
+		expect(
+			listener.mock.calls.every(([state]) => state.worktrees.length === 0)
+		).toBe(true);
 	});
 
 	it('retains both active lanes and registered roots when discovery exceeds its bound', async () => {
@@ -1902,7 +2087,13 @@ describe('LaneService', () => {
 			...active,
 			...active,
 		];
+		now += 30_001;
+		const dirty = vi.spyOn(worktrees, 'readDirty');
 		const state = await service.refresh();
+		await vi.waitFor(() => expect(dirty).toHaveBeenCalledOnce());
+		expect(dirty.mock.calls[0]?.[0]).toEqual(
+			state.worktrees.map((row) => row.path)
+		);
 		expect(state.worktrees).toHaveLength(128);
 		expect(new Set(state.worktrees.map((w) => w.path)).size).toBe(128);
 		for (const target of [REPO, WORKTREE, OTHER_WORKTREE]) {

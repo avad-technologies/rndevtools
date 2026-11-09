@@ -10,10 +10,6 @@ const GIT_PATH = '/usr/bin/git';
 const GIT_TIMEOUT_MS = 10_000;
 const MAX_GIT_OUTPUT_BYTES = 1024 * 1024;
 const MAX_CONFIG_BYTES = 512 * 1024;
-/** How long a worktree's dirty flag is shown before git is asked again. */
-const DIRTY_TTL_MS = 30_000;
-/** How many worktrees' dirty flags are kept; the least recently checked go first. */
-const MAX_DIRTY_ENTRIES = 512;
 /** `git status` runs one listing has going at once; each uses several threads. */
 const MAX_PARALLEL_STATUS = 4;
 
@@ -21,7 +17,6 @@ export type DiscoveredWorktree = {
 	path: string;
 	branch: string;
 	repositoryRoot: string;
-	dirty: boolean;
 };
 
 export type WorktreeExpoIdentity = {
@@ -30,27 +25,35 @@ export type WorktreeExpoIdentity = {
 };
 
 export type WorktreeInspectorPort = {
-	repositoryRoot: (worktreePath: string) => Promise<string>;
-	/**
-	 * Every checkout of the repository. A `dirty` flag may be up to
-	 * DIRTY_TTL_MS old, as agents poll this; `fresh` asks git again.
-	 */
+	repositoryRoot: (
+		worktreePath: string,
+		signal?: AbortSignal
+	) => Promise<string>;
+	/** Checkout topology only, without running status in each worktree. */
 	listWorktrees: (
 		repositoryRoot: string,
-		options?: { fresh?: boolean }
+		signal?: AbortSignal
 	) => Promise<DiscoveredWorktree[]>;
+	readDirty: (
+		worktreePaths: readonly string[],
+		signal?: AbortSignal
+	) => Promise<ReadonlyMap<string, boolean>>;
 	readExpoIdentity: (worktreePath: string) => Promise<WorktreeExpoIdentity>;
 };
 
 type CommandRunner = typeof runSimulatorCommand;
-type Git = (args: readonly string[], cwd: string) => Promise<string>;
+type Git = (
+	args: readonly string[],
+	cwd: string,
+	signal?: AbortSignal
+) => Promise<string>;
 
 /** Parses `git worktree list --porcelain` into one entry per checkout. */
 export function parseWorktreeList(
 	output: string,
 	repositoryRoot: string
-): Omit<DiscoveredWorktree, 'dirty'>[] {
-	const entries: Omit<DiscoveredWorktree, 'dirty'>[] = [];
+): DiscoveredWorktree[] {
+	const entries: DiscoveredWorktree[] = [];
 	let current: { path?: string; branch?: string; detached?: boolean } = {};
 	const flush = () => {
 		if (current.path) {
@@ -85,15 +88,18 @@ export function parseWorktreeList(
  */
 async function isWorktreeDirty(
 	git: Git,
-	worktreePath: string
+	worktreePath: string,
+	signal?: AbortSignal
 ): Promise<boolean> {
 	try {
 		const output = await git(
 			['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'],
-			worktreePath
+			worktreePath,
+			signal
 		);
 		return output.trim().length > 0;
 	} catch (error) {
+		if (signal?.aborted) throw error;
 		return (
 			error instanceof SimulatorCommandError && error.kind === 'output-limit'
 		);
@@ -187,44 +193,20 @@ export async function readExpoIdentity(
 	return {};
 }
 
-/**
- * Reads worktrees through git. Agents waiting on a device poll the listing,
- * so each worktree's dirty flag is reused for DIRTY_TTL_MS, and at most
- * MAX_PARALLEL_STATUS statuses run at once.
- */
+/** Reads checkout topology and display-only dirty flags separately. */
 export function createWorktreeInspector({
 	runCommand = runSimulatorCommand,
-	now = Date.now,
 }: {
 	runCommand?: CommandRunner;
-	now?: () => number;
 } = {}): WorktreeInspectorPort {
-	const git: Git = async (args, cwd) =>
+	const git: Git = async (args, cwd, signal) =>
 		(
 			await runCommand(GIT_PATH, ['-C', cwd, ...args], {
 				timeoutMs: GIT_TIMEOUT_MS,
 				maxOutputBytes: MAX_GIT_OUTPUT_BYTES,
+				...(signal ? { signal } : {}),
 			})
 		).stdout;
-	const dirtyByPath = new Map<string, { dirty: boolean; checkedAt: number }>();
-
-	const isDirty = async (
-		worktreePath: string,
-		fresh: boolean
-	): Promise<boolean> => {
-		const known = dirtyByPath.get(worktreePath);
-		if (!fresh && known && now() - known.checkedAt < DIRTY_TTL_MS) {
-			return known.dirty;
-		}
-		const dirty = await isWorktreeDirty(git, worktreePath);
-		dirtyByPath.delete(worktreePath);
-		dirtyByPath.set(worktreePath, { dirty, checkedAt: now() });
-		for (const stale of dirtyByPath.keys()) {
-			if (dirtyByPath.size <= MAX_DIRTY_ENTRIES) break;
-			dirtyByPath.delete(stale);
-		}
-		return dirty;
-	};
 
 	return {
 		/**
@@ -232,10 +214,11 @@ export function createWorktreeInspector({
 		 * any linked worktree reports the whole set with the main checkout
 		 * first.
 		 */
-		repositoryRoot: async (worktreePath) => {
+		repositoryRoot: async (worktreePath, signal) => {
 			const output = await git(
 				['worktree', 'list', '--porcelain'],
-				worktreePath
+				worktreePath,
+				signal
 			);
 			const first = output
 				.split('\n')
@@ -245,17 +228,28 @@ export function createWorktreeInspector({
 			}
 			return first.slice('worktree '.length).trim();
 		},
-		listWorktrees: async (repositoryRoot, { fresh = false } = {}) => {
+		listWorktrees: async (repositoryRoot, signal) => {
 			const output = await git(
 				['worktree', 'list', '--porcelain'],
-				repositoryRoot
+				repositoryRoot,
+				signal
 			);
-			return mapLimited(
-				parseWorktreeList(output, repositoryRoot),
-				MAX_PARALLEL_STATUS,
-				async (entry) => ({ ...entry, dirty: await isDirty(entry.path, fresh) })
-			);
+			return parseWorktreeList(output, repositoryRoot);
 		},
+		readDirty: async (worktreePaths, signal) =>
+			new Map(
+				await mapLimited(
+					worktreePaths,
+					MAX_PARALLEL_STATUS,
+					async (worktreePath) => {
+						signal?.throwIfAborted();
+						return [
+							worktreePath,
+							await isWorktreeDirty(git, worktreePath, signal),
+						] as const;
+					}
+				)
+			),
 		readExpoIdentity,
 	};
 }

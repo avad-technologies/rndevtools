@@ -60,7 +60,11 @@ import {
 	NotLaneMetroError,
 } from './lane-metro';
 import type { LaneStore } from './lane-store';
-import { type WorktreeInspectorPort, worktreeInspector } from './lane-worktree';
+import {
+	type DiscoveredWorktree,
+	type WorktreeInspectorPort,
+	worktreeInspector,
+} from './lane-worktree';
 import { safeErrorText } from './security';
 import type {
 	SimulatorMutationCoordinatorPort,
@@ -77,6 +81,7 @@ import {
 const HEALTH_POLL_INTERVAL_MS = 500;
 const DEV_CLIENT_OPEN_RETRY_DELAY_MS = 1_000;
 const RECONCILE_INTERVAL_MS = 5_000;
+const WORKTREE_DIRTY_TTL_MS = 30_000;
 /** How long a settled device request stays listed for the agent that made it. */
 const DEVICE_REQUEST_TTL_MS = 30 * 60_000;
 /** How long the Metro log of a lane that is gone is kept once it stops growing. */
@@ -380,7 +385,9 @@ export class LaneService {
 	#updatedAt: number;
 	#error: string | undefined;
 	#reconcileTimer: NodeJS.Timeout | undefined;
-	#refreshPromise: Promise<LaneState> | undefined;
+	#refreshPromise: Promise<void> | undefined;
+	#dirtyRefreshPromise: Promise<void> | undefined;
+	readonly #dirtyCheckedAt = new WeakMap<LaneWorktree, number>();
 	#logsPrunedAt: number | undefined;
 	#stopped = false;
 
@@ -663,18 +670,72 @@ export class LaneService {
 		}
 	}
 
-	/**
-	 * Lists the tracked repositories' worktrees again. Agents poll this, so
-	 * each dirty flag may be reused for a short while; the operator's refresh
-	 * (`lane.refresh`) asks git again.
-	 */
-	refresh(): Promise<LaneState> {
+	/** Returns fresh checkout topology while display-only dirty flags update separately. */
+	async refresh({ freshTopology = false } = {}): Promise<LaneState> {
+		await this.#refreshTopology(freshTopology);
+		void this.#refreshDirty().catch(() => undefined);
+		return this.getState();
+	}
+
+	async #refreshTopology(fresh = false): Promise<void> {
+		if (fresh && this.#refreshPromise) await this.#refreshPromise;
 		if (!this.#refreshPromise) {
 			this.#refreshPromise = this.#refreshWorktrees().finally(() => {
 				this.#refreshPromise = undefined;
 			});
 		}
 		return this.#refreshPromise;
+	}
+
+	#refreshDirty(fresh = false): Promise<void> {
+		const previous = this.#dirtyRefreshPromise;
+		if (previous && !fresh) return previous;
+		const task = (async () => {
+			await previous?.catch(() => undefined);
+			await this.#hydrateDirty(fresh);
+		})().finally(() => {
+			if (this.#dirtyRefreshPromise === task) {
+				this.#dirtyRefreshPromise = undefined;
+			}
+		});
+		this.#dirtyRefreshPromise = task;
+		return task;
+	}
+
+	async #hydrateDirty(fresh: boolean): Promise<void> {
+		while (!this.#stopped) {
+			const topology = this.#worktreeCache;
+			const now = this.#now();
+			const due = topology.filter(
+				(worktree) =>
+					fresh ||
+					now - (this.#dirtyCheckedAt.get(worktree) ?? -Infinity) >=
+						WORKTREE_DIRTY_TTL_MS
+			);
+			if (due.length === 0) return;
+			const dirty = await this.#worktrees.readDirty(
+				due.map((worktree) => worktree.path),
+				this.#lifecycle.signal
+			);
+			if (this.#stopped) return;
+			const current = new Set(this.#worktreeCache);
+			const checkedAt = this.#now();
+			let changed = false;
+			for (const worktree of due) {
+				// An entry is reused only while its checkout identity stays the same.
+				if (!current.has(worktree)) continue;
+				this.#dirtyCheckedAt.set(worktree, checkedAt);
+				const next = dirty.get(worktree.path) ?? false;
+				if (worktree.dirty === next) continue;
+				worktree.dirty = next;
+				changed = true;
+			}
+			if (changed) this.#touch();
+			if (topology === this.#worktreeCache) return;
+			// A newer listing can arrive while the flags are checked. Catch up
+			// with its new entries on the same bounded worker batch.
+			fresh = false;
+		}
 	}
 
 	async runOperation(
@@ -745,10 +806,12 @@ export class LaneService {
 				}
 				case 'lane.refresh': {
 					await this.#reconcile();
+					await this.#refreshTopology(true);
+					await this.#refreshDirty(true);
 					return laneOperationReceiptSchema.parse({
 						...base,
 						completed: true,
-						state: await this.#refreshWorktrees({ fresh: true }),
+						state: this.getState(),
 					});
 				}
 				case 'lane.remove-repository': {
@@ -756,7 +819,7 @@ export class LaneService {
 					return laneOperationReceiptSchema.parse({
 						...base,
 						completed: true,
-						state: await this.refresh(),
+						state: await this.refresh({ freshTopology: true }),
 					});
 				}
 				case 'lane.add-repository':
@@ -777,9 +840,12 @@ export class LaneService {
 	}
 
 	async addRepository(root: string): Promise<LaneState> {
-		const repositoryRoot = await this.#worktrees.repositoryRoot(root);
+		const repositoryRoot = await this.#worktrees.repositoryRoot(
+			root,
+			this.#lifecycle.signal
+		);
 		await this.#store.addRepository(repositoryRoot);
-		return this.refresh();
+		return this.refresh({ freshTopology: true });
 	}
 
 	/**
@@ -854,8 +920,15 @@ export class LaneService {
 		// The agent passes wherever it is working. Resolve the checkout that
 		// contains it: that is the lane's worktree, and the requested directory
 		// (if deeper) is the Expo app inside a monorepo.
-		const repositoryRoot = await this.#worktrees.repositoryRoot(requestedPath);
-		const worktrees = await this.#worktrees.listWorktrees(repositoryRoot);
+		const discoverySignal = AbortSignal.any([signal, this.#lifecycle.signal]);
+		const repositoryRoot = await this.#worktrees.repositoryRoot(
+			requestedPath,
+			discoverySignal
+		);
+		const worktrees = await this.#worktrees.listWorktrees(
+			repositoryRoot,
+			discoverySignal
+		);
 		const worktree = worktrees
 			.map((candidate) => ({
 				...candidate,
@@ -1086,7 +1159,7 @@ export class LaneService {
 		this.#touch();
 		// The repository may be new to the store; make its worktrees visible
 		// without waiting for the next explicit refresh.
-		await this.refresh().catch(() => undefined);
+		await this.refresh({ freshTopology: true }).catch(() => undefined);
 
 		const record = this.#backendRecords.get(id);
 		if (decision?.late && record) {
@@ -2103,49 +2176,54 @@ export class LaneService {
 		}
 	}
 
-	async #refreshWorktrees({
-		fresh = false,
-	}: {
-		fresh?: boolean;
-	} = {}): Promise<LaneState> {
-		const roots = new Set(this.#store.repositories());
+	async #refreshWorktrees(): Promise<void> {
+		const registered = this.#store.repositories();
+		const roots = new Set(registered);
+		const signal = this.#lifecycle.signal;
 		for (const lane of this.#store.lanes()) {
+			if (signal.aborted) return;
 			try {
-				roots.add(await this.#worktrees.repositoryRoot(lane.worktreePath));
+				roots.add(
+					await this.#worktrees.repositoryRoot(lane.worktreePath, signal)
+				);
 			} catch {
 				// A lane whose worktree vanished is reported through its own entry.
 			}
 		}
-		const worktrees: LaneWorktree[] = [];
+		const worktrees: DiscoveredWorktree[] = [];
 		const errors: string[] = [];
 		for (const root of roots) {
+			if (signal.aborted) return;
 			try {
-				for (const entry of await this.#worktrees.listWorktrees(root, {
-					fresh,
-				})) {
-					worktrees.push({
-						path: entry.path,
-						branch: entry.branch,
-						repositoryRoot: entry.repositoryRoot,
-						dirty: entry.dirty,
-					});
+				for (const entry of await this.#worktrees.listWorktrees(root, signal)) {
+					worktrees.push(entry);
 				}
 			} catch (error) {
 				errors.push(`${root}: ${safeErrorText(error)}`);
 			}
 		}
+		const currentRoots = this.#store.repositories();
+		if (
+			signal.aborted ||
+			registered.length !== currentRoots.length ||
+			registered.some((root, index) => root !== currentRoots[index])
+		)
+			return;
 		// This bounded listing also drives backend discovery. Never let a large
 		// unrelated repository push active lanes or registered main checkouts
 		// out of it and make their existing stacks look untracked.
 		const activePaths = new Set(
 			this.#store.lanes().map((lane) => path.resolve(lane.worktreePath))
 		);
-		const priority = (worktree: LaneWorktree) =>
+		const priority = (worktree: DiscoveredWorktree) =>
 			activePaths.has(path.resolve(worktree.path))
 				? 0
 				: roots.has(worktree.path)
 					? 1
 					: 2;
+		const previous = new Map(
+			this.#worktreeCache.map((worktree) => [worktree.path, worktree])
+		);
 		this.#worktreeCache = [
 			...new Map(worktrees.map((w) => [w.path, w])).values(),
 		]
@@ -2155,10 +2233,16 @@ export class LaneService {
 					left.path.localeCompare(right.path)
 			)
 			.slice(0, 128)
-			.sort((left, right) => left.path.localeCompare(right.path));
+			.sort((left, right) => left.path.localeCompare(right.path))
+			.map((worktree) => {
+				const cached = previous.get(worktree.path);
+				return cached?.branch === worktree.branch &&
+					cached.repositoryRoot === worktree.repositoryRoot
+					? cached
+					: { ...worktree, dirty: false };
+			});
 		this.#error = errors.length ? errors.join('\n').slice(0, 4_096) : undefined;
 		this.#touch();
-		return this.getState();
 	}
 
 	#metroStatus(lane: Lane): Lane['metro'] {
