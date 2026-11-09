@@ -177,14 +177,29 @@ export function parseDiagnosticReport(
 	};
 }
 
+/** What a scan made of one report, valid while its size and mtime hold. */
+type ScannedReport = {
+	size: number;
+	mtimeMs: number;
+	record: FailureRecord | undefined;
+};
+
+/**
+ * Earlier scans' results by report path. A scan given one opens only reports
+ * that are new or changed since, and forgets every report it did not reach.
+ */
+export type DiagnosticReportCache = Map<string, ScannedReport>;
+
 export async function readDiagnosticReports(
 	directories: readonly string[],
-	now: number
+	now: number,
+	cache: DiagnosticReportCache = new Map()
 ): Promise<{ records: FailureRecord[]; issues: string[] }> {
 	const records: FailureRecord[] = [];
 	const issues: string[] = [];
+	const reached = new Set<string>();
 	for (const directory of directories.slice(0, 12)) {
-		const candidates: { name: string; mtime: number }[] = [];
+		const candidates: { name: string; size: number; mtime: number }[] = [];
 		try {
 			let inspected = 0;
 			for await (const entry of await opendir(directory)) {
@@ -200,7 +215,11 @@ export async function readDiagnosticReports(
 					() => undefined
 				);
 				if (metadata?.isFile() && metadata.mtimeMs >= now - 30 * 86_400_000)
-					candidates.push({ name: entry.name, mtime: metadata.mtimeMs });
+					candidates.push({
+						name: entry.name,
+						size: metadata.size,
+						mtime: metadata.mtimeMs,
+					});
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
@@ -215,38 +234,52 @@ export async function readDiagnosticReports(
 				'Only the newest 300 reports per diagnostic folder are inspected.'
 			);
 		let remainingBytes = 16 * 1024 * 1024;
-		for (const { name: filename } of candidates.slice(0, 300)) {
+		for (const { name: filename, size, mtime } of candidates.slice(0, 300)) {
+			if (filename.endsWith('.ips') && size > MAX_REPORT_BYTES) {
+				issues.push('An oversized diagnostic report was skipped (4 MB limit).');
+				continue;
+			}
+			const length = Math.min(
+				size,
+				filename.endsWith('.ips') ? MAX_REPORT_BYTES : 64 * 1024
+			);
+			if (length > remainingBytes) {
+				issues.push('The diagnostic scan reached its 16 MB folder limit.');
+				break;
+			}
+			const file = path.join(directory, filename);
+			const scanned = cache.get(file);
+			if (scanned?.size === size && scanned.mtimeMs === mtime) {
+				// Unchanged since an earlier scan, so it is not opened again. It
+				// still counts against the limits, so the cache never lets a scan
+				// cover more reports than reading them all would.
+				remainingBytes -= length;
+				reached.add(file);
+				if (scanned.record) records.push(scanned.record);
+				continue;
+			}
 			let handle: Awaited<ReturnType<typeof open>> | undefined;
 			try {
-				handle = await open(
-					path.join(directory, filename),
-					constants.O_RDONLY | constants.O_NOFOLLOW
-				);
+				handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
 				const metadata = await handle.stat();
-				if (!metadata.isFile() || metadata.mtimeMs < now - 30 * 86_400_000)
+				// A report that changed since it was listed may still be being
+				// written; it is read on a later scan.
+				if (
+					!metadata.isFile() ||
+					metadata.size !== size ||
+					metadata.mtimeMs !== mtime
+				)
 					continue;
-				if (filename.endsWith('.ips') && metadata.size > MAX_REPORT_BYTES) {
-					issues.push(
-						'An oversized diagnostic report was skipped (4 MB limit).'
-					);
-					continue;
-				}
-				const size = Math.min(
-					metadata.size,
-					filename.endsWith('.ips') ? MAX_REPORT_BYTES : 64 * 1024
-				);
-				if (size > remainingBytes) {
-					issues.push('The diagnostic scan reached its 16 MB folder limit.');
-					break;
-				}
-				remainingBytes -= size;
-				const bytes = Buffer.alloc(size);
+				remainingBytes -= length;
+				const bytes = Buffer.alloc(length);
 				const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
 				const record = parseDiagnosticReport(
 					bytes.subarray(0, bytesRead).toString('utf8'),
 					filename,
-					metadata.mtimeMs
+					mtime
 				);
+				cache.set(file, { size, mtimeMs: mtime, record });
+				reached.add(file);
 				if (record) records.push(record);
 			} catch {
 				/* A report may be moved or still being written; retry on the next scan. */
@@ -255,5 +288,7 @@ export async function readDiagnosticReports(
 			}
 		}
 	}
+	// Reports that vanished, aged out, or fell past a limit.
+	for (const file of cache.keys()) if (!reached.has(file)) cache.delete(file);
 	return { records, issues: [...new Set(issues)].slice(0, 12) };
 }

@@ -15,6 +15,7 @@ import {
 import type { Lane } from '../shared/lane-protocol';
 import type { SimulatorState } from '../shared/simulator-protocol';
 import {
+	type DiagnosticReportCache,
 	failureId,
 	failureText,
 	readDiagnosticReports,
@@ -57,6 +58,8 @@ export class FailureService {
 	#canSave = true;
 	#queue: Promise<void> = Promise.resolve();
 	#scan: Promise<FailureState> | undefined;
+	/** What earlier scans parsed, so a scan opens only new or changed reports. */
+	readonly #reports: DiagnosticReportCache = new Map();
 	#timer: NodeJS.Timeout | undefined;
 	#stopped = false;
 
@@ -82,6 +85,10 @@ export class FailureService {
 		this.#now = now;
 	}
 
+	/**
+	 * Loads the stored history. Diagnostic reports are not read until
+	 * `startScanning`, so a slow report folder never holds up startup.
+	 */
 	async start(): Promise<void> {
 		try {
 			await ensurePrivateDirectory(this.#directory, 'Failure history', {
@@ -112,7 +119,16 @@ export class FailureService {
 					'Previous failure history could not be read. It has been preserved; new events are in memory only. Check the failures folder in app data.';
 			}
 		}
-		await this.scan();
+	}
+
+	/**
+	 * Scans the diagnostic report folders in the background, now and every
+	 * 30 s. The first scan parses every recent report, so the desktop calls
+	 * this once its window is open; later scans open only new or changed ones.
+	 */
+	startScanning(): void {
+		if (this.#stopped || this.#timer) return;
+		void this.scan();
 		this.#timer = setInterval(() => {
 			void this.scan();
 		}, 30_000);
@@ -396,7 +412,8 @@ export class FailureService {
 		try {
 			const result = await readDiagnosticReports(
 				this.#directories,
-				this.#now()
+				this.#now(),
+				this.#reports
 			);
 			let changed = false;
 			for (const record of result.records) {

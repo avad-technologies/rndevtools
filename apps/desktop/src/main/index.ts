@@ -1803,6 +1803,9 @@ if (!app.requestSingleInstanceLock()) {
 			await agentCliService.start();
 			if (shutdownStarted) return;
 			createWindow();
+			// The first diagnostic report scan parses every recent report, so it
+			// runs in the background once the window is open, never before it.
+			failureService.startScanning();
 
 			app.on('activate', () => {
 				if (!shutdownStarted && BrowserWindow.getAllWindows().length === 0) {

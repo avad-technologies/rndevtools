@@ -1,9 +1,11 @@
 import {
+	chmod,
 	mkdir,
 	mkdtemp,
 	rm,
 	symlink,
 	truncate,
+	unlink,
 	utimes,
 	writeFile,
 } from 'node:fs/promises';
@@ -11,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+	type DiagnosticReportCache,
 	parseDiagnosticReport,
 	readDiagnosticReports,
 } from './failure-diagnostics';
@@ -196,4 +199,105 @@ describe('bounded simulator diagnostics', () => {
 		expect(result.records[0]?.source).toBe('A-newest.ips');
 		expect(result.issues).toEqual([expect.stringContaining('newest 300')]);
 	}, 15_000);
+
+	describe('across scans', () => {
+		// Whole seconds, so setting the time again reproduces it exactly.
+		const listedAt = new Date(Math.floor(now / 1_000) * 1_000 - 60_000);
+		const changedAt = new Date(listedAt.getTime() + 1_000);
+		async function place(name: string, content: string, at = listedAt) {
+			const file = path.join(root, name);
+			await writeFile(file, content);
+			await utimes(file, at, at);
+			return file;
+		}
+		const processes = (
+			result: Awaited<ReturnType<typeof readDiagnosticReports>>
+		) => result.records.map((record) => record.process);
+
+		it('reuses what it parsed while a report keeps its size and modification time, and reads it again once either changes', async () => {
+			const cache: DiagnosticReportCache = new Map();
+			const file = await place('ExampleApp.ips', report());
+			const first = await readDiagnosticReports([root], now, cache);
+			expect(processes(first)).toEqual(['ExampleApp']);
+
+			// New bytes of the same length under the same time are not read.
+			await place('ExampleApp.ips', report({ procName: 'ExampleApq' }));
+			expect(await readDiagnosticReports([root], now, cache)).toEqual(first);
+			expect(processes(await readDiagnosticReports([root], now))).toEqual([
+				'ExampleApq',
+			]);
+
+			await utimes(file, changedAt, changedAt);
+			expect(
+				processes(await readDiagnosticReports([root], now, cache))
+			).toEqual(['ExampleApq']);
+			await place(
+				'ExampleApp.ips',
+				report({ procName: 'SpringBoard' }),
+				changedAt
+			);
+			expect(
+				processes(await readDiagnosticReports([root], now, cache))
+			).toEqual(['SpringBoard']);
+
+			// A report that vanished leaves nothing behind.
+			await unlink(file);
+			expect(await readDiagnosticReports([root], now, cache)).toEqual({
+				records: [],
+				issues: [],
+			});
+			expect(cache.size).toBe(0);
+		});
+
+		it.skipIf(process.getuid?.() === 0)(
+			'never opens an unchanged report again',
+			async () => {
+				const cache: DiagnosticReportCache = new Map();
+				const file = await place('ExampleApp.ips', report());
+				const first = await readDiagnosticReports([root], now, cache);
+				expect(first.records).toHaveLength(1);
+				// chmod moves only the change time, so the report is unchanged,
+				// and any open(2) of it now fails.
+				await chmod(file, 0o000);
+				try {
+					expect(await readDiagnosticReports([root], now, cache)).toEqual(
+						first
+					);
+					expect((await readDiagnosticReports([root], now)).records).toEqual(
+						[]
+					);
+				} finally {
+					await chmod(file, 0o600);
+				}
+			}
+		);
+
+		it('charges reports it already knows to the folder limits, as if it read them again', async () => {
+			const cache: DiagnosticReportCache = new Map();
+			// Four 4 MB reports fill the 16 MB folder budget, so the older,
+			// smaller report behind them is never inspected.
+			for (let index = 0; index < 4; index += 1) {
+				const file = await place(`Large-${index}.ips`, '');
+				await truncate(file, 4 * 1024 * 1024);
+				await utimes(file, listedAt, listedAt);
+			}
+			const oversized = await place('Oversized.ips', '');
+			await truncate(oversized, 5 * 1024 * 1024);
+			await utimes(oversized, listedAt, listedAt);
+			await place(
+				'ExampleApp.ips',
+				report(),
+				new Date(listedAt.getTime() - 60_000)
+			);
+			const first = await readDiagnosticReports([root], now, cache);
+			expect(first).toEqual({
+				records: [],
+				issues: [
+					expect.stringContaining('oversized'),
+					expect.stringContaining('16 MB folder limit'),
+				],
+			});
+			expect(await readDiagnosticReports([root], now, cache)).toEqual(first);
+		});
+	});
 });

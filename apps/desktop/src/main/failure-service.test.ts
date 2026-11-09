@@ -5,6 +5,7 @@ import {
 	rm,
 	stat,
 	symlink,
+	utimes,
 	writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -68,6 +69,7 @@ describe('persistent failure monitoring', () => {
 		);
 		service = make();
 		await service.start();
+		await service.scan();
 		expect(service.getState().records).toHaveLength(1);
 		const record = service.getState().records[0];
 		if (!record) throw new Error('Expected a crash record');
@@ -89,6 +91,7 @@ describe('persistent failure monitoring', () => {
 		await writeFile(historyFile, JSON.stringify(stored));
 		service = make();
 		await service.start();
+		await service.scan();
 		expect(service.getState().records).toEqual([
 			expect.objectContaining({ resolvedAt: now, kind: 'simulator-crash' }),
 		]);
@@ -102,6 +105,56 @@ describe('persistent failure monitoring', () => {
 			(await stat(path.join(root, 'history/history.json'))).mode & 0o777
 		).toBe(0o600);
 		expect((await stat(path.join(root, 'history'))).mode & 0o777).toBe(0o700);
+	});
+	it('reads only its own history at start, and scans for reports in the background once scanning starts', async () => {
+		await writeFile(
+			path.join(root, 'reports/SpringBoard.ips'),
+			JSON.stringify({
+				procName: 'SpringBoard',
+				parentProc: 'launchd_sim',
+				coalitionName: `com.apple.CoreSimulator.SimDevice.${udid}`,
+				exception: { type: 'EXC_CRASH', signal: 'SIGABRT' },
+			})
+		);
+		const service = make();
+		await service.start();
+		expect(service.getState()).toMatchObject({ records: [], checkedAt: 0 });
+		service.startScanning();
+		// Joins the scan that startScanning began.
+		await service.scan();
+		expect(service.getState()).toMatchObject({
+			records: [expect.objectContaining({ kind: 'simulator-crash' })],
+			checkedAt: now,
+		});
+	});
+	it('does not read an unchanged report again on later scans', async () => {
+		const file = path.join(root, 'reports/ExampleApp.ips');
+		// Whole seconds, so setting the time again reproduces it exactly.
+		const at = new Date(Math.floor(now / 1_000) * 1_000 - 60_000);
+		const crash = (procName: string) =>
+			JSON.stringify({
+				procName,
+				parentProc: 'launchd_sim',
+				coalitionName: `com.apple.CoreSimulator.SimDevice.${udid}`,
+				exception: { type: 'EXC_CRASH', signal: 'SIGABRT' },
+			});
+		const service = make();
+		const titles = () =>
+			service.getState().records.map((record) => record.title);
+		await writeFile(file, crash('ExampleApp'));
+		await utimes(file, at, at);
+		await service.start();
+		await service.scan();
+		expect(titles()).toEqual(['ExampleApp crashed']);
+		// The same size and modification time: the earlier parse stands.
+		await writeFile(file, crash('ExampleApq'));
+		await utimes(file, at, at);
+		await service.scan();
+		expect(titles()).toEqual(['ExampleApp crashed']);
+		const changedAt = new Date(at.getTime() + 1_000);
+		await utimes(file, changedAt, changedAt);
+		await service.scan();
+		expect(titles()).toEqual(['ExampleApq crashed', 'ExampleApp crashed']);
 	});
 	it('records intentional restarts separately from unexpected exits with code and signal', async () => {
 		const service = make();
