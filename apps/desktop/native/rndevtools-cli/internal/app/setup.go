@@ -237,7 +237,9 @@ JSON payload on stdin.
                  rndevtools supabase. Anything it cannot read runs.
   session-end    Release everything the ending session holds: stop its lanes,
                  drop its claims, release its stacks. Devices return to the
-                 pool at once instead of after the grace period.
+                 pool at once; without it a Claude Code session's holds go
+                 10 minutes after its process exits, and a Codex session's
+                 stay until it releases them.
 
 Any other event exits 0 with a note on stderr: only a block exits 2.
 `

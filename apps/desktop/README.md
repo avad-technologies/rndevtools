@@ -192,8 +192,10 @@ as-built notes are in [`experiments/supabase-backends/`](experiments/supabase-ba
   becomes a request you approve.
 - **Holds and cleanup.** Stacks are held by lanes, agent sessions and your pins,
   like Simulators. One stops 60 s after its last holder releases it, 10 min after
-  that holder's session is gone, or at once when its worktree is deleted. Data is
-  kept. Destroying is never automatic: Clean up suggests orphaned, stale-branch and
+  a Claude Code holder's process has exited, or at once when its worktree is
+  deleted. A Codex holder keeps its hold until it releases it or its session-end
+  hook runs, because an idle Codex chat is no proof that the session ended. Data
+  is kept. Destroying is never automatic: Clean up suggests orphaned, stale-branch and
   long-stopped stacks with their sizes.
 - **Branch switches.** Stack identity includes the git branch. RN Devtools follows
   a held stack to the new branch after HEAD has been stable for 30 s and no rebase
