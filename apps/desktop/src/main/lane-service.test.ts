@@ -2579,6 +2579,104 @@ describe('LaneService', () => {
 			await refreshed;
 			expect(service.getState().lanes).toEqual([]);
 		});
+
+		it("keeps a restarted lane's Metro verified when a reconcile that began before the restart reaches it", async () => {
+			metro.healthyPorts.add(8_100);
+			metro.healthyPorts.add(8_101);
+			const first = await service.runOperation({
+				actionId: 'op-race-a',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const second = await service.runOperation({
+				actionId: 'op-race-b',
+				kind: 'lane.start',
+				worktreePath: OTHER_WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = second.lane?.id as string;
+			expect(first.lane?.port).toBe(8_100);
+			expect(second.lane?.port).toBe(8_101);
+			// The reconcile holds on the first lane's probe, with its snapshot of
+			// the second lane taken before that lane's Metro is replaced.
+			const probing = deferred<void>();
+			const released = deferred<void>();
+			const probe = metro.isHealthy;
+			metro.isHealthy = async (port, pid) => {
+				if (port === 8_100) {
+					probing.resolve();
+					await released.promise;
+				}
+				return probe(port, pid);
+			};
+			const refreshed = service.runOperation({
+				actionId: 'op-race-refresh',
+				kind: 'lane.refresh',
+			});
+			await probing.promise;
+			await service.restartMetro(laneId, 'operator');
+			const restarted = service
+				.getState()
+				.lanes.find((lane) => lane.id === laneId);
+			expect(restarted?.metroPid).not.toBe(second.lane?.metroPid);
+			released.resolve();
+			expect((await refreshed).completed).toBe(true);
+			await service.runOperation({
+				actionId: 'op-race-refresh-2',
+				kind: 'lane.refresh',
+			});
+			expect(
+				service.getState().lanes.find((lane) => lane.id === laneId)
+			).toMatchObject({ metroPid: restarted?.metroPid, metro: 'ready' });
+			await expect(
+				service.restartMetro(laneId, 'operator')
+			).resolves.toBeUndefined();
+		});
+
+		it("keeps a lane's Metro verified while a launch re-checks its identity", async () => {
+			healthyMetro();
+			const started = await service.runOperation({
+				actionId: 'op-reprobe-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+			});
+			expect(started.lane?.metro).toBe('ready');
+			const verifying = deferred<void>();
+			const verified = deferred<boolean>();
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockImplementation(async () => {
+					verifying.resolve();
+					return verified.promise;
+				});
+			try {
+				const launching = service.runOperation({
+					actionId: 'op-reprobe-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				await verifying.promise;
+				// Whatever reads the lane while the probe runs still sees the Metro
+				// it saw before the probe began.
+				await service.runOperation({
+					actionId: 'op-reprobe-refresh',
+					kind: 'lane.refresh',
+				});
+				expect(service.getState().lanes[0]?.metro).toBe('ready');
+				verified.resolve(true);
+				expect((await launching).completed).toBe(true);
+			} finally {
+				verify.mockRestore();
+			}
+		});
 	});
 
 	describe('lane environment for Metro', () => {

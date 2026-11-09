@@ -373,7 +373,11 @@ export class LaneService {
 	readonly #stoppingLanes = new Set<string>();
 	/** PIDs spawned here or proven to belong to a surviving lease. */
 	readonly #verifiedMetros = new Map<string, number>();
-	readonly #metroIdentityErrors = new Map<string, string>();
+	/** Why a lane's Metro could not be adopted or cleaned up, by the PID it concerns. */
+	readonly #metroIdentityErrors = new Map<
+		string,
+		{ pid: number; message: string }
+	>();
 	/** Each lane's local backend, by lane id. */
 	readonly #backendRecords = new Map<string, LaneBackendRecord>();
 	/** Aborted by stop(): work the lanes do on their own ends with it. */
@@ -502,7 +506,10 @@ export class LaneService {
 		const laneByWorktree = new Map(
 			lanes.map((lane) => [lane.worktreePath, lane.id])
 		);
-		const error = [this.#error, ...this.#metroIdentityErrors.values()]
+		const error = [
+			this.#error,
+			...[...this.#metroIdentityErrors.values()].map(({ message }) => message),
+		]
 			.filter(Boolean)
 			.join('\n')
 			.slice(0, 4_096);
@@ -1200,7 +1207,7 @@ export class LaneService {
 	): Promise<void> {
 		const pid = lane.metroPid;
 		if (pid === undefined) return;
-		this.#verifiedMetros.delete(lane.id);
+		this.#unverifyMetro(lane.id, pid);
 		await this.#recordMetroStop(lane, reason);
 		try {
 			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
@@ -1211,7 +1218,7 @@ export class LaneService {
 			)
 				return;
 			const message = `${reason} failed for Metro ${pid} on port ${lane.port}: ${safeErrorText(error)} The lane was retained so cleanup can be retried.`;
-			this.#metroIdentityErrors.set(lane.id, message);
+			this.#metroIdentityErrors.set(lane.id, { pid, message });
 			try {
 				await this.#store.upsert({ ...lane, metro: 'starting' });
 			} catch (persistError) {
@@ -2111,8 +2118,13 @@ export class LaneService {
 				changed = true;
 			}
 		}
-		for (const lane of this.#store.lanes()) {
+		for (const snapshot of this.#store.lanes()) {
 			if (this.#stopped) return;
+			// Earlier lanes' probes awaited. Read this lane as it is now, and leave
+			// one whose Metro was replaced meanwhile to whatever replaced it: its
+			// old, dead PID says nothing about the Metro now serving the lane.
+			const lane = this.#store.get(snapshot.id);
+			if (!lane || lane.metroPid !== snapshot.metroPid) continue;
 			const hold = holds?.get(lane.simulatorUdid.toUpperCase());
 			if (
 				hold?.laneId === lane.id &&
@@ -2250,8 +2262,10 @@ export class LaneService {
 			lane.metroPid === undefined ||
 			!this.#metro.isProcessRunning(lane.metroPid)
 		) {
-			this.#verifiedMetros.delete(lane.id);
-			this.#metroIdentityErrors.delete(lane.id);
+			// Only what was known about this very PID goes: a Metro that replaced
+			// it keeps its proof and its refusal.
+			this.#unverifyMetro(lane.id, lane.metroPid);
+			this.#clearIdentityError(lane.id, lane.metroPid);
 			return 'stopped';
 		}
 		if (this.#verifiedMetros.get(lane.id) !== lane.metroPid) return 'starting';
@@ -2308,11 +2322,12 @@ export class LaneService {
 	): Promise<boolean> {
 		const pid = lane.metroPid;
 		if (pid === undefined || !this.#metro.isProcessRunning(pid)) {
-			this.#verifiedMetros.delete(lane.id);
+			this.#unverifyMetro(lane.id, pid);
 			return false;
 		}
 		if (!fresh && this.#verifiedMetros.get(lane.id) === pid) return true;
-		this.#verifiedMetros.delete(lane.id);
+		// A fresh probe keeps the proof it re-checks until it has an answer, so
+		// whatever reads the lane meanwhile sees the Metro it saw before.
 		try {
 			if (
 				!(await this.#metro.verifyOwnership(
@@ -2321,10 +2336,12 @@ export class LaneService {
 					laneAppDirectory(lane)
 				))
 			) {
-				this.#metroIdentityErrors.delete(lane.id);
+				this.#unverifyMetro(lane.id, pid);
+				this.#clearIdentityError(lane.id, pid);
 				return false;
 			}
 		} catch (error) {
+			this.#unverifyMetro(lane.id, pid);
 			const message = `Cannot adopt Metro for lane ${lane.id}: ${safeErrorText(error)} Lane up will retry ownership verification.`;
 			const current = this.#store.get(lane.id);
 			if (
@@ -2332,7 +2349,7 @@ export class LaneService {
 				current?.metroPid === pid &&
 				!this.#stoppingLanes.has(lane.id)
 			) {
-				this.#metroIdentityErrors.set(lane.id, message);
+				this.#metroIdentityErrors.set(lane.id, { pid, message });
 				await this.#trackMaintenanceWrite(
 					this.#store.upsert({ ...current, metro: 'starting' })
 				).catch(() => undefined);
@@ -2345,11 +2362,30 @@ export class LaneService {
 			this.#stopped ||
 			current?.metroPid !== pid ||
 			this.#stoppingLanes.has(lane.id)
-		)
+		) {
+			this.#unverifyMetro(lane.id, pid);
 			return false;
+		}
 		this.#verifiedMetros.set(lane.id, pid);
 		this.#metroIdentityErrors.delete(lane.id);
 		return true;
+	}
+
+	/**
+	 * Drops the proof that `pid` is the lane's Metro, and nothing else: a lane
+	 * read before its Metro was replaced must not unverify the replacement.
+	 */
+	#unverifyMetro(laneId: string, pid: number | undefined): void {
+		if (this.#verifiedMetros.get(laneId) === pid) {
+			this.#verifiedMetros.delete(laneId);
+		}
+	}
+
+	/** Drops the lane's adoption or cleanup refusal if it concerns `pid`. */
+	#clearIdentityError(laneId: string, pid: number | undefined): void {
+		if (this.#metroIdentityErrors.get(laneId)?.pid === pid) {
+			this.#metroIdentityErrors.delete(laneId);
+		}
 	}
 
 	#isMetroRunning(lane: Lane): boolean {
