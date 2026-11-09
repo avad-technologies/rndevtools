@@ -1396,6 +1396,57 @@ describe('LaneService', () => {
 		expect(service.getState().lanes).toHaveLength(1);
 	});
 
+	it.each([
+		['success', undefined],
+		['failure', 'Could not inspect process 1001; refusing to stop it.'],
+	] as const)(
+		"gives a second stop of a lane that is stopping the first one's %s",
+		async (_outcome, failure) => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-double-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			const stopping = deferred<void>();
+			const release = deferred<void>();
+			const stop = metro.stop;
+			metro.stop = async (pid, port, directory, options) => {
+				stopping.resolve();
+				await release.promise;
+				if (failure) throw new Error(failure);
+				await stop(pid, port, directory, options);
+			};
+			const first = service.runOperation({
+				actionId: 'op-double-stop-1',
+				kind: 'lane.stop',
+				laneId,
+			});
+			await stopping.promise;
+			const second = service.runOperation({
+				actionId: 'op-double-stop-2',
+				kind: 'lane.stop',
+				laneId,
+			});
+			release.resolve();
+			const receipts = await Promise.all([first, second]);
+			expect(receipts.map((receipt) => receipt.completed)).toEqual(
+				failure ? [false, false] : [true, true]
+			);
+			expect(receipts.map((receipt) => receipt.error)).toEqual(
+				failure ? [failure, failure] : [undefined, undefined]
+			);
+			expect(metro.stopped).toEqual(
+				failure ? [] : [{ pid: started.lane?.metroPid, port: 8_100 }]
+			);
+			expect(service.getState().lanes).toHaveLength(failure ? 1 : 0);
+		}
+	);
+
 	describe('a Metro that outlives its SIGTERM', () => {
 		let laneId: string;
 		let pid: number;

@@ -376,8 +376,11 @@ export class LaneService {
 	 * directory, settled or not.
 	 */
 	readonly #startsByApp = new Map<string, Promise<void>>();
-	/** A stop owns its lane until signalling and durable removal settle. */
-	readonly #stoppingLanes = new Set<string>();
+	/**
+	 * A stop owns its lane until signalling and durable removal settle; a
+	 * second stop of the lane waits for it.
+	 */
+	readonly #stoppingLanes = new Map<string, Promise<void>>();
 	/** PIDs spawned here or proven to belong to a surviving lease. */
 	readonly #verifiedMetros = new Map<string, number>();
 	/** Why a lane's Metro could not be adopted or cleaned up, by the PID it concerns. */
@@ -1917,12 +1920,24 @@ export class LaneService {
 		laneId: string,
 		reason = 'Explicit lane stop or session release'
 	): Promise<void> {
+		// A stop already under way is the stop asked for: a double click, a
+		// session release racing the operator, or a grace-period teardown gets
+		// its outcome instead of a refusal. Starts, launches and restarts are
+		// still refused while a lane stops.
+		const underWay = this.#stoppingLanes.get(laneId);
+		if (underWay) return underWay;
 		const lane = this.#requireLane(laneId);
-		this.#stoppingLanes.add(laneId);
+		// The lane is the stop's from before its first step.
+		const stopping = Promise.resolve().then(() =>
+			this.#stopLaneNow(lane, reason)
+		);
+		this.#stoppingLanes.set(laneId, stopping);
 		try {
-			await this.#stopLaneNow(lane, reason);
+			await stopping;
 		} finally {
-			this.#stoppingLanes.delete(laneId);
+			if (this.#stoppingLanes.get(laneId) === stopping) {
+				this.#stoppingLanes.delete(laneId);
+			}
 		}
 	}
 
