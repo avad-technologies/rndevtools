@@ -2352,6 +2352,7 @@ function createRoutes({
 								...(command.udid ? { simulatorUdid: command.udid } : {}),
 								environment: command.environment ?? 'development',
 								launch: command.launch ?? true,
+								...(command.restart ? { restart: true } : {}),
 								...(command.preferredPort !== undefined
 									? { preferredPort: command.preferredPort }
 									: {}),
@@ -2381,6 +2382,7 @@ function createRoutes({
 								kind: 'lane.launch',
 								laneId: lane.id,
 								...(command.url ? { url: command.url } : {}),
+								...(command.restart ? { restart: true } : {}),
 								...(laneAgent ? { agent: laneAgent } : {}),
 							},
 							context.signal

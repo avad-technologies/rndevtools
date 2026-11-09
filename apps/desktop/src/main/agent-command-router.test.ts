@@ -3656,6 +3656,90 @@ describe('agent command router', () => {
 		);
 	});
 
+	describe('lane restarts and failed launches', () => {
+		const lane: Lane = {
+			id: 'lane-11111111-2222-4333-8444-555555555555',
+			worktreePath: '/Users/dev/app-feature',
+			branch: 'feature',
+			simulatorUdid: UDID,
+			environment: 'development',
+			port: 8_100,
+			metroPid: 42,
+			metro: 'starting',
+			logPath: '/Users/dev/lane.log',
+			scheme: 'exampleapp',
+			bundleIdentifier: 'com.example.app',
+			startedAt: now,
+		};
+		const state: LaneState = {
+			revision: 1,
+			updatedAt: now,
+			environments: [...DEFAULT_LANE_ENVIRONMENTS],
+			lanes: [lane],
+			worktrees: [],
+			repositories: [],
+			deviceRequests: [],
+		};
+
+		/** A lane service that answers every operation with `outcome`. */
+		function lanesAnswering(
+			outcome: Omit<LaneOperationReceipt, 'actionId' | 'kind'>
+		) {
+			const operations: LaneOperation[] = [];
+			return {
+				operations,
+				lanes: {
+					getState: () => state,
+					refresh: async () => state,
+					runOperation: async (
+						operation: LaneOperation
+					): Promise<LaneOperationReceipt> => {
+						operations.push(operation);
+						return {
+							actionId: operation.actionId,
+							kind: operation.kind,
+							...outcome,
+						};
+					},
+				},
+			};
+		}
+
+		it('passes restart to lane up and launch only when the caller asks', async () => {
+			const { dependencies } = fixture();
+			const { lanes, operations } = lanesAnswering({ completed: true, lane });
+			const handler = createAgentCommandRouter({ ...dependencies, lanes });
+			const up = {
+				kind: 'lane',
+				operation: 'up',
+				worktreePath: '/Users/dev/app-feature',
+			} as const;
+			const launch = {
+				kind: 'lane',
+				operation: 'launch',
+				laneId: lane.id,
+			} as const;
+			await handler({ ...up, restart: true }, context);
+			await handler(up, context);
+			await handler({ ...up, restart: false }, context);
+			await handler({ ...launch, url: 'checkout', restart: true }, context);
+			await handler({ ...launch, url: 'checkout' }, context);
+			expect(operations[0]).toMatchObject({
+				kind: 'lane.start',
+				restart: true,
+			});
+			expect(operations[1]).not.toHaveProperty('restart');
+			expect(operations[2]).not.toHaveProperty('restart');
+			expect(operations[3]).toMatchObject({
+				kind: 'lane.launch',
+				laneId: lane.id,
+				url: 'checkout',
+				restart: true,
+			});
+			expect(operations[4]).not.toHaveProperty('restart');
+		});
+	});
+
 	describe('local Supabase', () => {
 		const STACK_ID = SUPABASE_DEMO_IDS.featCheckout;
 		const WORKTREE = '/Users/dev/example-app-wt/feat-checkout';

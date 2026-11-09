@@ -203,6 +203,68 @@ describe('lane backends on the wire', () => {
 		});
 		expect(state.deviceRequests[0]?.backend).toBe('required');
 	});
+
+	it('takes restart on lane.start and lane.launch, and leaves an omitted one omitted', () => {
+		expect(
+			laneOperationSchema.parse({
+				actionId: 'op-1',
+				kind: 'lane.start',
+				worktreePath: '/Users/dev/app',
+				restart: true,
+			})
+		).toMatchObject({ kind: 'lane.start', launch: true, restart: true });
+		expect(
+			laneOperationSchema.parse({
+				actionId: 'op-2',
+				kind: 'lane.launch',
+				laneId: lane().id,
+				url: 'checkout',
+				restart: true,
+			})
+		).toMatchObject({ kind: 'lane.launch', url: 'checkout', restart: true });
+		for (const kind of ['lane.start', 'lane.launch'] as const) {
+			expect(
+				laneOperationSchema.parse({
+					actionId: 'op-3',
+					kind,
+					...(kind === 'lane.start'
+						? { worktreePath: '/Users/dev/app' }
+						: { laneId: lane().id }),
+				})
+			).not.toHaveProperty('restart');
+		}
+		for (const kind of ['lane.stop', 'lane.log'] as const) {
+			expect(
+				laneOperationSchema.safeParse({
+					actionId: 'op-4',
+					kind,
+					laneId: lane().id,
+					restart: true,
+				}).success
+			).toBe(false);
+		}
+	});
+
+	it('keeps an asked-for restart on a parked device request', () => {
+		const state = laneStateSchema.parse({
+			...emptyState,
+			deviceRequests: [
+				{
+					id: 'device-request-1',
+					status: 'pending',
+					requestedAt: 1,
+					updatedAt: 1,
+					message: 'All 2 available Simulators are in use.',
+					worktreePath: '/Users/dev/app-feature-c',
+					branch: 'feature-c',
+					environment: 'development',
+					launch: true,
+					restart: true,
+				},
+			],
+		});
+		expect(state.deviceRequests[0]?.restart).toBe(true);
+	});
 });
 
 describe('laneDevClientLaunchUrl', () => {

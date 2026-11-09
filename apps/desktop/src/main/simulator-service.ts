@@ -187,6 +187,20 @@ function errorText(error: unknown): string {
 		.slice(0, MAX_JOB_ERROR_LENGTH);
 }
 
+/**
+ * Whether `simctl terminate` failed only because the app was not running.
+ * The Simulator's FrontBoard refuses that request with "found nothing to
+ * terminate", which simctl prints in the error it writes to stderr; a
+ * cancelled or timed-out command never counts.
+ */
+function foundNothingToTerminate(error: unknown): boolean {
+	return (
+		error instanceof SimulatorCommandError &&
+		error.kind === 'failed' &&
+		/found nothing to terminate/i.test(`${error.stderr}\n${error.stdout}`)
+	);
+}
+
 function actionDeviceUdid(action: SimulatorAction): string | undefined {
 	return 'udid' in action ? action.udid : undefined;
 }
@@ -1555,10 +1569,15 @@ export class SimulatorService {
 			return undefined;
 		}
 		if (action.kind === 'app.terminate') {
-			await this.#run(
-				['terminate', action.udid, action.bundleIdentifier],
-				signal
-			);
+			try {
+				await this.#run(
+					['terminate', action.udid, action.bundleIdentifier],
+					signal
+				);
+			} catch (error) {
+				// An app that is not running is already where a terminate leaves it.
+				if (!foundNothingToTerminate(error)) throw error;
+			}
 			return undefined;
 		}
 		if (action.kind === 'app.openUniversalLink') {

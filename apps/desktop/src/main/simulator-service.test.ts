@@ -1025,6 +1025,76 @@ describe('simulator service', () => {
 		await service.stop();
 	});
 
+	it('counts terminating an app that is not running as done, and fails on anything else', async () => {
+		const provider = new FakeProvider();
+		const originalRun = provider.runSimctl.getMockImplementation();
+		let terminateError: SimulatorCommandError | undefined;
+		provider.runSimctl.mockImplementation(async (args, options = {}) => {
+			if (args[0] === 'terminate' && terminateError) {
+				provider.commands.push({ args: [...args], options });
+				throw terminateError;
+			}
+			if (!originalRun) throw new Error('Missing fake runner');
+			return originalRun(args, options);
+		});
+		const { service } = await createService(provider);
+		const terminate = (actionId: string) =>
+			service.runAction(
+				parsedAction({
+					actionId,
+					kind: 'app.terminate',
+					udid: UDID,
+					bundleIdentifier: 'com.example.app',
+				})
+			).jobId ?? '';
+
+		// The Simulator's FrontBoard refuses an app with no running copy with
+		// "found nothing to terminate", and simctl prints that in its error.
+		terminateError = new SimulatorCommandError(
+			'xcrun failed with exit code 3.',
+			{
+				kind: 'failed',
+				exitCode: 3,
+				stderr:
+					'An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=164):\nThe request to terminate "com.example.app" failed. found nothing to terminate\n',
+			}
+		);
+		expect(
+			(await waitForJob(service, terminate('terminate-not-running'))).message
+		).toBe('Simulator action completed.');
+
+		terminateError = new SimulatorCommandError(
+			'xcrun failed with exit code 149.',
+			{
+				kind: 'failed',
+				exitCode: 149,
+				stderr: 'Unable to lookup in current state: Shutdown\n',
+			}
+		);
+		expect(
+			(await waitForJob(service, terminate('terminate-shutdown'), 'failed'))
+				.message
+		).toBe('xcrun failed with exit code 149.');
+
+		// Only a command that ran and refused counts; one that timed out does not.
+		terminateError = new SimulatorCommandError('xcrun timed out.', {
+			kind: 'timeout',
+			stderr: 'found nothing to terminate',
+		});
+		await waitForJob(service, terminate('terminate-timeout'), 'failed');
+
+		terminateError = undefined;
+		await waitForJob(service, terminate('terminate-running'));
+		expect(
+			provider.commands
+				.filter((command) => command.args[0] === 'terminate')
+				.map((command) => command.args)
+		).toEqual(
+			Array.from({ length: 4 }, () => ['terminate', UDID, 'com.example.app'])
+		);
+		await service.stop();
+	});
+
 	it('rejects app-unscoped privacy reset at the backend boundary', async () => {
 		const { provider, service } = await createService();
 		expect(() =>

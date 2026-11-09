@@ -241,6 +241,8 @@ const laneDeviceRequestSchema = z.strictObject({
 	environment: laneEnvironmentIdSchema,
 	preferredPort: portSchema.optional(),
 	launch: z.boolean(),
+	/** The start asked to restart the app, kept for when it runs. */
+	restart: z.boolean().optional(),
 	slimProfileId: identifierSchema.optional(),
 	/** The backend policy the start asked for, kept for when it runs. */
 	backend: laneBackendPolicySchema.optional(),
@@ -289,6 +291,17 @@ export const laneOperationSchema = z.discriminatedUnion('kind', [
 		/** Open the dev client against the leased Metro once it is healthy. */
 		launch: z.boolean().default(true),
 		/**
+		 * Terminate the lane's app on its Simulator before the dev client
+		 * opens, so it starts fresh with this lane's Metro alone. A new lane
+		 * does that on its first launch anyway, as far as the Simulator lets
+		 * it; this asks for it, so a terminate that fails fails the launch,
+		 * and asks for it when the start resumes a lane that has launched
+		 * before. It needs the bundle identifier the worktree's app.json
+		 * declared when the lane started, and a start that does not launch
+		 * ignores it.
+		 */
+		restart: z.boolean().optional(),
+		/**
 		 * Apply this SimSlim profile to the Simulator before Metro starts, so the
 		 * dev client's first launch lands on a device whose services are already
 		 * trimmed. See `laneSlimSchema` for the gates that still apply.
@@ -320,6 +333,13 @@ export const laneOperationSchema = z.discriminatedUnion('kind', [
 		laneId: laneIdSchema,
 		/** A bare path uses the lane's scheme; a full URL passes through. */
 		url: z.string().min(1).max(2_048).optional(),
+		/**
+		 * Terminate the lane's app before opening the dev client or `url`; a
+		 * terminate that fails fails the launch. Without it only the lane's
+		 * first launch terminates the app, best effort, and only when that
+		 * launch opens the dev client; a deep link keeps the app's state.
+		 */
+		restart: z.boolean().optional(),
 		agent: laneAgentSchema.pick({ kind: true, sessionId: true }).optional(),
 	}),
 	z.strictObject({

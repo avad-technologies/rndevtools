@@ -182,6 +182,11 @@ type LaneBackendRecord = {
 	generation: number;
 	/** A dev-client launch held back until the backend is ready. */
 	deferredLaunch: boolean;
+	/**
+	 * The held-back launch was asked to restart the app, which it does when
+	 * it opens. Never set without `deferredLaunch`: it goes with that launch.
+	 */
+	deferredRestart: boolean;
 	metro?: 'restarted' | 'unchanged' | 'needs-restart' | undefined;
 	/** The lane's own word on its backend, such as a restart that failed. */
 	note?: string | undefined;
@@ -215,6 +220,19 @@ class LaneBackendError extends Error {
 		);
 		this.summary = summary;
 	}
+}
+
+/**
+ * A restart terminates the app by its bundle identifier, which a lane reads
+ * from the worktree's app.json only when it starts; without it nothing names
+ * the app. A lane that started without one keeps having none.
+ */
+function restartWithoutBundleIdentifier(laneId?: string): Error {
+	return new Error(
+		laneId
+			? `A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first launch restarts the app; or run this without restart.`
+			: "A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart."
+	);
 }
 
 /**
@@ -338,7 +356,9 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * refuse to steal a device or port, boot the Simulator through the shared
  * mutation pipeline, optionally slim it, start a detached Metro, wait for it
  * to answer, and send the dev client a launch URL that points at exactly
- * that Metro.
+ * that Metro. A lane's first dev-client launch, and any launch asked to
+ * restart, terminates a copy of the app already running first, so the app
+ * starts fresh instead of being re-pointed from another lane's Metro.
  *
  * Slimming rides along but never bypasses its gates. A lane start may name a
  * SimSlim profile; the desktop applies it before Metro starts, and the SimSlim
@@ -834,7 +854,8 @@ export class LaneService {
 						operation.laneId,
 						operation.url,
 						operation.agent,
-						signal
+						signal,
+						{ restart: operation.restart === true }
 					);
 					return laneOperationReceiptSchema.parse({
 						...base,
@@ -1112,6 +1133,11 @@ export class LaneService {
 		const identity = await this.#worktrees.readExpoIdentity(
 			appPath ?? worktreePath
 		);
+		// A new lane's first launch restarts its app anyway, but one that was
+		// asked to and cannot name the app fails before anything boots.
+		if (input.restart && input.launch && !identity.bundleIdentifier) {
+			throw restartWithoutBundleIdentifier();
+		}
 		// Validate the slim request before anything is booted or spawned, so a
 		// typo in a profile id fails fast instead of after a 20s boot.
 		const slimRequest = input.slimProfileId
@@ -1197,6 +1223,10 @@ export class LaneService {
 				const record = this.#recordBackend(id, backendPolicy, decision.summary);
 				record.env = decision.env;
 				record.deferredLaunch = input.launch && decision.late !== undefined;
+				// The first launch restarts the app anyway; one asked for stays
+				// asked for, so a terminate that fails fails that launch.
+				record.deferredRestart =
+					record.deferredLaunch && input.restart === true;
 			}
 			// The reservation held the device for this start, but a claim that
 			// got in anyway (as one can once an abandoned start's grace period
@@ -1228,7 +1258,9 @@ export class LaneService {
 			this.#awaitLateAttach(lane, record.generation, decision.late);
 		}
 		if (input.launch && !record?.deferredLaunch) {
-			lane = await this.launchLane(id, undefined, input.agent, signal);
+			lane = await this.launchLane(id, undefined, input.agent, signal, {
+				restart: input.restart === true,
+			});
 		}
 		return { lane: this.#view(lane) };
 	}
@@ -1443,6 +1475,7 @@ export class LaneService {
 				? { preferredPort: input.preferredPort }
 				: {}),
 			launch: input.launch,
+			...(input.restart ? { restart: true } : {}),
 			...(input.slimProfileId ? { slimProfileId: input.slimProfileId } : {}),
 			...(input.backend ? { backend: input.backend } : {}),
 			...(input.agent ? { agent: input.agent } : {}),
@@ -1545,6 +1578,7 @@ export class LaneService {
 					simulatorUdid,
 					environment: current.environment,
 					launch: current.launch,
+					...(current.restart ? { restart: true } : {}),
 					...(current.preferredPort !== undefined
 						? { preferredPort: current.preferredPort }
 						: {}),
@@ -1624,14 +1658,16 @@ export class LaneService {
 	/**
 	 * Brings an existing lane back to running for a repeated `lane up`: if its
 	 * Metro is gone, start a fresh one on the lane's own port; then launch the
-	 * dev client when asked. The lane keeps its id, port, and log.
+	 * dev client when asked, terminating the app first when the start asked
+	 * for a restart. The lane keeps its id, port, and log.
 	 *
 	 * The backend is asked again each time, for the worktree's branch as it is
 	 * now. A Metro that is gone respawns with whatever the backend serves
 	 * within the wait. A running one restarts only when the backend's values
 	 * changed (its API URL moved, say) or when what it was spawned with is
 	 * unknown, as after a desktop restart. A backend still starting attaches
-	 * late, and the launch waits for it unless Metro already has values.
+	 * late, and the launch waits for it unless Metro already has values; a
+	 * restart waits with it.
 	 */
 	async #resumeLane(
 		existing: Lane,
@@ -1641,6 +1677,12 @@ export class LaneService {
 		signal: AbortSignal
 	): Promise<Lane> {
 		this.#requireLane(existing.id);
+		// A restart terminates the app the lane started with; a lane that has
+		// none to name refuses it before anything boots or respawns.
+		const restart = input.launch && input.restart === true;
+		if (restart && !existing.bundleIdentifier) {
+			throw restartWithoutBundleIdentifier(existing.id);
+		}
 		reservation.simulatorUdid = existing.simulatorUdid;
 		reservation.worktreePath = existing.worktreePath;
 		let lane = existing;
@@ -1784,18 +1826,28 @@ export class LaneService {
 			await this.#attachEnv(lane, environment, record, decision.env, signal);
 			lane = this.#store.get(lane.id) ?? lane;
 		}
-		// A launch held back by an earlier start counts as asked for.
+		// A launch held back by an earlier start counts as asked for, and so
+		// does the restart held back with it: from the lane's record, or from
+		// the one that turning the backend off just let go of.
 		const wantsLaunch = input.launch || previous?.deferredLaunch === true;
+		const wantsRestart =
+			restart || (record ?? previous)?.deferredRestart === true;
 		if (record) {
 			record.deferredLaunch =
 				wantsLaunch && decision?.late !== undefined && record.env === undefined;
+			// The restart goes with the launch: held back with it, or handed to
+			// the launch below. Never one without the other, so a restart cannot
+			// outlive its launch and land on some later relaunch.
+			record.deferredRestart = record.deferredLaunch && wantsRestart;
 			if (decision?.late) {
 				this.#awaitLateAttach(lane, record.generation, decision.late);
 			}
 			this.#touch();
 		}
 		if (wantsLaunch && !record?.deferredLaunch) {
-			lane = await this.launchLane(lane.id, undefined, input.agent, signal);
+			lane = await this.launchLane(lane.id, undefined, input.agent, signal, {
+				restart: wantsRestart,
+			});
 		}
 		return lane;
 	}
@@ -1858,13 +1910,29 @@ export class LaneService {
 		if (signal.aborted) throw new Error('Lane operation cancelled.');
 	}
 
+	/**
+	 * Opens the lane's dev client, or `url`, once the lane's own Metro
+	 * answers. The app is terminated first when `restart` asks, and, for a
+	 * dev-client launch, when the held-back launch this one fulfils asked or
+	 * when this is the lane's first launch. React Native keeps one debugger
+	 * (inspector) connection per bundler host and port for as long as the
+	 * app's process lives, and retries it whatever Metro answers there later,
+	 * so a dev client another lane or a person started, only pointed here,
+	 * stays registered as a debug target on the Metro it came from. A deep
+	 * link without restart keeps the app as it is. A terminate that was asked
+	 * for and fails stops the launch; the first launch's own is best effort.
+	 */
 	async launchLane(
 		laneId: string,
 		url: string | undefined,
 		agent: Pick<LaneAgent, 'kind' | 'sessionId'> | undefined,
-		signal: AbortSignal
+		signal: AbortSignal,
+		{ restart = false }: { restart?: boolean } = {}
 	): Promise<Lane> {
 		const lane = this.#requireLane(laneId);
+		if (restart && !lane.bundleIdentifier) {
+			throw restartWithoutBundleIdentifier(lane.id);
+		}
 		this.#assertRequiredBackendReady(lane);
 		const healthy = await this.#waitForMetro(lane, signal);
 		if (!healthy) {
@@ -1897,6 +1965,23 @@ export class LaneService {
 		// FBSOpenApplicationServiceErrorDomain error; check first and say what to
 		// build. The check only runs when the worktree told us its bundle id.
 		await this.#assertDevClientInstalled(lane, signal);
+		// The waits above may have let a stop or a Metro restart through. A
+		// lane that no longer holds its Simulator terminates nothing there.
+		const checked = this.#assertLaunchTarget(lane, signal);
+		this.#assertRequiredBackendReady(lane);
+		const asked =
+			restart ||
+			(url === undefined &&
+				this.#backendRecords.get(laneId)?.deferredRestart === true);
+		// The lane's first launch, read as the lane is now: any launch counts,
+		// a deep link too, and one that finished during the waits above makes
+		// this one no longer the first.
+		if (asked || (url === undefined && checked.lastLaunchedAt === undefined)) {
+			await this.#terminateApp(lane, signal, {
+				asked,
+				opening: url === undefined ? 'its dev client' : 'the URL',
+			});
+		}
 		// A URL in the lane's own scheme is for the lane's own app, so it opens
 		// there without iOS asking "Open in …?" first, as after `expo run:ios`.
 		// Any other URL opens as it is, and iOS may ask.
@@ -1983,10 +2068,57 @@ export class LaneService {
 		};
 		// Whoever launched, a launch held back for the backend has happened.
 		const record = this.#backendRecords.get(laneId);
-		if (record) record.deferredLaunch = false;
+		if (record) {
+			record.deferredLaunch = false;
+			record.deferredRestart = false;
+		}
 		await this.#store.upsert(launched);
 		this.#touch();
 		return launched;
+	}
+
+	/**
+	 * Terminates any running copy of the lane's app on its Simulator, so the
+	 * dev client or URL that opens next starts fresh against this lane's Metro
+	 * alone. An app that is not running counts as terminated (the Simulator
+	 * service says so), and the wait follows the launch's signal, cancelling
+	 * the job when it fires. A lane whose app.json named no bundle identifier
+	 * has nothing to name; an explicit restart was refused before it got here.
+	 *
+	 * A terminate someone `asked` for that fails, rejected or not, stops the
+	 * launch. The first launch's own terminate, which nobody asked for, never
+	 * fails a launch that worked before lanes restarted apps: when this
+	 * Simulator cannot terminate the app (an Xcode without app support, say),
+	 * the launch goes ahead as it did then, and the lane log says so.
+	 */
+	async #terminateApp(
+		lane: Lane,
+		signal: AbortSignal,
+		{ asked, opening }: { asked: boolean; opening: string }
+	): Promise<void> {
+		const bundleIdentifier = lane.bundleIdentifier;
+		if (!bundleIdentifier) return;
+		try {
+			await this.#runSimulatorAction(
+				{
+					actionId: `lane-terminate-${randomUUID()}`,
+					kind: 'app.terminate',
+					udid: lane.simulatorUdid,
+					bundleIdentifier,
+				},
+				signal
+			);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			if (asked) {
+				throw new Error(
+					`${bundleIdentifier} could not be terminated before ${opening} opened, so the launch stopped there: ${safeErrorText(error)} Metro on port ${lane.port} is still running.`
+				);
+			}
+			await this.#noteInLog(lane, [
+				`${bundleIdentifier} could not be terminated before the lane's first launch (${safeErrorText(error)}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.`,
+			]);
+		}
 	}
 
 	async stopLane(
@@ -2475,7 +2607,8 @@ export class LaneService {
 		return false;
 	}
 
-	#assertLaunchTarget(lane: Lane, signal: AbortSignal): void {
+	/** The lane as it is now, once it is still the one the launch checked. */
+	#assertLaunchTarget(lane: Lane, signal: AbortSignal): Lane {
 		this.#assertOperationActive(signal);
 		const current = this.#requireLane(lane.id);
 		if (
@@ -2485,6 +2618,7 @@ export class LaneService {
 		) {
 			throw new Error('The lane changed before its dev-client launch.');
 		}
+		return current;
 	}
 
 	async #verifyRecordedMetro(
@@ -3035,7 +3169,7 @@ export class LaneService {
 	/**
 	 * Records the port's latest answer for a lane, superseding any late attach
 	 * still waiting on an earlier one. What the current Metro was spawned
-	 * with, and a launch still held back, carry over.
+	 * with, and a launch still held back (with its restart), carry over.
 	 */
 	#recordBackend(
 		laneId: string,
@@ -3049,6 +3183,7 @@ export class LaneService {
 			env: previous?.env,
 			generation: (previous?.generation ?? 0) + 1,
 			deferredLaunch: previous?.deferredLaunch ?? false,
+			deferredRestart: previous?.deferredRestart ?? false,
 		};
 		this.#backendRecords.set(laneId, record);
 		return record;
@@ -3165,6 +3300,7 @@ export class LaneService {
 			}
 		} else if (policy === 'required') {
 			record.deferredLaunch = false;
+			record.deferredRestart = false;
 			await this.#stopMetroWithoutBackend(lane, record);
 		} else if (record.deferredLaunch) {
 			// An auto lane launches without the backend, which says why.
@@ -3259,6 +3395,7 @@ export class LaneService {
 			await this.launchLane(laneId, undefined, undefined, signal);
 		} catch (error) {
 			record.deferredLaunch = false;
+			record.deferredRestart = false;
 			const why = record.summary.reasonText
 				? `${record.summary.reasonText} `
 				: '';
