@@ -74,8 +74,8 @@ Simulator-capable command at least once (and again after native changes):
 pnpm --filter @rndevtools/desktop dev:simulator
 ```
 
-That command verifies the pinned vendored SimSlim source, builds the Go and
-Swift helpers for the current architecture, then starts Electron.
+That command verifies the pinned vendored SimSlim and go-toml sources, builds
+the Go and Swift helpers for the current architecture, then starts Electron.
 
 The pinned Electron release has no install hook, so `pnpm install` deliberately
 does not fetch the runtime. The first `dev` or `start` prints

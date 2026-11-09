@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,6 +112,18 @@ test('rejects coordinated source and editable checksum-manifest tampering', () =
 	assert.throws(
 		() => verifyVendoredSimSlim(helper),
 		/checksum manifest is not the reviewed rndevtools\.1 manifest/
+	);
+});
+
+test('rejects a symbolic link in the vendored tree', () => {
+	const helper = copyFixture();
+	symlinkSync(
+		'clone.go',
+		path.join(helper, 'vendor/github.com/mobai-app/simslim/clone_link.go')
+	);
+	assert.throws(
+		() => verifyVendoredSimSlim(helper),
+		/^Error: Vendored SimSlim source contains a symbolic link: .*\/clone_link\.go$/
 	);
 });
 
