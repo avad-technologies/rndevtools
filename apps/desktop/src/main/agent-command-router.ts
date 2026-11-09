@@ -110,6 +110,17 @@ const MAX_SUPABASE_LOG_LINE = 2_000;
  * recommendation quotes. The simulator service already redacted it.
  */
 const MAX_LISTING_FAILURE_LENGTH = 300;
+/**
+ * How long native plan and install wait for the worktree's lane to turn
+ * ready while its Metro is starting, before they hold its build command
+ * back. `lane up --launch=false`, the step before a build, returns while a
+ * new lane is starting, and the lane service marks it ready on its next 5 s
+ * reconcile once the Metro it spawned answers on the lane's port. A Metro it
+ * could not prove is the lane's own stays starting however long this waits.
+ */
+const BUILD_LANE_READY_WAIT_MS = 15_000;
+/** How often that wait reads the lane state again. */
+const BUILD_LANE_POLL_MS = 500;
 /** How that recommendation names a Simulator that is not booted. */
 const UNBOOTED_STATE_WORDS: Readonly<
 	Record<Exclude<SimulatorState['devices'][number]['state'], 'booted'>, string>
@@ -454,6 +465,41 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 	return sleep(ms, undefined, { signal }).catch(() => {
 		throw abortError();
 	});
+}
+
+/**
+ * The worktree's lane a native build would run against (on `udid`, when the
+ * command names one) as it is once its Metro is ready or, while that Metro
+ * is starting, as it is when BUILD_LANE_READY_WAIT_MS runs out. Undefined
+ * when there is no such lane or its Metro stopped. Only a ready lane may be
+ * built against: the lane service marks a lane ready only once the Metro
+ * answering on its port is proven to be the lane's own, and a starting lane
+ * may hold one it could not prove (an adoption that failed, a stop it must
+ * retry, a recycled PID) while another worktree's packager answers there.
+ */
+async function awaitBuildLane(
+	lanes: LanePort | undefined,
+	projectRoot: string,
+	udid: string | undefined,
+	signal: AbortSignal
+): Promise<LaneState['lanes'][number] | undefined> {
+	if (!lanes) return undefined;
+	const find = () =>
+		lanes
+			.getState()
+			.lanes.find(
+				(lane) =>
+					laneAppDirectory(lane) === projectRoot &&
+					(udid === undefined || lane.simulatorUdid === udid) &&
+					lane.metro !== 'stopped'
+			);
+	const deadline = Date.now() + BUILD_LANE_READY_WAIT_MS;
+	let lane = find();
+	while (lane?.metro === 'starting' && Date.now() < deadline) {
+		await delay(Math.min(BUILD_LANE_POLL_MS, deadline - Date.now()), signal);
+		lane = find();
+	}
+	return lane;
 }
 
 async function runSimulatorAction(
@@ -1859,40 +1905,53 @@ function createRoutes({
 					plan.configuration === 'Debug'
 						? ''
 						: ` --configuration ${plan.configuration}`;
-				// Even --no-bundler opens the dev client. Reserve a lane first so
-				// Expo never opens this app against another project's port 8081.
-				const buildLane = lanes
-					?.getState()
-					.lanes.find(
-						(lane) =>
-							laneAppDirectory(lane) === plan.projectRoot &&
-							(!target || lane.simulatorUdid === target.udid) &&
-							lane.metro === 'ready'
+				// Even --no-bundler opens the dev client, so a build runs against a
+				// lane's port, and only once its Metro is ready: Expo then never
+				// opens this app against another project's 8081, nor against a
+				// packager answering on a lane's port that the lane service has not
+				// proven is the lane's own. A lane still starting is waited for.
+				const buildStep = async (): Promise<
+					{ command: string } | { first: string }
+				> => {
+					const lane = await awaitBuildLane(
+						lanes,
+						plan.projectRoot,
+						target?.udid,
+						context.signal
 					);
-				const buildCommand = buildLane
-					? `npx expo run:ios${configurationFlag} --device ${buildLane.simulatorUdid} --port ${buildLane.port} --no-bundler`
-					: undefined;
-				const startLaneAdvice =
-					'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.';
-				const advice =
-					plan.cache === 'hit'
-						? target
-							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
-							: 'cached: a binary for this fingerprint exists; pass --udid to install it.'
-						: !buildCommand
-							? `build: ${startLaneAdvice}`
-							: plan.cache === 'miss'
-								? `build: no cached binary for this fingerprint; run \`${buildCommand}\` once (the build cache will store it for every other worktree).`
-								: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${buildCommand}\`.`;
-				const recommendation = installedUnknown
-					? `${advice} ${installedUnknown}`
-					: advice;
+					if (lane?.metro === 'ready') {
+						return {
+							command: `npx expo run:ios${configurationFlag} --device ${lane.simulatorUdid} --port ${lane.port} --no-bundler`,
+						};
+					}
+					return {
+						first: lane
+							? `Metro for lane ${lane.id} on port ${lane.port} is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, and a build would open the app against whatever answers on that port. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
+							: 'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.',
+					};
+				};
 				if (command.operation === 'plan') {
+					let advice: string;
+					if (plan.cache === 'hit') {
+						advice = target
+							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
+							: 'cached: a binary for this fingerprint exists; pass --udid to install it.';
+					} else {
+						const step = await buildStep();
+						advice =
+							'first' in step
+								? `build: ${step.first}`
+								: plan.cache === 'miss'
+									? `build: no cached binary for this fingerprint; run \`${step.command}\` once (the build cache will store it for every other worktree).`
+									: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${step.command}\`.`;
+					}
 					return {
 						...plan,
 						...(target ? { simulatorUdid: target.udid } : {}),
 						...(installed !== undefined ? { installed } : {}),
-						recommendation,
+						recommendation: installedUnknown
+							? `${advice} ${installedUnknown}`
+							: advice,
 					};
 				}
 				if (!target) required('native install requires udid.');
@@ -1902,11 +1961,12 @@ function createRoutes({
 				// app.list proves a bundle exists, not its native fingerprint.
 				// An explicit install must refresh an older binary of that bundle.
 				if (plan.cache !== 'hit' || !plan.artifactPath) {
+					const step = await buildStep();
 					throw new AgentCliError({
 						code: 'cache_miss',
 						message: `No cached binary for fingerprint ${plan.fingerprintHash}; build it first.`,
 						retryable: false,
-						recovery: buildCommand ?? startLaneAdvice,
+						recovery: 'first' in step ? step.first : step.command,
 					});
 				}
 				const job = ensureComplete(

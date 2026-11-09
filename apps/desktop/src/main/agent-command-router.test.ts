@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentCliCommand } from '../shared/agent-cli-protocol';
 import type { AgentOperation, AgentState } from '../shared/agent-protocol';
 import { createDemoDevice } from '../shared/demo-data';
@@ -1859,21 +1859,25 @@ describe('agent command router', () => {
 			};
 			return { port, actions };
 		}
-		function buildLanes(appPath?: string) {
-			const state: LaneState = {
+		const BUILD_LANE_ID = 'lane-11111111-2222-4333-8444-555555555555';
+		function buildLanes(
+			appPath?: string,
+			metro: LaneState['lanes'][number]['metro'] = 'ready'
+		) {
+			let state: LaneState = {
 				revision: 1,
 				updatedAt: now,
 				environments: [...DEFAULT_LANE_ENVIRONMENTS],
 				lanes: [
 					{
-						id: 'lane-11111111-2222-4333-8444-555555555555',
+						id: BUILD_LANE_ID,
 						worktreePath: '/Users/dev/app',
 						...(appPath ? { appPath } : {}),
 						branch: 'main',
 						simulatorUdid: UDID,
 						environment: 'development',
 						port: 8107,
-						metro: 'ready',
+						metro,
 						logPath: '/Users/dev/lane.log',
 						startedAt: now,
 					},
@@ -1887,6 +1891,13 @@ describe('agent command router', () => {
 				refresh: async () => state,
 				runOperation: async (): Promise<LaneOperationReceipt> => {
 					throw new Error('unused');
+				},
+				/** Moves the lane's Metro on, as the lane service's reconcile does. */
+				setMetro: (next: LaneState['lanes'][number]['metro']) => {
+					state = {
+						...state,
+						lanes: state.lanes.map((lane) => ({ ...lane, metro: next })),
+					};
 				},
 			};
 		}
@@ -2042,6 +2053,196 @@ describe('agent command router', () => {
 			)) as Record<string, unknown>;
 			expect(result.recommendation).toContain('launch=false');
 			expect(result.recommendation).not.toContain('expo run:ios');
+		});
+
+		it.each([
+			['ready', `expo run:ios --device ${UDID} --port 8107 --no-bundler`],
+			// A stopped lane has given its port up; lane up claims it again.
+			['stopped', 'Call lane with operation up'],
+		] as const)(
+			'advises at once for a lane whose Metro is %s',
+			async (metro, advice) => {
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(undefined, metro),
+					nativePlan: plan('miss'),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(String(result.recommendation)).toMatch(/^build: /);
+				expect(result.recommendation).toContain(advice);
+				if (metro === 'stopped')
+					expect(result.recommendation).not.toContain('expo run:ios');
+			}
+		);
+
+		describe('with a lane whose Metro is still starting', () => {
+			// `lane up --launch=false` returns while a new lane is starting; the
+			// lane service marks it ready only once the Metro answering on its
+			// port is proven to be the lane's own.
+			beforeEach(() => {
+				vi.useFakeTimers();
+			});
+			afterEach(() => {
+				vi.useRealTimers();
+			});
+
+			function planFor(
+				lanes: ReturnType<typeof buildLanes>,
+				{
+					cache = 'miss',
+					operation = 'plan',
+					signal = context.signal,
+				}: {
+					cache?: 'hit' | 'miss';
+					operation?: 'plan' | 'install';
+					signal?: AbortSignal;
+				} = {}
+			) {
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes,
+					nativePlan: plan(cache),
+				});
+				const settled: { value?: unknown; error?: unknown; done: boolean } = {
+					done: false,
+				};
+				const pending = handler(
+					{
+						kind: 'native',
+						operation,
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					{ ...context, signal }
+				).then(
+					(value) => {
+						Object.assign(settled, { value, done: true });
+					},
+					(error: unknown) => {
+						Object.assign(settled, { error, done: true });
+					}
+				);
+				return { settled, pending };
+			}
+
+			it('waits for it to turn ready, then gives its build command', async () => {
+				const lanes = buildLanes(undefined, 'starting');
+				const { settled, pending } = planFor(lanes);
+				await vi.advanceTimersByTimeAsync(4_000);
+				expect(settled.done).toBe(false);
+				lanes.setMetro('ready');
+				await vi.advanceTimersByTimeAsync(1_000);
+				await pending;
+				expect(settled.done).toBe(true);
+				const recommendation = String(
+					(settled.value as Record<string, unknown>).recommendation
+				);
+				expect(recommendation).toMatch(/^build: /);
+				expect(recommendation).toContain(
+					`expo run:ios --device ${UDID} --port 8107 --no-bundler`
+				);
+			});
+
+			it('holds the build command back from one that never turns ready', async () => {
+				// A Metro the lane service could not prove is the lane's own (an
+				// adoption that failed, a stop to retry, a recycled PID) stays
+				// starting while another packager may answer on the port.
+				const { settled, pending } = planFor(buildLanes(undefined, 'starting'));
+				await vi.advanceTimersByTimeAsync(14_000);
+				expect(settled.done).toBe(false);
+				await vi.advanceTimersByTimeAsync(1_000);
+				await pending;
+				const recommendation = String(
+					(settled.value as Record<string, unknown>).recommendation
+				);
+				expect(recommendation).toBe(
+					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, and a build would open the app against whatever answers on that port. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
+				);
+				expect(vi.getTimerCount()).toBe(0);
+			});
+
+			it('gives the lane up advice once it stops while waited for', async () => {
+				const lanes = buildLanes(undefined, 'starting');
+				const { settled, pending } = planFor(lanes);
+				await vi.advanceTimersByTimeAsync(2_000);
+				lanes.setMetro('stopped');
+				await vi.advanceTimersByTimeAsync(500);
+				await pending;
+				const recommendation = String(
+					(settled.value as Record<string, unknown>).recommendation
+				);
+				expect(recommendation).toMatch(/^build: Call lane with operation up/);
+				expect(recommendation).not.toContain('expo run:ios');
+			});
+
+			it('recovers an install on a cache miss with what the lane needs first', async () => {
+				const { settled, pending } = planFor(
+					buildLanes(undefined, 'starting'),
+					{
+						operation: 'install',
+					}
+				);
+				await vi.advanceTimersByTimeAsync(15_000);
+				await pending;
+				expect(settled.error).toMatchObject({
+					code: 'cache_miss',
+					recovery: expect.stringMatching(
+						new RegExp(
+							`^Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready`
+						)
+					),
+				});
+				expect((settled.error as AgentCliError).recovery).not.toContain(
+					'expo run:ios'
+				);
+			});
+
+			it('stops waiting when the request is cancelled', async () => {
+				const request = new AbortController();
+				const { settled, pending } = planFor(
+					buildLanes(undefined, 'starting'),
+					{
+						signal: request.signal,
+					}
+				);
+				await vi.advanceTimersByTimeAsync(1_000);
+				request.abort();
+				await vi.advanceTimersByTimeAsync(0);
+				await pending;
+				expect(settled.error).toMatchObject({ code: 'cancelled' });
+				expect(vi.getTimerCount()).toBe(0);
+			});
+
+			it('does not wait for it on a cache hit', async () => {
+				const { settled, pending } = planFor(
+					buildLanes(undefined, 'starting'),
+					{
+						cache: 'hit',
+					}
+				);
+				await vi.advanceTimersByTimeAsync(0);
+				await pending;
+				expect(settled.done).toBe(true);
+				expect(
+					String((settled.value as Record<string, unknown>).recommendation)
+				).toMatch(/^install: /);
+			});
 		});
 
 		it('plans with a device and reports installed state from the Simulator app list', async () => {
