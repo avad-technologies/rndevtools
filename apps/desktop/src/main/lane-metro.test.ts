@@ -239,6 +239,91 @@ describe('Metro launch', () => {
 		});
 	});
 
+	it('strips the agent session the desktop was launched from, keeping ordinary variables', async () => {
+		const { metro, spawned } = supervisor({
+			PATH: '/usr/bin:/bin',
+			HOME: '/Users/dev',
+			LANG: 'en_US.UTF-8',
+			DEBUG: 'expo:*',
+			AWS_PROFILE: 'example',
+			// A prefix matches only at the start of a name.
+			EXAMPLE_CLAUDE_MODEL: 'kept',
+			// Claude Code and the Claude Agent SDK.
+			CLAUDECODE: '1',
+			CLAUDE_CODE_ENTRYPOINT: 'cli',
+			CLAUDE_CODE_SESSION_ID: 'session-1',
+			CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/example-agent.sock',
+			CLAUDE_CODE_MESSAGING_TOKEN: 'messaging-token',
+			CLAUDE_PID: '4321',
+			CLAUDE_AGENT_SDK_VERSION: '1.0.0',
+			DEBUG_CLAUDE_AGENT_SDK: '1',
+			// Codex.
+			CODEX_THREAD_ID: 'thread-1',
+			CODEX_HOME: '/Users/dev/.codex',
+			// Any agent harness.
+			AI_AGENT: 'example-agent',
+		});
+		await launch(metro);
+		expect(spawned[0]?.options.env).toEqual({
+			PATH: '/usr/bin:/bin',
+			HOME: '/Users/dev',
+			LANG: 'en_US.UTF-8',
+			DEBUG: 'expo:*',
+			AWS_PROFILE: 'example',
+			EXAMPLE_CLAUDE_MODEL: 'kept',
+			NODE_ENV: 'development',
+			RCT_METRO_PORT: '8100',
+			EXPO_NO_DOTENV: '1',
+			EXPO_NO_INTERACTIVE: '1',
+			EXPO_NO_DEV_MENU: '1',
+			NODE_OPTIONS: '--dns-result-order=ipv4first',
+		});
+	});
+
+	it("strips what the desktop's RNDEVTOOLS_CHILD_ENV_STRIP names from the inherited env only", async () => {
+		const { metro, spawned } = supervisor({
+			PATH: '/usr/bin:/bin',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE_TOKEN',
+			EXAMPLE_AGENT_PORT: '4100',
+			EXAMPLE_AGENT_AUTH_TOKEN: 'harness-token',
+			EXAMPLE_TOKEN: 'inherited',
+			EXAMPLE_TOKEN_TTL: 'kept',
+		});
+		// What the lane's environment sets on purpose still reaches Metro.
+		await launch(metro, { metroEnv: { EXAMPLE_TOKEN: 'metro-env' } });
+		expect(spawned[0]?.options.env).toEqual({
+			PATH: '/usr/bin:/bin',
+			EXAMPLE_TOKEN_TTL: 'kept',
+			EXAMPLE_TOKEN: 'metro-env',
+			NODE_ENV: 'development',
+			RCT_METRO_PORT: '8100',
+			EXPO_NO_DOTENV: '1',
+			EXPO_NO_INTERACTIVE: '1',
+			EXPO_NO_DEV_MENU: '1',
+			NODE_OPTIONS: '--dns-result-order=ipv4first',
+		});
+	});
+
+	it('refuses a malformed RNDEVTOOLS_CHILD_ENV_STRIP before anything is created or spawned', async () => {
+		let toolPathAsked = false;
+		const { metro, spawned } = supervisor(
+			{
+				PATH: '/usr/bin:/bin',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
+			},
+			async (inherited) => {
+				toolPathAsked = true;
+				return inherited;
+			}
+		);
+		await expect(launch(metro)).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name/
+		);
+		expect(spawned).toHaveLength(0);
+		expect(toolPathAsked).toBe(false);
+		expect(existsSync(path.join(root, 'lane.log'))).toBe(false);
+	});
+
 	it.each(['inherited', 'metroEnv', 'laneEnv', 'all'] as const)(
 		'omits CI from %s so managed development lanes keep Metro watch mode',
 		async (source) => {

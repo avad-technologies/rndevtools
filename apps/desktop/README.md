@@ -44,6 +44,19 @@ Local iOS Simulator tooling on macOS:
   several branches and coding agents run side by side. Lanes refuse to steal a
   worktree, Simulator, or port; Metro health, agent attribution, and the Metro
   log are visible on the fleet wall and in the Lanes panel
+
+  A lane's Metro and the native build plan inherit the desktop's environment
+  without the variables of an agent session the desktop may have been started
+  from: `AI_AGENT`, `CLAUDECODE`, `DEBUG_CLAUDE_AGENT_SDK`,
+  `RNDEVTOOLS_AGENT_SESSION_ID`, and every `CLAUDE_*` and `CODEX_*` variable.
+  Metro also never inherits `EXPO_PUBLIC_*`, `SUPABASE_*`, `PG*` or
+  `RNDEVTOOLS_*`; a lane gets those only from its lane environment's
+  `metroEnv` or its local backend. The plan runs without `DEBUG`. To strip
+  more, such as another harness's variables, start the desktop with
+  `RNDEVTOOLS_CHILD_ENV_STRIP` set to comma-separated exact names and
+  `NAME_PREFIX*` patterns, for example `EXAMPLE_AGENT_*,EXAMPLE_TOKEN` (at
+  most 64 entries and 4,096 characters). A malformed list fails lane starts
+  and native plans instead of letting through what it names.
 - A signed `rndevtools` local-agent CLI over a current-user `0600` Unix socket,
   including `lane --operation up|down|ls|launch|log` and agent skills
 - Local Supabase per worktree (alpha): the Supabase tab (⌘8) tracks every native

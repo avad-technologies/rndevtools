@@ -13,12 +13,20 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { FailureRecord, FailureRequest } from '../shared/failure-protocol';
+import { AGENT_SESSION_ENV_NAMES } from './agent-harness-env';
 import { failureText, METRO_LOG_TAIL_HEADING } from './failure-diagnostics';
 import { readLoginShellPath, resolveToolPath } from './lane-tool-path';
 import { ensurePrivateDirectory, writeFileAtomic } from './private-files';
 
 type HandoffRequest = Extract<FailureRequest, { operation: 'handoff' }>;
 const exec = promisify(execFile);
+/**
+ * What the agent CLI a handoff opens must not inherit, by exact name so the
+ * task script can unset each: provider keys, base URLs and the Bedrock,
+ * Vertex and Foundry switches, which would bypass the subscription login, and
+ * the identity and control channels of the agent session the desktop was
+ * launched from. The CLIs' own configuration directories are kept.
+ */
 const STRIPPED = [
 	'OPENAI_API_KEY',
 	'OPENAI_BASE_URL',
@@ -29,10 +37,7 @@ const STRIPPED = [
 	'CLAUDE_CODE_USE_BEDROCK',
 	'CLAUDE_CODE_USE_VERTEX',
 	'CLAUDE_CODE_USE_FOUNDRY',
-	'CLAUDECODE',
-	'CODEX_THREAD_ID',
-	'CLAUDE_CODE_SESSION_ID',
-	'RNDEVTOOLS_AGENT_SESSION_ID',
+	...AGENT_SESSION_ENV_NAMES,
 ];
 const CONFIG_ENVIRONMENT = [
 	'HOME',

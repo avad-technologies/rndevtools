@@ -7,6 +7,7 @@ import {
 	MAX_METRO_ENV_VALUE_LENGTH,
 	METRO_ENV_NAME,
 } from '../shared/lane-protocol';
+import { childEnvironmentStrip } from './agent-harness-env';
 import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
 import { runSimulatorCommand } from './simulator-command-runner';
 
@@ -23,7 +24,9 @@ const MAX_LANE_ENV_ENTRIES = 32;
  * EXPO_PUBLIC_* into every lane's dev bundle, and SUPABASE_*, PG* and
  * RNDEVTOOLS_* would point a worktree's tooling at whatever backend or agent
  * session the desktop happened to be launched from. A lane gets such values
- * only from its environment's metroEnv or its own laneEnv.
+ * only from its environment's metroEnv or its own laneEnv. The variables of
+ * that agent session itself, and whatever the desktop's
+ * RNDEVTOOLS_CHILD_ENV_STRIP names, go too (see agent-harness-env.ts).
  */
 const STRIPPED_INHERITED_ENV = /^(?:EXPO_PUBLIC_|SUPABASE_|PG|RNDEVTOOLS_)/;
 
@@ -234,20 +237,26 @@ function checkedLaneEnv(
 
 /**
  * Metro's environment, in this order: the desktop's own environment without
- * the variables a lane must not inherit, its PATH replaced by `toolPath` when
- * there is one, then the environment's metroEnv, then the lane's checked
- * laneEnv, then the fixed keys every lane needs, which nothing overrides.
- * CI is omitted from all layers so development watchers stay enabled.
+ * the variables a lane must not inherit (STRIPPED_INHERITED_ENV and
+ * `stripped`), its PATH replaced by `toolPath` when there is one, then the
+ * environment's metroEnv, then the lane's checked laneEnv, then the fixed
+ * keys every lane needs, which nothing overrides. CI is omitted from all
+ * layers so development watchers stay enabled.
  */
 function metroEnvironment(
 	inherited: NodeJS.ProcessEnv,
 	input: MetroLaunchInput,
 	laneEnv: Record<string, string>,
+	stripped: (name: string) => boolean,
 	toolPath: string | undefined
 ): NodeJS.ProcessEnv {
 	const base: NodeJS.ProcessEnv = {};
 	for (const [name, value] of Object.entries(inherited)) {
-		if (value !== undefined && !STRIPPED_INHERITED_ENV.test(name)) {
+		if (
+			value !== undefined &&
+			!STRIPPED_INHERITED_ENV.test(name) &&
+			!stripped(name)
+		) {
 			base[name] = value;
 		}
 	}
@@ -309,12 +318,15 @@ async function startMetro(
 			`Expo CLI was not found under ${input.worktreePath}/node_modules. Install dependencies in the worktree first.`
 		);
 	}
-	// Refuse a bad laneEnv before the log is created or anything spawns.
+	// Refuse a bad laneEnv, or a malformed list of what to strip, before the
+	// log is created or anything spawns.
 	const laneEnv = checkedLaneEnv(input.laneEnv);
+	const stripped = childEnvironmentStrip(inherited);
 	const env = metroEnvironment(
 		inherited,
 		input,
 		laneEnv,
+		stripped,
 		await toolPath(inherited.PATH)
 	);
 	const log = openSync(input.logPath, 'a', 0o600);

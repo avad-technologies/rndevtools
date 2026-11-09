@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { redactDiagnosticText } from '@rndevtools/core/redact';
 import { z } from 'zod';
+import { childEnvironmentStrip } from './agent-harness-env';
 import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
 import { sanitizeDialogText } from './security';
 
@@ -159,15 +160,26 @@ export type NativePlanRunner = (
 
 /**
  * The plan child's environment: the desktop's, with the tool PATH, Expo told
- * it runs in CI and without telemetry, and no DEBUG. Agent sessions often
- * export DEBUG=1; under it `@expo/fingerprint` prints timings to stdout and
- * `debug` loggers fill stderr, where the script's result and error go.
+ * it runs in CI and without telemetry, no DEBUG, and nothing `stripped`
+ * names. Agent sessions often export DEBUG=1; under it `@expo/fingerprint`
+ * prints timings to stdout and `debug` loggers fill stderr, where the
+ * script's result and error go. The plan evaluates the worktree's
+ * app.config.js, which must not see the identity and tokens of the agent
+ * session the desktop was launched from (agent-harness-env.ts). Everything
+ * else stays, RNDEVTOOLS_BUILD_CACHE_DIR included: the plan must find the
+ * cache entry `expo run:ios` would.
  */
 function planEnvironment(
 	inherited: NodeJS.ProcessEnv,
+	stripped: (name: string) => boolean,
 	searchPath: string | undefined
 ): NodeJS.ProcessEnv {
-	const { DEBUG: _debug, ...kept } = inherited;
+	const kept: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(inherited)) {
+		if (value !== undefined && name !== 'DEBUG' && !stripped(name)) {
+			kept[name] = value;
+		}
+	}
 	return {
 		...kept,
 		...(searchPath !== undefined ? { PATH: searchPath } : {}),
@@ -349,7 +361,13 @@ export function createNativePlanRunner({
 } = {}): NativePlanRunner {
 	return async (input, signal) => {
 		const projectRoot = path.resolve(input.projectRoot);
-		const env = planEnvironment(process.env, await toolPath(process.env.PATH));
+		// A malformed list of what to strip fails the plan before anything runs.
+		const stripped = childEnvironmentStrip(process.env);
+		const env = planEnvironment(
+			process.env,
+			stripped,
+			await toolPath(process.env.PATH)
+		);
 		const node = resolveProjectNode(projectRoot, env);
 		if (!node) {
 			throw new Error(

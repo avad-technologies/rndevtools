@@ -67,7 +67,7 @@ describe('local subscription handoff', () => {
 		const binary = path.join(root, 'bin', client);
 		await writeFile(
 			binary,
-			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(root, 'received.json'))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), api: process.env.ANTHROPIC_API_KEY ?? null, openai: process.env.OPENAI_API_KEY ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, session: process.env.CODEX_THREAD_ID ?? null, home: process.env.HOME, codexHome: process.env.CODEX_HOME ?? null, claudeConfig: process.env.CLAUDE_CONFIG_DIR ?? null }));\n`
+			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(root, 'received.json'))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), api: process.env.ANTHROPIC_API_KEY ?? null, openai: process.env.OPENAI_API_KEY ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, session: process.env.CODEX_THREAD_ID ?? null, claudeSession: process.env.CLAUDE_CODE_SESSION_ID ?? null, messaging: process.env.CLAUDE_CODE_MESSAGING_TOKEN ?? null, agent: process.env.AI_AGENT ?? null, home: process.env.HOME, codexHome: process.env.CODEX_HOME ?? null, claudeConfig: process.env.CLAUDE_CONFIG_DIR ?? null }));\n`
 		);
 		await chmod(binary, 0o700);
 	}
@@ -98,6 +98,10 @@ describe('local subscription handoff', () => {
 						ANTHROPIC_API_KEY: 'example-key',
 						CLAUDE_CODE_OAUTH_TOKEN: 'example-token',
 						CODEX_THREAD_ID: 'old-thread',
+						// The agent session the desktop was launched from.
+						CLAUDE_CODE_SESSION_ID: 'old-session',
+						CLAUDE_CODE_MESSAGING_TOKEN: 'messaging-token',
+						AI_AGENT: 'example-agent',
 					},
 				});
 			});
@@ -111,6 +115,9 @@ describe('local subscription handoff', () => {
 				openai: null,
 				oauth: null,
 				session: null,
+				claudeSession: null,
+				messaging: null,
+				agent: null,
 			});
 			expect(received.args).toEqual(
 				handoffArguments(
@@ -327,10 +334,24 @@ describe('local subscription handoff', () => {
 				PATH: '/usr/bin',
 				OPENAI_API_KEY: 'secret',
 				ANTHROPIC_BASE_URL: 'https://example.com',
+				CLAUDE_CODE_USE_BEDROCK: '1',
 				CODEX_THREAD_ID: 'old',
+				CLAUDECODE: '1',
+				CLAUDE_CODE_SESSION_ID: 'old',
+				CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/example-agent.sock',
+				CLAUDE_CODE_MESSAGING_TOKEN: 'messaging-token',
+				AI_AGENT: 'example-agent',
+				// The CLIs' own configuration stays: the handoff re-exports it.
+				CODEX_HOME: '/Users/dev/.codex',
+				CLAUDE_CONFIG_DIR: '/Users/dev/.claude',
 				KEEP: 'yes',
 			})
-		).toEqual({ PATH: '/usr/bin', KEEP: 'yes' });
+		).toEqual({
+			PATH: '/usr/bin',
+			CODEX_HOME: '/Users/dev/.codex',
+			CLAUDE_CONFIG_DIR: '/Users/dev/.claude',
+			KEEP: 'yes',
+		});
 		expect(handoffArguments('codex', 'fix', 'task')).toContain(
 			'workspace-write'
 		);

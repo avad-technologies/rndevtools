@@ -65,6 +65,8 @@ describe('runNativePlan', () => {
 			sourceCount: 3,
 			cache: 'no-provider',
 		};
+		// Whatever list the shell running the tests exports is not this test's.
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', undefined);
 	});
 	afterEach(() => {
 		vi.unstubAllEnvs();
@@ -110,6 +112,63 @@ describe('runNativePlan', () => {
 		);
 		await expect(node.plan()).resolves.toEqual(plan);
 		expect(readFileSync(seenEnv, 'utf8')).toBe('unset 1 1');
+	});
+
+	it("runs the plan without the launching agent session's identity and tokens", async () => {
+		// app.config.js runs in the plan child, so it must not see them.
+		vi.stubEnv('CLAUDECODE', '1');
+		vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'session-1');
+		vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'messaging-token');
+		vi.stubEnv('CODEX_THREAD_ID', 'thread-1');
+		vi.stubEnv('AI_AGENT', 'example-agent');
+		vi.stubEnv('EXAMPLE_CLAUDE_MODEL', 'kept');
+		// The build cache provider reads its own variables; they stay.
+		vi.stubEnv('RNDEVTOOLS_BUILD_CACHE_DIR', '/tmp/example-cache');
+		const seenEnv = path.join(root, 'seen-agent-env');
+		const node = fakeNode(
+			`printf '%s %s %s %s %s %s %s' "\${CLAUDECODE-unset}" "\${CLAUDE_CODE_SESSION_ID-unset}" "\${CLAUDE_CODE_MESSAGING_TOKEN-unset}" "\${CODEX_THREAD_ID-unset}" "\${AI_AGENT-unset}" "\${EXAMPLE_CLAUDE_MODEL-unset}" "\${RNDEVTOOLS_BUILD_CACHE_DIR-unset}" > '${seenEnv}'\n${printResult(plan)}`
+		);
+		await expect(node.plan()).resolves.toEqual(plan);
+		expect(readFileSync(seenEnv, 'utf8')).toBe(
+			'unset unset unset unset unset kept /tmp/example-cache'
+		);
+	});
+
+	it("runs the plan without what the desktop's RNDEVTOOLS_CHILD_ENV_STRIP names", async () => {
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', 'EXAMPLE_AGENT_*,EXAMPLE_TOKEN');
+		vi.stubEnv('EXAMPLE_AGENT_AUTH_TOKEN', 'harness-token');
+		vi.stubEnv('EXAMPLE_TOKEN', 'token');
+		vi.stubEnv('EXAMPLE_TOKEN_TTL', 'kept');
+		const seenEnv = path.join(root, 'seen-extra-env');
+		const node = fakeNode(
+			`printf '%s %s %s' "\${EXAMPLE_AGENT_AUTH_TOKEN-unset}" "\${EXAMPLE_TOKEN-unset}" "\${EXAMPLE_TOKEN_TTL-unset}" > '${seenEnv}'\n${printResult(plan)}`
+		);
+		await expect(node.plan()).resolves.toEqual(plan);
+		expect(readFileSync(seenEnv, 'utf8')).toBe('unset unset kept');
+	});
+
+	it('refuses a malformed RNDEVTOOLS_CHILD_ENV_STRIP before anything runs', async () => {
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', 'EXAMPLE TOKEN');
+		const ran = path.join(root, 'ran');
+		writeFileSync(
+			path.join(tools, 'node'),
+			`#!/bin/sh\n: > '${ran}'\n${printResult(plan)}\n`,
+			{ mode: 0o755 }
+		);
+		let toolPathAsked = false;
+		const run = createNativePlanRunner({
+			toolPath: async () => {
+				toolPathAsked = true;
+				return tools;
+			},
+		});
+		await expect(
+			run({ projectRoot: project, platform: 'ios', configuration: 'Debug' })
+		).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 1 is not a variable name/
+		);
+		expect(toolPathAsked).toBe(false);
+		expect(() => readFileSync(ran)).toThrow();
 	});
 
 	it('reads the plan from its own line, past any amount of other output', async () => {
