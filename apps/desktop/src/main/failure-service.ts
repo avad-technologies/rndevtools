@@ -331,7 +331,13 @@ export class FailureService {
 				!this.#expected.has(lane.metroPid) &&
 				!this.#records.some(
 					(record) =>
-						record.metroPid === lane.metroPid && record.kind === 'metro-exit'
+						record.metroPid === lane.metroPid &&
+						(record.kind === 'metro-exit' ||
+							// RN Devtools asked this Metro to stop. The lane can keep it
+							// listed as stopped long after the intent window, as a
+							// required lane whose backend failed to attach does, and
+							// across desktop restarts; the stop is already on record.
+							(record.kind === 'lane-lifecycle' && record.laneId === lane.id))
 				)
 			) {
 				changed =

@@ -189,6 +189,48 @@ describe('persistent failure monitoring', () => {
 			detail: expect.stringContaining('Exit code: 1'),
 		});
 	});
+	it('never reports a Metro RN Devtools stopped as missing, after the intent window or a restart', async () => {
+		let service = make();
+		const kinds = () => service.getState().records.map((record) => record.kind);
+		await service.start();
+		service.observeLanes([lane]);
+		await service.laneIntent(lane, 'Required backend failed to attach');
+		await service.metroExited({
+			pid: 1234,
+			port: 8100,
+			startedAt: now,
+			code: null,
+			signal: 'SIGTERM',
+		});
+		// A required lane whose backend failed keeps its stopped Metro listed
+		// until it is stopped or started again.
+		const stopped: Lane = { ...lane, metro: 'stopped' };
+		service.observeLanes([stopped]);
+		now += 61_000;
+		service.observeLanes([stopped]);
+		expect(kinds()).toEqual(['lane-lifecycle', 'lane-lifecycle']);
+		await service.stop();
+		service = make();
+		await service.start();
+		service.observeLanes([stopped]);
+		expect(kinds()).toEqual(['lane-lifecycle', 'lane-lifecycle']);
+	});
+	it('never reports a Metro RN Devtools asked to stop as missing when its exit went unseen', async () => {
+		// An adopted Metro is no child of this desktop process: its exit is not
+		// observed, only the stop request.
+		const service = make();
+		await service.start();
+		service.observeLanes([lane]);
+		await service.laneIntent(lane, 'Required backend failed to attach');
+		now += 61_000;
+		service.observeLanes([{ ...lane, metro: 'stopped' }]);
+		expect(service.getState().records).toEqual([
+			expect.objectContaining({
+				kind: 'lane-lifecycle',
+				title: 'Managed Metro stop requested',
+			}),
+		]);
+	});
 	it('keeps a bounded redacted Metro log with an unexpected exit', async () => {
 		const service = make();
 		await service.start();
