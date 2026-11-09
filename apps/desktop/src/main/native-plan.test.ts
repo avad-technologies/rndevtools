@@ -7,10 +7,11 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	createNativePlanRunner,
 	nativePlanResultSchema,
+	PLAN_RESULT_PREFIX,
 	resolveProjectNode,
 } from './native-plan';
 
@@ -47,18 +48,16 @@ describe('resolveProjectNode', () => {
 
 describe('runNativePlan', () => {
 	let root: string;
+	let tools: string;
+	let project: string;
+	let plan: Record<string, unknown>;
 	beforeEach(() => {
 		root = mkdtempSync(path.join(os.tmpdir(), 'rndevtools-native-plan-run-'));
-	});
-	afterEach(() => rmSync(root, { recursive: true, force: true }));
-
-	it('finds Node on the tool PATH and runs the plan with that PATH', async () => {
-		const tools = path.join(root, 'tools');
-		const project = path.join(root, 'app');
+		tools = path.join(root, 'tools');
+		project = path.join(root, 'app');
 		mkdirSync(tools);
 		mkdirSync(project);
-		const seenPath = path.join(root, 'seen-path');
-		const plan = {
+		plan = {
 			projectRoot: project,
 			platform: 'ios',
 			configuration: 'Debug',
@@ -66,19 +65,160 @@ describe('runNativePlan', () => {
 			sourceCount: 3,
 			cache: 'no-provider',
 		};
-		// Stands in for the user's Node: it records the PATH it was given and
-		// prints what the in-project script would.
-		writeFileSync(
-			path.join(tools, 'node'),
-			`#!/bin/sh\nprintf '%s' "$PATH" > '${seenPath}'\nprintf '%s' '${JSON.stringify(plan)}'\n`,
-			{ mode: 0o755 }
-		);
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	/**
+	 * Stands in for the user's Node on the tool PATH: a shell script that runs
+	 * `body` instead of the in-project script.
+	 */
+	function fakeNode(body: string) {
+		writeFileSync(path.join(tools, 'node'), `#!/bin/sh\n${body}\n`, {
+			mode: 0o755,
+		});
 		const toolPath = `${tools}${path.delimiter}/usr/bin${path.delimiter}/bin`;
 		const run = createNativePlanRunner({ toolPath: async () => toolPath });
-		await expect(
-			run({ projectRoot: project, platform: 'ios', configuration: 'Debug' })
-		).resolves.toEqual(plan);
-		expect(readFileSync(seenPath, 'utf8')).toBe(toolPath);
+		return {
+			toolPath,
+			plan: () =>
+				run({ projectRoot: project, platform: 'ios', configuration: 'Debug' }),
+		};
+	}
+
+	/** Prints `value` as the in-project script ends: on a line of its own. */
+	const printResult = (value: unknown) =>
+		`printf '\\n%s\\n' '${PLAN_RESULT_PREFIX}${JSON.stringify(value)}'`;
+
+	it('finds Node on the tool PATH and runs the plan with that PATH', async () => {
+		const seenPath = path.join(root, 'seen-path');
+		const node = fakeNode(
+			`printf '%s' "$PATH" > '${seenPath}'\n${printResult(plan)}`
+		);
+		await expect(node.plan()).resolves.toEqual(plan);
+		expect(readFileSync(seenPath, 'utf8')).toBe(node.toolPath);
+	});
+
+	it('runs the plan without the DEBUG an agent session exports', async () => {
+		// Under DEBUG, @expo/fingerprint prints its timings to stdout.
+		vi.stubEnv('DEBUG', '1');
+		const seenEnv = path.join(root, 'seen-env');
+		const node = fakeNode(
+			`printf '%s %s %s' "\${DEBUG-unset}" "$CI" "$EXPO_NO_TELEMETRY" > '${seenEnv}'\n${printResult(plan)}`
+		);
+		await expect(node.plan()).resolves.toEqual(plan);
+		expect(readFileSync(seenEnv, 'utf8')).toBe('unset 1 1');
+	});
+
+	it('reads the plan from its own line, past any amount of other output', async () => {
+		// Profiler timings, more logging than the output bound holds, a line
+		// left unfinished, the result, and output after it.
+		const node = fakeNode(
+			[
+				`printf '%s\\n' '⏱  [profile] getConfig: 12.3ms'`,
+				`yes 'Loading app config' | head -n 20000`,
+				`printf '%s' 'An unfinished line'`,
+				printResult(plan),
+				`printf '%s\\n' 'Done.'`,
+			].join('\n')
+		);
+		await expect(node.plan()).resolves.toEqual(plan);
+	});
+
+	it('takes the last result line when more than one was printed', async () => {
+		const node = fakeNode(
+			[
+				printResult({ ...plan, fingerprintHash: 'stale' }),
+				printResult(plan),
+			].join('\n')
+		);
+		await expect(node.plan()).resolves.toEqual(plan);
+	});
+
+	it.each([
+		[
+			'nothing',
+			'true',
+			/exited without reporting a plan and printed nothing\.$/,
+		],
+		[
+			'output but no plan',
+			`printf '%s\\n' '⏱  [profile] getConfig: 12.3ms' 'API_KEY=example-secret-value'`,
+			/exited without reporting a plan; it printed: ⏱ \[profile\] getConfig: 12\.3ms API_KEY=\[REDACTED\]\.$/,
+		],
+		[
+			'more than an error quotes',
+			`yes 'Loading app config' | head -n 20000`,
+			// The newest whole lines, after an ellipsis for what came before.
+			/exited without reporting a plan; it printed: … (?:Loading app config ){10,}Loading app config\.$/,
+		],
+		[
+			'a plan that is not JSON',
+			`printf '\\n%s\\n' '${PLAN_RESULT_PREFIX}{"projectRoot":'`,
+			/reported a plan that is not valid JSON\.$/,
+		],
+		[
+			'a plan with an unknown cache state',
+			printResult({
+				projectRoot: '/Users/dev/app',
+				platform: 'ios',
+				configuration: 'Debug',
+				fingerprintHash: null,
+				sourceCount: 0,
+				cache: 'maybe',
+			}),
+			/reported a plan RN Devtools cannot read: cache: .*"no-provider".*\.$/,
+		],
+		[
+			'an error and exits',
+			`printf '%s\\n' 'Error: Cannot find module' 'API_KEY=example-secret-value' >&2\nexit 2`,
+			/failed: Error: Cannot find module API_KEY=\[REDACTED\]\. Is @expo\/fingerprint installed in the worktree\?$/,
+		],
+	])(
+		'says what went wrong when the script prints %s',
+		async (_, body, message) => {
+			const failure: unknown = await fakeNode(body)
+				.plan()
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(Error);
+			const text = (failure as Error).message;
+			expect(text).toMatch(message);
+			expect(text).not.toMatch(/SyntaxError|Unexpected token|example-secret/);
+			expect(text.length).toBeLessThan(project.length + 700);
+		}
+	);
+
+	it('never quotes the line its output bound cut through', async () => {
+		// The plan keeps the newest 256 KiB of stdout. Fill it so the window
+		// kept starts inside a secret, past its name, where no redactor could
+		// recognise what is left of it as one.
+		const kept = 256 * 1024;
+		const secret = 'DATABASE_PASSWORD=hunter2-example-secret-value\n';
+		const cutAt = secret.indexOf('example-secret');
+		const filler = 'Loading app config\n';
+		const last = 'Done\n';
+		const after = kept - (secret.length - cutAt);
+		const lines = Math.floor((after - last.length - 1) / filler.length);
+		const padding = after - last.length - lines * filler.length;
+		const failure: unknown = await fakeNode(
+			[
+				`printf '%s' '${secret}'`,
+				`printf '%s\\n' '${'x'.repeat(padding - 1)}'`,
+				`yes '${filler.trim()}' | head -n ${lines}`,
+				`printf '%s' '${last}'`,
+			].join('\n')
+		)
+			.plan()
+			.catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(Error);
+		const text = (failure as Error).message;
+		expect(text).toMatch(
+			/exited without reporting a plan; it printed: … (?:Loading app config ){10,}Done\.$/
+		);
+		expect(text).not.toMatch(/secret|hunter2|x{8}/);
+		expect(text.length).toBeLessThan(project.length + 700);
 	});
 });
 
@@ -103,7 +243,10 @@ describe('native plan project script', () => {
 			`exports.createFingerprintAsync = async () => ({ hash: 'deadbeef', sources: [{}, {}, {}] });`
 		);
 	});
-	afterEach(() => rmSync(root, { recursive: true, force: true }));
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	});
 
 	function writeModule(name: string, source: string) {
 		const directory = path.join(root, 'node_modules', name);
@@ -145,6 +288,46 @@ module.exports = {
 `
 		);
 	}
+
+	it('fingerprints silently without DEBUG and reads the plan past what project code prints', async () => {
+		vi.stubEnv('DEBUG', '1');
+		writeModule(
+			'@expo/config',
+			`exports.getConfig = () => {
+  // An app config that logs: a line left unfinished, JSON, and later output.
+  process.stdout.write('Loading app config');
+  console.log('{"environment":"development"}');
+  setTimeout(() => console.log('Done.'), 0);
+  return { exp: { ios: { bundleIdentifier: 'com.example.app' }, scheme: 'exampleapp' } };
+};`
+		);
+		writeModule(
+			'@expo/fingerprint',
+			`const fs = require('node:fs');
+const path = require('node:path');
+exports.createFingerprintAsync = async (projectRoot, options) => {
+  fs.writeFileSync(path.join(projectRoot, 'fingerprint-call.json'), JSON.stringify({ options: options ?? null, debug: process.env.DEBUG ?? null }));
+  // What its profiler prints to stdout under DEBUG unless silent.
+  if (process.env.DEBUG && !(options && options.silent)) console.log('⏱  [profile] createFingerprintAsync: 1.234s');
+  return { hash: 'deadbeef', sources: [{}, {}, {}] };
+};`
+		);
+		await expect(
+			run({ projectRoot: root, platform: 'ios', configuration: 'Debug' })
+		).resolves.toEqual({
+			projectRoot: root,
+			platform: 'ios',
+			configuration: 'Debug',
+			fingerprintHash: 'deadbeef',
+			sourceCount: 3,
+			cache: 'no-provider',
+			bundleIdentifier: 'com.example.app',
+			scheme: 'exampleapp',
+		});
+		expect(
+			JSON.parse(readFileSync(path.join(root, 'fingerprint-call.json'), 'utf8'))
+		).toEqual({ options: { silent: true }, debug: null });
+	});
 
 	it.each(['ios', 'android'] as const)(
 		'uses a custom %s provider hash and options without loading @expo/fingerprint',
