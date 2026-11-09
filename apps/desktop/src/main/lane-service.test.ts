@@ -2265,7 +2265,7 @@ describe('LaneService', () => {
 	});
 
 	describe('Metro health', () => {
-		it('rechecks identity before a direct launch when a cached PID now belongs to another app', async () => {
+		it('rechecks identity before a direct launch, and a cached PID that now belongs to another app reads as a stopped Metro', async () => {
 			const started = await service.runOperation({
 				actionId: 'op-recycled-start',
 				kind: 'lane.start',
@@ -2286,7 +2286,9 @@ describe('LaneService', () => {
 				laneId: started.lane?.id as string,
 			});
 			expect(result.completed).toBe(false);
-			expect(result.error).toContain('Another app now owns this PID');
+			expect(result.error).toBe(
+				`Metro isn't running for lane ${started.lane?.id}. Run lane up to start it again.`
+			);
 			expect(verify).toHaveBeenCalledWith(
 				started.lane?.metroPid,
 				8_100,
@@ -2294,7 +2296,113 @@ describe('LaneService', () => {
 			);
 			expect(simulator.actions).toEqual([]);
 			expect(metro.stopped).toEqual([]);
+			// The PID is some other process's now: the lane forgets it, so nothing
+			// ever signals it, and its port is free for its next Metro.
+			const lane = service.getState().lanes[0];
+			expect(lane).toMatchObject({ id: started.lane?.id, metro: 'stopped' });
+			expect(lane).not.toHaveProperty('metroPid');
+			expect(service.getState().error).toBeUndefined();
 			verify.mockRestore();
+		});
+
+		it('starts a new Metro on lane up when the recorded PID now names another process', async () => {
+			metro.healthyPorts.add(8_100);
+			const first = await service.runOperation({
+				actionId: 'op-recycled-first',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			// The lane's Metro is gone and an unrelated process has its PID.
+			metro.listeners.delete(8_100);
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockRejectedValueOnce(
+					new NotLaneMetroError(
+						`Process ${first.lane?.metroPid} is no longer the Metro serving port 8100; refusing to stop it.`
+					)
+				);
+			try {
+				const resumed = await service.runOperation({
+					actionId: 'op-recycled-up',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: true,
+				});
+				expect(resumed.completed).toBe(true);
+				expect(resumed.lane).toMatchObject({
+					id: first.lane?.id,
+					port: 8_100,
+					metro: 'ready',
+				});
+				expect(resumed.lane?.metroPid).not.toBe(first.lane?.metroPid);
+				expect(metro.started).toHaveLength(2);
+				expect(metro.stopped).toEqual([]);
+				expect(service.getState().error).toBeUndefined();
+			} finally {
+				verify.mockRestore();
+			}
+		});
+
+		it('adopts a surviving lease whose PID now names another process as stopped, and lane up restarts it', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-recycled-adopt-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			await service.stop();
+			metro.listeners.delete(8_100);
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockRejectedValue(
+					new NotLaneMetroError(
+						`Process ${started.lane?.metroPid} is no longer the Metro serving port 8100; refusing to stop it.`
+					)
+				);
+			store = new LaneStore(root);
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			await vi.waitFor(() =>
+				expect(service.getState().lanes[0]).toMatchObject({
+					id: started.lane?.id,
+					metro: 'stopped',
+				})
+			);
+			expect(service.getState().lanes[0]).not.toHaveProperty('metroPid');
+			expect(service.getState().error).toBeUndefined();
+			await vi.waitFor(async () => {
+				const reopened = new LaneStore(root);
+				await reopened.start();
+				expect(reopened.lanes()[0]).toMatchObject({ metro: 'stopped' });
+				expect(reopened.lanes()[0]?.metroPid).toBeUndefined();
+			});
+			verify.mockRestore();
+			const resumed = await service.runOperation({
+				actionId: 'op-recycled-adopt-up',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(resumed.completed).toBe(true);
+			expect(resumed.lane).toMatchObject({ id: started.lane?.id, port: 8_100 });
+			expect(resumed.lane?.metroPid).not.toBe(started.lane?.metroPid);
+			expect(metro.stopped).toEqual([]);
 		});
 
 		it('starts the desktop service without waiting for surviving Metro ownership probes', async () => {

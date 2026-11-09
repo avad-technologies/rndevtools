@@ -2279,7 +2279,16 @@ export class LaneService {
 	 */
 	async #waitForMetro(lane: Lane, signal: AbortSignal): Promise<boolean> {
 		this.#assertLaunchTarget(lane, signal);
-		await this.#verifyRecordedMetro(lane, { fresh: true });
+		if (!(await this.#verifyRecordedMetro(lane, { fresh: true }))) {
+			// No PID to wait for, or one that turned out to be another process's:
+			// the lane has no Metro, and only lane up starts one.
+			this.#assertOperationActive(signal);
+			if (this.#requireLane(lane.id).metroPid === undefined) {
+				throw new Error(
+					`Metro isn't running for lane ${lane.id}. Run lane up to start it again.`
+				);
+			}
+		}
 		const deadline = this.#now() + LANE_METRO_HEALTH_TIMEOUT_MS;
 		while (this.#now() < deadline) {
 			this.#assertLaunchTarget(lane, signal);
@@ -2342,6 +2351,15 @@ export class LaneService {
 			}
 		} catch (error) {
 			this.#unverifyMetro(lane.id, pid);
+			if (error instanceof NotLaneMetroError) {
+				// The PID names some other process now, which proves the lane's own
+				// Metro is gone, as a stop takes it. Forgetting the PID keeps that
+				// process from ever being signalled and lets lane up start a new
+				// Metro on the lane's port.
+				this.#clearIdentityError(lane.id, pid);
+				await this.#forgetRecycledMetro(lane.id, pid);
+				return false;
+			}
 			const message = `Cannot adopt Metro for lane ${lane.id}: ${safeErrorText(error)} Lane up will retry ownership verification.`;
 			const current = this.#store.get(lane.id);
 			if (
@@ -2369,6 +2387,26 @@ export class LaneService {
 		this.#verifiedMetros.set(lane.id, pid);
 		this.#metroIdentityErrors.delete(lane.id);
 		return true;
+	}
+
+	/**
+	 * Records that the lane's Metro is gone because its PID now names another
+	 * process: the lane reads stopped and keeps no PID, unless it was stopped
+	 * or got a new Metro while that was being found out.
+	 */
+	async #forgetRecycledMetro(laneId: string, pid: number): Promise<void> {
+		const current = this.#store.get(laneId);
+		if (
+			this.#stopped ||
+			current?.metroPid !== pid ||
+			this.#stoppingLanes.has(laneId)
+		)
+			return;
+		const { metroPid: _recycled, ...rest } = current;
+		await this.#trackMaintenanceWrite(
+			this.#store.upsert({ ...rest, metro: 'stopped' })
+		).catch(() => undefined);
+		if (!this.#stopped) this.#touch();
 	}
 
 	/**
