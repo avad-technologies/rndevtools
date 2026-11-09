@@ -11,6 +11,8 @@ const UUID = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
 const HOST_PROCESS =
 	/^(?:Simulator|SimulatorTrampoline|SimRenderServer|CoreSimulatorBridge|com\.apple\.CoreSimulator(?:\..+)?)$/;
 const MAX_REPORT_BYTES = 4 * 1024 * 1024;
+/** Heads the Metro output a failure's detail carries after an unexpected exit. */
+export const METRO_LOG_TAIL_HEADING = 'Metro log tail (redacted):';
 
 export function failureId(key: string): string {
 	return `failure-${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;

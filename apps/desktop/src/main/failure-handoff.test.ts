@@ -183,6 +183,57 @@ describe('local subscription handoff', () => {
 			);
 		}
 	);
+	it.each([
+		['codex', 'OpenAI'],
+		['claude', 'Anthropic'],
+	] as const)(
+		'names the evidence %s sends to %s, and its approvals, before it opens',
+		async (client, vendor) => {
+			await fakeClient(client);
+			const confirm = vi.fn(async (_dialog: { detail: string }) => false);
+			const metroExit: FailureRecord = {
+				...record,
+				kind: 'metro-exit',
+				title: 'Metro exited unexpectedly',
+				detail:
+					'No RN Devtools stop request was recorded.\nPID: 1\nPort: 8100\n\nMetro log tail (redacted):\nError: example failure',
+				source: 'Metro child process',
+			};
+			await make({ confirm }).run(metroExit, request(client, 'fix'));
+			await make({ confirm }).run(record, request(client, 'investigate'));
+			const [fix, investigate] = confirm.mock.calls.map(
+				([dialog]) => dialog.detail
+			);
+			expect(fix).toContain(`sends to ${vendor}`);
+			expect(fix).toContain('Metro log tail');
+			expect(fix).not.toContain('symbol');
+			expect(fix).toContain('asks before each edit');
+			expect(investigate).toContain(`sends to ${vendor}`);
+			expect(investigate).toContain('symbol');
+			expect(investigate).not.toContain('Metro log tail');
+		}
+	);
+	it('makes a fix-mode agent ask before each edit, since app output can steer it', () => {
+		const option = (args: string[], name: string) =>
+			args[args.indexOf(name) + 1];
+		const codexFix = handoffArguments('codex', 'fix', 'task');
+		expect(option(codexFix, '--sandbox')).toBe('workspace-write');
+		expect(option(codexFix, '--ask-for-approval')).toBe('untrusted');
+		const codexInvestigate = handoffArguments('codex', 'investigate', 'task');
+		expect(option(codexInvestigate, '--sandbox')).toBe('read-only');
+		expect(option(codexInvestigate, '--ask-for-approval')).toBe('on-request');
+		// Claude Code's default mode is its manual one: it asks before each edit
+		// and command that the user's permission rules do not already allow.
+		expect(
+			option(handoffArguments('claude', 'fix', 'task'), '--permission-mode')
+		).toBe('default');
+		expect(
+			option(
+				handoffArguments('claude', 'investigate', 'task'),
+				'--permission-mode'
+			)
+		).toBe('plan');
+	});
 	it('cancels without writing tasks or opening a terminal', async () => {
 		await fakeClient('codex');
 		const openTerminal = vi.fn();

@@ -18,6 +18,7 @@ import {
 	type DiagnosticReportCache,
 	failureId,
 	failureText,
+	METRO_LOG_TAIL_HEADING,
 	readDiagnosticReports,
 } from './failure-diagnostics';
 import { type MetroExit, readLogTail } from './lane-metro';
@@ -297,7 +298,7 @@ export class FailureService {
 			title: intentional
 				? 'Managed Metro stopped'
 				: 'Metro exited unexpectedly',
-			detail: `${intentional ? expected.reason : 'No RN Devtools stop request was recorded.'}\nPID: ${exit.pid}\nPort: ${exit.port}\nExit code: ${exit.code ?? 'none'}\nSignal: ${exit.signal ?? 'none'}${log ? `\n\nMetro log tail (redacted):\n${failureText(log, 8_192)}` : ''}`,
+			detail: `${intentional ? expected.reason : 'No RN Devtools stop request was recorded.'}\nPID: ${exit.pid}\nPort: ${exit.port}\nExit code: ${exit.code ?? 'none'}\nSignal: ${exit.signal ?? 'none'}${log ? `\n\n${METRO_LOG_TAIL_HEADING}\n${failureText(log, 8_192)}` : ''}`,
 			source: 'Metro child process',
 			metroPid: exit.pid,
 			port: exit.port,

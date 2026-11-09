@@ -13,7 +13,7 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { FailureRecord, FailureRequest } from '../shared/failure-protocol';
-import { failureText } from './failure-diagnostics';
+import { failureText, METRO_LOG_TAIL_HEADING } from './failure-diagnostics';
 import { readLoginShellPath, resolveToolPath } from './lane-tool-path';
 import { ensurePrivateDirectory, writeFileAtomic } from './private-files';
 
@@ -45,6 +45,27 @@ const CLAUDE_SUBSCRIPTION_SETTINGS = JSON.stringify({
 	forceLoginMethod: 'claudeai',
 	apiKeyHelper: '',
 });
+/** Who receives a session's prompt, and what each mode lets the agent do. */
+const CLIENTS = {
+	claude: {
+		name: 'Claude Code',
+		vendor: 'Anthropic',
+		investigate: 'Claude Code starts in plan mode, which does not edit files.',
+		fix: 'Claude Code may edit this project, but asks before each edit and each command your Claude Code permission rules do not already allow.',
+	},
+	codex: {
+		name: 'Codex',
+		vendor: 'OpenAI',
+		investigate: 'Codex works in a read-only sandbox.',
+		fix: 'Codex may edit this project, but asks before each edit and each command that is neither read-only nor allowed by your Codex rules.',
+	},
+} as const;
+/** Records read from a diagnostic report, whose fields the crashing app shapes. */
+const REPORT_KINDS: ReadonlySet<FailureRecord['kind']> = new Set([
+	'app-crash',
+	'simulator-crash',
+	'simulator-diagnostic',
+]);
 
 /** Literal shell argument; report text and paths are never shell source. */
 function quoteShell(value: string): string {
@@ -82,23 +103,47 @@ export function handoffArguments(
 				'--sandbox',
 				mode === 'fix' ? 'workspace-write' : 'read-only',
 				'--ask-for-approval',
-				'on-request',
+				// The evidence a fix starts from carries text the app logged or
+				// named, so no edit, and no command outside Codex's read-only set
+				// or the user's own rules, runs without the operator's approval.
+				// Under on-request, edits inside the workspace would not ask.
+				mode === 'fix' ? 'untrusted' : 'on-request',
 				prompt,
 			]
 		: [
 				'--settings',
 				CLAUDE_SUBSCRIPTION_SETTINGS,
 				'--permission-mode',
+				// Default is Claude Code's manual mode: it asks before each edit
+				// and command its permission rules do not already allow.
 				mode === 'fix' ? 'default' : 'plan',
 				prompt,
 			];
 }
 
+/** What a session's prompt carries besides its instructions, by category. */
+function handoffEvidence(record: FailureRecord): string[] {
+	return [
+		"the failure's title, kind, time, source and detail, with its lane, port and Simulator when known",
+		...(record.detail.includes(METRO_LOG_TAIL_HEADING)
+			? [
+					"the Metro log tail: up to 8 KB of the lane's Metro output, redacted, including the app's own console logs",
+				]
+			: []),
+		...(REPORT_KINDS.has(record.kind)
+			? [
+					'crash report fields and stack symbol names, which the crashing app can influence',
+				]
+			: []),
+		'the project path',
+	];
+}
+
 /**
- * The message box that asks before an agent session opens. Cancel is the
- * first button and the default, so Return never opens one, as in the other
- * confirmations: a session sends diagnostics off the Mac, and in fix mode it
- * can edit the project.
+ * The message box that asks before an agent session opens. It names what the
+ * prompt sends and to whom. Cancel is the first button and the default, so
+ * Return never opens one, as in the other confirmations: a session sends
+ * diagnostics off the Mac, and in fix mode it can edit the project.
  */
 type HandoffConfirmation = {
 	type: 'question';
@@ -116,12 +161,21 @@ function handoffConfirmation(
 	{ client, mode }: Pick<HandoffRequest, 'client' | 'mode'>,
 	project: string
 ): HandoffConfirmation {
-	const name = client === 'claude' ? 'Claude Code' : 'Codex';
+	const { name, vendor, [mode]: approvals } = CLIENTS[client];
 	return {
 		type: 'question',
 		title: `Open ${name}`,
 		message: `${mode === 'fix' ? 'Investigate and fix' : 'Investigate'} with ${name}?`,
-		detail: `${record.title}\n\nProject: ${project}\n\nOpens an interactive terminal using your existing subscription login. ${mode === 'fix' ? 'The agent may edit this project and run checks, subject to its normal approval prompts.' : 'The agent starts in read-only or plan mode.'} Review its results there before marking this failure resolved.`,
+		detail: [
+			record.title,
+			`Project: ${project}`,
+			`${name} sends to ${vendor}, as untrusted evidence:\n${handoffEvidence(
+				record
+			)
+				.map((item) => `• ${item}`)
+				.join('\n')}`,
+			`Opens an interactive terminal using your existing subscription login. ${approvals} Review its results there before marking this failure resolved.`,
+		].join('\n\n'),
 		buttons: ['Cancel', `Open ${name}`],
 		defaultId: 0,
 		cancelId: 0,
