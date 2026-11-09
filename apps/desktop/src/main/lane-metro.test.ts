@@ -509,9 +509,10 @@ describe('Metro stop', () => {
 		await metro.stop(pid, 8_100, root);
 		expect((await exited)[1]).toBe('SIGTERM');
 		const bounds = { timeoutMs: 3_000, maxOutputBytes: 64 * 1024 };
+		// -w keeps the warning -b prints for every mount out of the output cap.
 		expect(calls).toEqual([
 			[
-				`/usr/sbin/lsof -b -a -p ${pid} -iTCP:8100 -sTCP:LISTEN -n -P -Fp`,
+				`/usr/sbin/lsof -b -w -a -p ${pid} -iTCP:8100 -sTCP:LISTEN -n -P -Fp`,
 				bounds,
 			],
 			[
@@ -519,7 +520,7 @@ describe('Metro stop', () => {
 				{ timeoutMs: 5_000, maxOutputBytes: 64 * 1024 },
 			],
 			[
-				`/usr/sbin/lsof -b -a -p ${pid} -d cwd -FDin`,
+				`/usr/sbin/lsof -b -w -a -p ${pid} -d cwd -FDin`,
 				{ ...bounds, environment: { LC_ALL: 'C' } },
 			],
 		]);
@@ -1324,6 +1325,36 @@ describe('Metro stop', () => {
 			}
 		);
 
+		// -b makes lsof warn on stderr about every mount it avoids, some 400
+		// bytes each, and the runner counts stderr toward the same cap as
+		// stdout: about 160 mounts would fill the real 64 KB. Under a cap this
+		// Mac's own mounts' warnings exceed, the probe still has to fit.
+		it("proves the lane's own Metro under an output cap the mount warnings of -b would exceed", async () => {
+			const capped = createMetroSupervisor({
+				runCommand: (executable, args, options) =>
+					executable === '/bin/ps'
+						? Promise.resolve({
+								stdout: `${METRO_COMMAND}\n`,
+								stderr: '',
+								exitCode: 0,
+							})
+						: runSimulatorCommand(executable, args, {
+								...options,
+								maxOutputBytes: 2_048,
+							}),
+			});
+			const appDirectory = path.join(root, 'app');
+			await mkdir(appDirectory);
+			await withMetroIn(appDirectory, async (lanesMetro, pid) => {
+				expect(await capped.verifyOwnership(pid, 8_100, appDirectory)).toBe(
+					true
+				);
+				const exited = once(lanesMetro, 'exit');
+				await capped.stop(pid, 8_100, appDirectory);
+				expect((await exited)[1]).toBe('SIGTERM');
+			});
+		});
+
 		it("keeps refusing a moved worktree's Metro, also once a directory is made at its old path", async () => {
 			const appDirectory = path.join(root, 'app');
 			const moved = path.join(root, 'app-moved');
@@ -1418,6 +1449,7 @@ describe('Metro health', () => {
 				executable: '/usr/sbin/lsof',
 				args: [
 					'-b',
+					'-w',
 					'-a',
 					'-p',
 					'4242',

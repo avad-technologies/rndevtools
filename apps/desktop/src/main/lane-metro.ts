@@ -386,7 +386,9 @@ async function packagerAnswers(
 
 /**
  * Avoid unrelated mount stat/readlink calls that can block lsof past the
- * ownership deadline (-b); incomplete reports still fail closed.
+ * ownership deadline (-b); incomplete reports still fail closed. -b warns on
+ * stderr about every mount it avoids, which the runner counts toward the
+ * output cap, so -w drops those warnings.
  * Whether `pid` itself holds a listening TCP socket on `port`. Expo serves
  * Metro from the CLI process the lane spawned, so the lane's PID is the
  * listener. lsof exits 1 when the process has no such socket; that, and any
@@ -402,6 +404,7 @@ async function listensOn(
 			LSOF_PATH,
 			[
 				'-b',
+				'-w',
 				'-a',
 				'-p',
 				String(pid),
@@ -459,8 +462,9 @@ const LSOF_CWD_REPORT =
 	/^p(\d+)\nfcwd\n(?:D0x([0-9a-f]{1,8})\n)?(?:i(\d{1,20})\n)?n([^\n]+)\n$/;
 
 /**
- * -b skips potentially blocking mount stat/readlink calls. The report still
- * must carry the cwd's device and inode, checked against the app directory.
+ * -b skips potentially blocking mount stat/readlink calls, and -w keeps its
+ * warning about each mount out of the output cap. The report still must
+ * carry the cwd's device and inode, checked against the app directory.
  * The working directory lsof reports for `pid`: its device and inode, and
  * its path as lsof prints it, which the kernel resolved, free of symlinks and
  * spelling each name as the disk stores it. Any other report fails. lsof
@@ -475,7 +479,7 @@ async function processCwd(
 ): Promise<ProcessCwd> {
 	const result = await runCommand(
 		LSOF_PATH,
-		['-b', '-a', '-p', String(pid), '-d', 'cwd', '-FDin'],
+		['-b', '-w', '-a', '-p', String(pid), '-d', 'cwd', '-FDin'],
 		{
 			timeoutMs: OWNER_PROBE_TIMEOUT_MS,
 			maxOutputBytes: OWNER_PROBE_MAX_OUTPUT_BYTES,
