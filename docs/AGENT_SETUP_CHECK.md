@@ -30,7 +30,7 @@ file atomically, and rechecks.
 | Disable a Codex MCP or plugin | Effective user or selected trusted project configuration |
 | Disable a Claude plugin | All projects, or a local override for the selected project |
 | Disable a Claude MCP | Selected project only; its registration is retained |
-| Repair RN Devtools registration | Existing effective registration, preserving environment and approval policy |
+| Repair RN Devtools registration | Existing effective registration, preserving environment and approval policy; a Codex tool timeout under 240 s is raised to 240, as setup does |
 | Install hooks, routing or RN Devtools skills | The displayed client file; other hooks/instructions remain |
 
 **Undo** restores the touched setting while retaining unrelated later edits.

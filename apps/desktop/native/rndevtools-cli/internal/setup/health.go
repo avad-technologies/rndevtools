@@ -449,7 +449,9 @@ func (s *healthScanner) scanCodex() {
 			break
 		}
 	}
-	if healthString(server["command"]) != s.options.Executable || !jsonEqual(server["args"], []any{"mcp"}) || healthFalse(server["enabled"]) {
+	// A short tool timeout cuts a cold lane or Supabase start off; setup raises
+	// it, so the check does too.
+	if healthString(server["command"]) != s.options.Executable || !jsonEqual(server["args"], []any{"mcp"}) || healthFalse(server["enabled"]) || codexTimeoutShort(server["tool_timeout_sec"]) {
 		connection = "needs-setup"
 		target := serverSources["rndevtools"]
 		if target == "" {
@@ -459,7 +461,7 @@ func (s *healthScanner) scanCodex() {
 		if target != file {
 			scope = "Selected project (Codex)"
 		}
-		f := HealthFinding{Client: "codex", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled executable and enable its MCP. Existing environment and approval settings are preserved.", file: target, format: "toml", mode: "connection", Scope: scope, FixLabel: "Repair Codex connection"}
+		f := HealthFinding{Client: "codex", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled executable, enable its MCP, and raise a tool timeout shorter than 240 seconds, which can cut off a cold lane or Supabase start. Existing environment and approval settings are preserved.", file: target, format: "toml", mode: "connection", Scope: scope, FixLabel: "Repair Codex connection"}
 		if server["url"] != nil {
 			f.FixLabel = ""
 			f.Detail = "A custom RN Devtools transport is configured. Review it in Codex; it will not be replaced automatically."

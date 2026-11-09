@@ -703,3 +703,46 @@ func TestAgentHealthOffersNoProjectRepairThatWritesOutsideTheProject(t *testing.
 		t.Fatal("user settings changed")
 	}
 }
+
+func TestAgentHealthRaisesAShortCodexToolTimeoutAsSetupDoes(t *testing.T) {
+	// Setup raises a Codex tool timeout below 240 s, which a cold lane or
+	// Supabase start over MCP can exceed; the check and its repair agree.
+	for _, row := range []struct {
+		setting string
+		flagged bool
+		want    any
+	}{
+		{"tool_timeout_sec = 60\n", true, int64(codexToolTimeoutSeconds)},
+		{"tool_timeout_sec = 0\n", true, int64(codexToolTimeoutSeconds)},
+		{"", true, int64(codexToolTimeoutSeconds)},
+		{"tool_timeout_sec = 240\n", false, int64(240)},
+		{"tool_timeout_sec = 900\n", false, int64(900)},
+	} {
+		options := healthFixture(t)
+		file := filepath.Join(options.Home, ".codex", "config.toml")
+		healthPut(t, file, "[mcp_servers.rndevtools]\ncommand = "+tomlString(options.Executable)+"\nargs = [\"mcp\"]\n"+row.setting)
+		report, err := CheckAgents(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		flagged := false
+		for _, f := range report.Findings {
+			flagged = flagged || (f.Client == "codex" && f.Rule == "connection")
+		}
+		if flagged != row.flagged {
+			t.Fatalf("%q: connection finding %v, want %v", row.setting, flagged, row.flagged)
+		}
+		if row.flagged {
+			healthRepair(t, options, "codex", "connection")
+		}
+		raw, _, _ := healthRead(file)
+		doc, _ := healthDecode(raw, "toml")
+		if value, _ := healthGet(doc, "mcp_servers", "rndevtools", "tool_timeout_sec"); value != row.want {
+			t.Fatalf("%q: timeout %#v after the check, want %#v", row.setting, value, row.want)
+		}
+		merged, err := mergeCodexServer(raw, options.Executable)
+		if err != nil || !bytes.Equal(merged, raw) {
+			t.Fatalf("%q: setup would still change the repaired configuration:\n%s", row.setting, merged)
+		}
+	}
+}

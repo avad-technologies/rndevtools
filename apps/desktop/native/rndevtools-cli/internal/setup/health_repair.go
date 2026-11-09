@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -363,7 +362,7 @@ func prepareHealthFix(options HealthOptions, f HealthFinding) (healthJournal, er
 		add([]string{prefix, "rndevtools", "args"}, []any{"mcp"})
 		if f.Client == "codex" {
 			add([]string{prefix, "rndevtools", "enabled"}, true)
-			if timeout, ok := healthGet(doc, prefix, "rndevtools", "tool_timeout_sec"); !ok || fmt.Sprint(timeout) == "0" {
+			if timeout, _ := healthGet(doc, prefix, "rndevtools", "tool_timeout_sec"); codexTimeoutShort(timeout) {
 				add([]string{prefix, "rndevtools", "tool_timeout_sec"}, int64(codexToolTimeoutSeconds))
 			}
 		} else {
