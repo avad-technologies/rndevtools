@@ -24,11 +24,9 @@ describe('worktree inspector', () => {
 
 	/** git through a fake runner: `status` answers per worktree path. */
 	function inspector(status: (cwd: string) => Promise<SimulatorCommandResult>) {
-		let clock = 1_000;
 		let running = 0;
 		const calls = { statuses: [] as string[][], mostAtOnce: 0 };
 		const worktrees = createWorktreeInspector({
-			now: () => clock,
 			runCommand: async (_executable, args) => {
 				const cwd = args[1] as string;
 				if (args.includes('worktree')) {
@@ -48,13 +46,8 @@ describe('worktree inspector', () => {
 		return {
 			worktrees,
 			calls,
-			advance: (ms: number) => {
-				clock += ms;
-			},
 		};
 	}
-
-	const clean = async () => ({ stdout: '', stderr: '', exitCode: 0 });
 
 	it('asks git status without optional locks, a few worktrees at a time', async () => {
 		const { worktrees, calls } = inspector(async (cwd) => ({
@@ -63,7 +56,11 @@ describe('worktree inspector', () => {
 			exitCode: 0,
 		}));
 		const listed = await worktrees.listWorktrees('/Users/dev/app');
-		expect(listed.map((worktree) => worktree.dirty)).toEqual(
+		expect(calls.statuses).toEqual([]);
+		const dirty = await worktrees.readDirty(
+			listed.map((worktree) => worktree.path)
+		);
+		expect([...dirty.values()]).toEqual(
 			WORKTREES.map((worktree) => worktree.path.endsWith('-3'))
 		);
 		expect(calls.statuses[0]).toEqual([
@@ -78,19 +75,6 @@ describe('worktree inspector', () => {
 		expect(calls.mostAtOnce).toBeLessThanOrEqual(4);
 	});
 
-	it('reuses dirty flags between polls for a while, and asks git again when fresh', async () => {
-		const { worktrees, calls, advance } = inspector(clean);
-		await worktrees.listWorktrees('/Users/dev/app');
-		advance(10_000);
-		await worktrees.listWorktrees('/Users/dev/app');
-		expect(calls.statuses).toHaveLength(WORKTREES.length);
-		await worktrees.listWorktrees('/Users/dev/app', { fresh: true });
-		expect(calls.statuses).toHaveLength(2 * WORKTREES.length);
-		advance(30_000);
-		await worktrees.listWorktrees('/Users/dev/app');
-		expect(calls.statuses).toHaveLength(3 * WORKTREES.length);
-	});
-
 	it('reads a status too long to hold as dirty, and one that cannot run as clean', async () => {
 		const { worktrees } = inspector(async (cwd) => {
 			if (cwd.endsWith('-1')) {
@@ -103,9 +87,12 @@ describe('worktree inspector', () => {
 			}
 			return { stdout: '', stderr: '', exitCode: 0 };
 		});
-		const listed = await worktrees.listWorktrees('/Users/dev/app');
-		expect(listed[1]).toMatchObject({ path: '/Users/dev/app-1', dirty: true });
-		expect(listed[2]).toMatchObject({ path: '/Users/dev/app-2', dirty: false });
+		const dirty = await worktrees.readDirty([
+			'/Users/dev/app-1',
+			'/Users/dev/app-2',
+		]);
+		expect(dirty.get('/Users/dev/app-1')).toBe(true);
+		expect(dirty.get('/Users/dev/app-2')).toBe(false);
 	});
 });
 

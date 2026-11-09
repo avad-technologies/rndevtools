@@ -534,6 +534,7 @@ describe('AgentService holds through the lane reconcile', () => {
 	const worktrees: WorktreeInspectorPort = {
 		repositoryRoot: async () => '/Users/dev/app',
 		listWorktrees: async () => [],
+		readDirty: async () => new Map(),
 		readExpoIdentity: async () => ({}),
 	};
 
