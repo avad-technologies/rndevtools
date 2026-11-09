@@ -834,9 +834,12 @@ describe('LaneService', () => {
 				controller.signal
 			);
 			await spawning.promise;
+			// Stopping the lanes waits for the cleanup of a Metro still spawning.
+			let stopping: Promise<void> | undefined;
 			if (operation === 'cancel') controller.abort();
-			else await service.stop();
+			else stopping = service.stop();
 			release.resolve();
+			await stopping;
 			const result = await starting;
 			expect(result.completed).toBe(false);
 			expect(result.error).toMatch(/cancelled|shutting down/);
@@ -875,9 +878,11 @@ describe('LaneService', () => {
 				controller.signal
 			);
 			await spawning.promise;
+			let stopping: Promise<void> | undefined;
 			if (operation === 'cancel') controller.abort();
-			else await service.stop();
+			else stopping = service.stop();
 			release.resolve();
+			await stopping;
 			const result = await starting;
 			expect(result.completed).toBe(false);
 			expect(result.error).toMatch(/cancelled|shutting down/);
@@ -899,6 +904,71 @@ describe('LaneService', () => {
 			expect(service.getState().lanes).toEqual([]);
 		}
 	);
+
+	it('keeps stopping the lanes until a Metro spawned meanwhile has been cleaned up', async () => {
+		const spawning = deferred<void>();
+		const release = deferred<void>();
+		metro.start = async (input) => {
+			const pid = metro.launch(input);
+			spawning.resolve();
+			await release.promise;
+			return pid;
+		};
+		const starting = service.runOperation({
+			actionId: 'op-quit-spawn',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		await spawning.promise;
+		let stopped = false;
+		const stopping = service.stop().then(() => {
+			stopped = true;
+		});
+		await nextTurn();
+		// Quit goes on once this resolves; the Metro has no lane to keep it.
+		expect(stopped).toBe(false);
+		release.resolve();
+		await stopping;
+		expect(metro.stopped).toEqual([{ pid: 1_001, port: 8_100 }]);
+		expect((await starting).completed).toBe(false);
+	});
+
+	it('stops waiting for a Metro spawn that outlasts the shutdown grace', async () => {
+		const spawning = deferred<void>();
+		const release = deferred<void>();
+		metro.start = async (input) => {
+			const pid = metro.launch(input);
+			spawning.resolve();
+			await release.promise;
+			return pid;
+		};
+		const starting = service.runOperation({
+			actionId: 'op-quit-slow-spawn',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		await spawning.promise;
+		const advance = setInterval(() => {
+			now += 1_000;
+		}, 5);
+		try {
+			await service.stop();
+		} finally {
+			clearInterval(advance);
+		}
+		expect(metro.stopped).toEqual([]);
+		release.resolve();
+		expect((await starting).completed).toBe(false);
+		await vi.waitFor(() =>
+			expect(metro.stopped).toEqual([{ pid: 1_001, port: 8_100 }])
+		);
+	});
 
 	it('does not spawn Metro for an already cancelled lane up', async () => {
 		const controller = new AbortController();

@@ -99,6 +99,11 @@ const METRO_EXIT_POLL_INTERVAL_MS = 100;
 const METRO_STOP_GRACE_MS = 5_000;
 /** How long a stop waits for a killed Metro to be gone. */
 const METRO_KILL_GRACE_MS = 2_000;
+/**
+ * How long stopping the lanes, as the app quits, waits for a Metro spawn or
+ * the cleanup of a Metro no lane keeps.
+ */
+const METRO_SHUTDOWN_GRACE_MS = 5_000;
 const MAX_BACKEND_REASON_LENGTH = 1_024;
 
 export type LaneSimulatorPort = {
@@ -394,6 +399,12 @@ export class LaneService {
 	readonly #lifecycle = new AbortController();
 	/** Maintenance that has already committed to changing a durable lease. */
 	readonly #maintenanceWrites = new Set<Promise<void>>();
+	/**
+	 * Metro spawns, and cleanups of Metros no lane keeps, under way. A Metro
+	 * whose spawn finishes as the lanes stop is cleaned up, and the app must
+	 * not exit before that cleanup has signalled it.
+	 */
+	readonly #metroWork = new Set<Promise<unknown>>();
 	#worktreeCache: LaneWorktree[] = [];
 	#revision = 0;
 	#updatedAt: number;
@@ -509,8 +520,30 @@ export class LaneService {
 		// Probes can finish on their own. Wait only for maintenance that has
 		// already started a write or an expired hold's release.
 		await Promise.allSettled(this.#maintenanceWrites);
+		// A Metro spawning now has no lane to keep it and is cleaned up once
+		// its spawn returns; give that cleanup time to signal it.
+		await this.#drainMetroWork(this.#now() + METRO_SHUTDOWN_GRACE_MS);
 		// Metro processes are detached on purpose; they keep serving the agents
 		// that started them after the desktop app quits.
+	}
+
+	/** Waits for Metro spawns and cleanups under way, until `deadline`. */
+	async #drainMetroWork(deadline: number): Promise<void> {
+		while (this.#metroWork.size > 0 && this.#now() < deadline) {
+			await Promise.race([
+				Promise.allSettled([...this.#metroWork]),
+				sleep(CLOCK_POLL_INTERVAL_MS),
+			]);
+		}
+	}
+
+	#trackMetroWork<T>(work: Promise<T>): Promise<T> {
+		this.#metroWork.add(work);
+		const settled = () => {
+			this.#metroWork.delete(work);
+		};
+		work.then(settled, settled);
+		return work;
 	}
 
 	getState = (): LaneState => {
@@ -1214,10 +1247,14 @@ export class LaneService {
 	}
 
 	/** Keep a recoverable lease when identity-verified cleanup is refused. */
-	async #cleanupUncommittedMetro(
+	#cleanupUncommittedMetro(
 		lane: Lane,
 		reason = 'Uncommitted Metro cleanup'
 	): Promise<void> {
+		return this.#trackMetroWork(this.#cleanupUncommittedMetroNow(lane, reason));
+	}
+
+	async #cleanupUncommittedMetroNow(lane: Lane, reason: string): Promise<void> {
 		const pid = lane.metroPid;
 		if (pid === undefined) return;
 		this.#unverifyMetro(lane.id, pid);
@@ -1758,11 +1795,22 @@ export class LaneService {
 	 * Spawns a lane's Metro with its environment's metroEnv and the public
 	 * values its backend serves.
 	 */
-	async #spawnMetro(
+	#spawnMetro(
 		lane: Lane,
 		environment: LaneEnvironment,
 		backendEnv?: BackendEnv,
 		signal: AbortSignal = this.#lifecycle.signal
+	): Promise<number> {
+		return this.#trackMetroWork(
+			this.#spawnMetroNow(lane, environment, backendEnv, signal)
+		);
+	}
+
+	async #spawnMetroNow(
+		lane: Lane,
+		environment: LaneEnvironment,
+		backendEnv: BackendEnv | undefined,
+		signal: AbortSignal
 	): Promise<number> {
 		this.#assertOperationActive(signal);
 		const pid = await this.#metro.start({
