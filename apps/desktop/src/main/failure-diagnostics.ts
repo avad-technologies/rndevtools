@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { redactDiagnosticText } from '@rndevtools/core/redact';
 import type { FailureRecord } from '../shared/failure-protocol';
+import { stripTerminalControls } from './supabase/cli-redact';
 
 const UUID = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
 const HOST_PROCESS =
@@ -16,13 +17,12 @@ export function failureId(key: string): string {
 }
 
 export function failureText(value: string, limit = 16_384): string {
-	return (
-		redactDiagnosticText(value)
-			.replaceAll(os.homedir(), '~')
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: remove terminal control bytes from untrusted reports.
-			.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
-			.slice(0, limit)
-	);
+	// Whole escape sequences and control characters go before redaction: in
+	// colored output a credential follows `\x1b[32m` directly, with no word
+	// boundary for the redaction rules to start at.
+	return redactDiagnosticText(stripTerminalControls(value, true))
+		.replaceAll(os.homedir(), '~')
+		.slice(0, limit);
 }
 
 function object(value: unknown): Record<string, unknown> {

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
 	type DiagnosticReportCache,
+	failureText,
 	parseDiagnosticReport,
 	readDiagnosticReports,
 } from './failure-diagnostics';
@@ -65,6 +66,24 @@ describe('bounded simulator diagnostics', () => {
 			expect(parsed?.detail).not.toContain('DO_NOT_EXPOSE');
 			expect(parsed?.detail).not.toContain('secret-value');
 		}
+	});
+	it('removes terminal escape sequences before redacting, so colored output cannot shield a credential', () => {
+		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
+		for (const raw of [
+			`\u001b[32m${jwt}\u001b[0m`,
+			'Bearer \u001b[1msecret-value\u001b[0m',
+			// The 8-bit CSI, and an OSC 8 hyperlink terminated by BEL.
+			`\u009b31m${jwt}`,
+			`token \u001b]8;;https://example.com\u0007${jwt}\u001b]8;;\u0007`,
+		]) {
+			const text = failureText(raw);
+			expect(text).not.toMatch(/eyJ|secret-value/);
+			// No escape parameters are left behind as visible text either.
+			expect(text).not.toMatch(/\[\d+m|\]8;;/);
+		}
+		expect(failureText('Error: example failure\n  at exampleFrame')).toBe(
+			'Error: example failure\n  at exampleFrame'
+		);
 	});
 	it('distinguishes SpringBoard crashes from CoreSimulator resource diagnostics', () => {
 		expect(

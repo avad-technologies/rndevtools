@@ -91,7 +91,10 @@ function isInvisible(code: number): boolean {
  * and C1 controls, bidirectional overrides and zero-width characters. Written
  * as a scanner so no control character ever appears in a regular expression.
  */
-function stripTerminalControls(value: string, keepNewlines: boolean): string {
+export function stripTerminalControls(
+	value: string,
+	keepNewlines: boolean
+): string {
 	let output = '';
 	let index = 0;
 	while (index < value.length) {
