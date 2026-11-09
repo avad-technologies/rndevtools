@@ -186,15 +186,48 @@ func healthContains(value any, wanted string) bool {
 	return false
 }
 
-func (s *healthScanner) label(file string) string {
-	if rel, err := filepath.Rel(s.options.Home, file); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+func (s *healthScanner) label(file string) string { return healthLabel(s.options.Home, file) }
+
+// healthLabel shows file relative to home when it is inside it.
+func healthLabel(home, file string) string {
+	if healthInside(home, file) && file != home {
+		rel, _ := filepath.Rel(home, file)
 		return "~/" + rel
 	}
 	return file
 }
+
+// healthInside reports whether path is base or inside it, lexically.
+func healthInside(base, path string) bool {
+	rel, err := filepath.Rel(base, path)
+	return err == nil && !filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// healthEscapesProject reports a file of the selected project that an edit
+// would write outside it, through a link the repository committed (a
+// .claude/settings.local.json that points at the user's own settings): a
+// "Selected project" repair there would change every project. label names
+// the file the edit would write.
+func healthEscapesProject(options HealthOptions, file string) (escapes bool, label string) {
+	if options.Project == "" || !healthInside(options.Project, file) {
+		return false, ""
+	}
+	target, reason := writeTarget(file)
+	if reason != "" || healthInside(options.Project, target) {
+		return false, ""
+	}
+	return true, healthLabel(options.Home, target)
+}
+
 func (s *healthScanner) add(f HealthFinding) {
 	if len(s.report.Findings) >= 200 {
 		return
+	}
+	if f.FixLabel != "" {
+		if escapes, label := healthEscapesProject(s.options, f.file); escapes {
+			f.FixLabel = ""
+			f.Detail += " This project file resolves to " + label + ", outside the project, so no automatic fix is offered; change the setting where that file lives."
+		}
 	}
 	f.Source = s.label(f.file)
 	if f.Scope == "" {

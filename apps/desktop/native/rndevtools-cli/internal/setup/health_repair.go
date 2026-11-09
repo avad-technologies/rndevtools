@@ -21,11 +21,14 @@ import (
 )
 
 type HealthPlan struct {
-	ID        string `json:"id"`
-	Client    string `json:"client"`
-	Title     string `json:"title"`
-	Scope     string `json:"scope"`
-	Source    string `json:"source"`
+	ID     string `json:"id"`
+	Client string `json:"client"`
+	Title  string `json:"title"`
+	Scope  string `json:"scope"`
+	Source string `json:"source"`
+	// Target is the file the repair writes when it is not Source: the file a
+	// link at Source points to. The confirmation shows both.
+	Target    string `json:"target,omitempty"`
 	Summary   string `json:"summary"`
 	ExpiresAt int64  `json:"expiresAt"`
 }
@@ -309,6 +312,9 @@ func prepareHealthFix(options HealthOptions, f HealthFinding) (healthJournal, er
 	target, reason := writeTarget(f.file)
 	if reason != "" {
 		return healthJournal{}, errors.New("This configuration is managed or not writable; edit it in its owning client.")
+	}
+	if escapes, label := healthEscapesProject(options, f.file); escapes {
+		return healthJournal{}, errors.New("This project file resolves to " + label + ", outside the project. Change the setting where that file lives.")
 	}
 	j := healthJournal{Home: options.Home, Project: options.Project, Executable: options.Executable, FindingID: f.ID, File: f.file, Target: target, Format: f.format, Mode: f.mode, Before: raw, Present: present}
 	if f.format == "text" {
@@ -613,7 +619,11 @@ func PlanAgentFix(options HealthOptions, findingID string) (HealthPlan, error) {
 			return HealthPlan{}, err
 		}
 		j.Fingerprint = report.Fingerprint
-		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(healthPlanLifetime).UnixMilli()}
+		target := ""
+		if j.Target != finding.file {
+			target = healthLabel(options.Home, j.Target)
+		}
+		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Target: target, Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(healthPlanLifetime).UnixMilli()}
 		if err = healthSave(options, id, ".json", j); err != nil {
 			return HealthPlan{}, err
 		}

@@ -141,7 +141,11 @@ export class AgentSetupCheckService {
 				throw new Error('Preview this fix again before applying it.');
 			}
 			title = entry.plan.title;
-			detail = `${entry.plan.scope}\n${entry.plan.source}\n\n${entry.plan.summary}`;
+			// A dotfiles link is edited where it points: name that file too.
+			const writes = entry.plan.target
+				? `\nWrites ${entry.plan.target}, the file it links to.`
+				: '';
+			detail = `${entry.plan.scope}\n${entry.plan.source}${writes}\n\n${entry.plan.summary}`;
 		} else {
 			const report = await this.scan(project);
 			const receipt = report.repairs.find(

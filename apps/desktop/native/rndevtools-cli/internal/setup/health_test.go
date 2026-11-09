@@ -641,3 +641,65 @@ func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T)
 		}
 	}
 }
+
+func TestAgentHealthPlanNamesTheFileItWritesThroughALink(t *testing.T) {
+	// A dotfiles link is edited where it points; the preview says so.
+	options := healthFixture(t)
+	target := filepath.Join(options.Home, "dotfiles", "codex.toml")
+	healthPut(t, target, "[plugins.simview]\nenabled=true\n")
+	link := filepath.Join(options.Home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanAgentFix(options, healthFinding(t, options, "codex", "plugin-controller").ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Source != "~/.codex/config.toml" || plan.Target != "~/dotfiles/codex.toml" {
+		t.Fatalf("the preview must name the file it writes: %+v", plan)
+	}
+	// A plain file is written where it is, and the preview names it once.
+	healthPut(t, filepath.Join(options.Home, ".claude", "settings.json"), `{"enabledPlugins":{"simview@tools":true}}`)
+	plan, err = PlanAgentFix(options, healthFinding(t, options, "claude", "plugin-controller").ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target != "" {
+		t.Fatalf("a plain file needs no second name: %+v", plan)
+	}
+}
+
+func TestAgentHealthOffersNoProjectRepairThatWritesOutsideTheProject(t *testing.T) {
+	// A repository can commit .claude/settings.local.json as a link to the
+	// user's own settings. A "Selected project" repair through it would edit
+	// every project, so none is offered, and the user settings stay as they are.
+	options := healthFixture(t)
+	options.Project = filepath.Join(options.Home, "code", "example-app")
+	global := filepath.Join(options.Home, ".claude", "settings.json")
+	original := `{"enabledPlugins":{"simview@tools":true}}`
+	healthPut(t, global, original)
+	local := filepath.Join(options.Project, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../.claude/settings.json", local); err != nil {
+		t.Fatal(err)
+	}
+	f := healthFinding(t, options, "claude", "plugin-controller")
+	if f.Scope != "Selected project (Claude Code)" || f.FixLabel != "" || !strings.Contains(f.Detail, "outside the project") || !strings.Contains(f.Detail, "~/.claude/settings.json") {
+		t.Fatalf("a project repair that writes outside the project must not be offered: %+v", f)
+	}
+	if _, err := PlanAgentFix(options, f.ID); err == nil {
+		t.Fatal("planned a project repair outside the project")
+	}
+	f.FixLabel = "Disable plugin in Claude"
+	if _, err := prepareHealthFix(options, f); err == nil || !strings.Contains(err.Error(), "outside the project") {
+		t.Fatalf("prepare must refuse it too: %v", err)
+	}
+	if string(mustRead(t, global)) != original {
+		t.Fatal("user settings changed")
+	}
+}

@@ -68,6 +68,19 @@ describe('agent setup checks', () => {
 		);
 		expect(run.mock.calls.map((call) => call[1][2])).toEqual(['plan', 'apply']);
 	});
+	it('names the file a repair writes when a link resolves elsewhere', async () => {
+		const { service, run, confirm } = fixture();
+		const linked = { ...plan, target: '~/dotfiles/codex.toml' };
+		run.mockImplementation(async (_exe: string, args: string[]) =>
+			JSON.stringify(args[2] === 'plan' ? linked : report)
+		);
+		await service.run({ operation: 'plan', findingId });
+		await service.run({ operation: 'apply', planId });
+		expect(confirm).toHaveBeenCalledWith({
+			title: plan.title,
+			detail: `${plan.scope}\n${plan.source}\nWrites ~/dotfiles/codex.toml, the file it links to.\n\n${plan.summary}`,
+		});
+	});
 	it('cancel changes nothing; undo checks history and confirms separately', async () => {
 		const { service, run, confirm } = fixture();
 		await service.run({ operation: 'plan', findingId });

@@ -17,8 +17,13 @@ and Expo cloud tools are not disabled.
 
 Select a repository/worktree to include its overrides. Each finding shows its
 client, source, scope, and available action. Clicking a repair opens a native
-confirmation describing the exact file and effect. The repair revalidates the
-preview against current files, changes one file atomically, and rechecks.
+confirmation describing the exact file and effect; when that file is a link,
+it also names the file the link points to, which is the one written. A
+selected-project repair is not offered when the project's file resolves
+outside the project (for example a committed link to your user settings),
+because it would change every project; change that setting where the file
+lives. The repair revalidates the preview against current files, changes one
+file atomically, and rechecks.
 
 | Fix | Scope |
 | --- | --- |
