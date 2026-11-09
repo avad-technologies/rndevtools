@@ -106,7 +106,7 @@ than fetched with `@latest` during a task.
 
 Add **Check agent setup** in the existing Coding agents setup card. Show separate
 rows for selected clients, with the current project scope visible. Reuse the
-same component in **Agents → Setup checks** after onboarding. This is a narrow
+same component in **Lanes → Agents → Agent setup checks** after onboarding. This is a narrow
 RN Devtools compatibility feature, not a general plugin manager.
 
 Example results:

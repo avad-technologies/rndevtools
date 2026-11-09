@@ -796,3 +796,19 @@ func TestAgentHealthAcceptsGuidanceSetupInstalledInTheProject(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentHealthScopesUseTheClientsDisplayNames(t *testing.T) {
+	// A finding without an explicit scope applies to the user configuration
+	// of its client, named as the desktop names it.
+	options := healthFixture(t)
+	report, err := CheckAgents(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"codex": "All Codex projects", "claude": "All Claude Code projects"}
+	for _, f := range report.Findings {
+		if f.Scope != want[f.Client] {
+			t.Errorf("%s %s has scope %q, want %q", f.Client, f.Rule, f.Scope, want[f.Client])
+		}
+	}
+}

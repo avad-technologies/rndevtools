@@ -375,7 +375,11 @@ describe('agent command router', () => {
 		agentSetup.mockRejectedValueOnce(new Error('private failure detail'));
 		const result = await handler({ kind: 'doctor' }, context);
 		expect(result).toMatchObject({
-			agentSetup: { status: 'not-checked' },
+			agentSetup: {
+				status: 'not-checked',
+				// The path the desktop shows: Lanes, then Agents.
+				message: expect.stringContaining('Lanes → Agents → Agent setup checks'),
+			},
 			broker: { status: 'listening' },
 		});
 		expect(JSON.stringify(result)).not.toContain('private failure detail');

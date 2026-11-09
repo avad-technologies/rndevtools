@@ -186,6 +186,10 @@ func healthContains(value any, wanted string) bool {
 	return false
 }
 
+// healthClientNames are the clients' names as the report and the desktop
+// show them.
+var healthClientNames = map[string]string{"codex": "Codex", "claude": "Claude Code"}
+
 func (s *healthScanner) label(file string) string { return healthLabel(s.options.Home, file) }
 
 // healthLabel shows file relative to home when it is inside it.
@@ -231,7 +235,7 @@ func (s *healthScanner) add(f HealthFinding) {
 	}
 	f.Source = s.label(f.file)
 	if f.Scope == "" {
-		f.Scope = "All " + f.Client + " projects"
+		f.Scope = "All " + healthClientNames[f.Client] + " projects"
 	}
 	f.ID = "finding-" + healthHash([]byte(f.Client + "\x00" + f.Rule + "\x00" + f.file + "\x00" + strings.Join(f.keys, "\x00")))[:32]
 	for _, existing := range s.report.Findings {

@@ -1896,7 +1896,7 @@ function createRoutes({
 					? await agentSetup().catch(() => ({
 							status: 'not-checked',
 							message:
-								'Agent configuration could not be checked. Open Agents → Setup checks to retry.',
+								'Agent configuration could not be checked. Open Lanes → Agents → Agent setup checks to retry.',
 						}))
 					: undefined;
 				const [simulatorState, slimmingState] = await Promise.all([
