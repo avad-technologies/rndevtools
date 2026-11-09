@@ -217,7 +217,9 @@ JSON payload on stdin.
 
   pre-tool-use   Exit 2 (block, reason on stderr) when a Bash command drives a
                  Simulator around RN Devtools: simctl boot/shutdown/openurl/
-                 install/launch/io and friends, or a hand-started Metro.
+                 install/launch/io and friends, or a hand-started Metro
+                 (expo start, a bare npx expo, which Expo runs as start, or
+                 expo run:ios without --no-bundler).
                  While local Supabase is turned on in RN Devtools (steering.json
                  in the agent socket directory says so), it also blocks
                  commands that reach other agents' stacks (stop --all, a stop

@@ -140,7 +140,7 @@ func judgeSimulatorRules(line shellLine, nesting int, ledger *scriptLedger) Hook
 			case shellPrograms[program] || program == "eval":
 				// The rest is the shell's own: options, script, and parameters.
 			default:
-				if decision := evaluateWords(words); decision.Block {
+				if decision := evaluateWords(segment, words); decision.Block {
 					return decision
 				}
 			}
@@ -162,8 +162,17 @@ func judgeSimulatorRules(line shellLine, nesting int, ledger *scriptLedger) Hook
 
 // evaluateWords finds a steered simctl verb or a Metro start among one
 // command's words: run directly, by path, or by a command that runs another
-// (xcrun simctl, xargs xcrun simctl, npx expo, timeout 60 npx expo).
-func evaluateWords(words []string) HookDecision {
+// (xcrun simctl, xargs xcrun simctl, npx expo, timeout 60 npx expo). An expo
+// that is the program the segment runs is read the way Expo CLI reads its
+// arguments (see expoDecision), so a bare `npx expo` and `expo run:ios` count
+// too; anywhere else among the words, as for react-native, an explicit start
+// does.
+func evaluateWords(segment shellSegment, words []string) HookDecision {
+	if arguments, isExpo := expoProgramArguments(segment); isExpo {
+		if decision := expoDecision(arguments); decision.Block {
+			return decision
+		}
+	}
 	for index, word := range words {
 		switch commandName(word) {
 		case "simctl":

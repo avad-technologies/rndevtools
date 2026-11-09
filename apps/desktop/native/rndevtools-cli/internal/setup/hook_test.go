@@ -1155,6 +1155,9 @@ func TestHookStaysFastOnLinesNearTheLimit(t *testing.T) {
 		"a file appended to from unknown sources": repeat("cat x >> s.sh; sh s.sh; ", 15_000),
 		"many small scripts":                      repeat("sh -c 'echo a'; ", 20_000),
 		"many pipes into a shell":                 repeat("echo $(a) | sh; ", 15_000),
+		// The expo program's arguments are read once, redirections aside.
+		"one expo with 340,000 arguments": "npx expo install " + repeat("x > y ", 170_000),
+		"many expo runs":                  repeat("npx expo run:ios --no-bundler --device X; ", 20_000),
 		// A bare shell in each of 174,000 substitutions looks for the command
 		// before it in its own scope, which is the first of its scope.
 		"substitutions that each run a shell": "echo " + repeat("$(sh) ", 174_000),

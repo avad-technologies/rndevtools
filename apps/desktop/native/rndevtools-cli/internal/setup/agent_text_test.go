@@ -23,6 +23,7 @@ func agentTexts(t *testing.T) map[string]string {
 		"the AGENTS.md block": AgentsBlock(project),
 		"the routing block":   healthRoutingBlock(),
 		"the Metro reason":    metroDecision().Reason,
+		"the run:ios reason":  runIOSDecision().Reason,
 	}
 	for verb, replacement := range steeredVerbs {
 		texts["the simctl "+verb+" reason"] = simctlDecision(verb, replacement).Reason
