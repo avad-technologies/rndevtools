@@ -398,6 +398,8 @@ export class LaneService {
 	#revision = 0;
 	#updatedAt: number;
 	#error: string | undefined;
+	/** Why the last reconcile nobody awaited failed, until one succeeds. */
+	#reconcileError: string | undefined;
 	#reconcileTimer: NodeJS.Timeout | undefined;
 	#refreshPromise: Promise<void> | undefined;
 	#dirtyRefreshPromise: Promise<void> | undefined;
@@ -491,11 +493,11 @@ export class LaneService {
 				}
 			)
 		);
-		void Promise.allSettled(adoptions)
-			.then(() => this.#reconcile())
-			.catch(() => undefined);
+		void Promise.allSettled(adoptions).then(() =>
+			this.#reconcileInBackground()
+		);
 		this.#reconcileTimer = setInterval(() => {
-			void this.#reconcile();
+			void this.#reconcileInBackground();
 		}, RECONCILE_INTERVAL_MS);
 		this.#reconcileTimer.unref();
 	}
@@ -518,6 +520,7 @@ export class LaneService {
 		);
 		const error = [
 			this.#error,
+			this.#reconcileError,
 			...[...this.#metroIdentityErrors.values()].map(({ message }) => message),
 		]
 			.filter(Boolean)
@@ -2247,6 +2250,23 @@ export class LaneService {
 				// Best effort: a log that cannot go now goes on a later pass.
 			}
 		}
+	}
+
+	/**
+	 * A reconcile nobody awaits, from the timer or after adoption. It never
+	 * rejects: a pass that fails, such as one whose status write the disk
+	 * refused, is reported in lane state until a later pass succeeds.
+	 */
+	async #reconcileInBackground(): Promise<void> {
+		let failure: string | undefined;
+		try {
+			await this.#reconcile();
+		} catch (error) {
+			failure = `Lane status could not be refreshed: ${safeErrorText(error)}`;
+		}
+		if (this.#stopped || failure === this.#reconcileError) return;
+		this.#reconcileError = failure;
+		this.#touch();
 	}
 
 	async #refreshWorktrees(): Promise<void> {

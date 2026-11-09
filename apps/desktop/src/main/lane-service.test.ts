@@ -1989,6 +1989,60 @@ describe('LaneService', () => {
 		await withHolds.stop();
 	});
 
+	it('reports a timed reconcile that could not save lane health instead of leaving it unhandled', async () => {
+		await service.stop();
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on('unhandledRejection', onUnhandled);
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		try {
+			store = new LaneStore(root);
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-timed-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(started.lane?.metro).toBe('starting');
+			// The next timed pass finds Metro ready and cannot write that down.
+			const failed = vi
+				.spyOn(store, 'upsert')
+				.mockRejectedValue(new Error('Disk full.'));
+			vi.advanceTimersByTime(5_000);
+			await vi.waitFor(() =>
+				expect(service.getState().error).toBe(
+					'Lane status could not be refreshed: Disk full.'
+				)
+			);
+			failed.mockRestore();
+			vi.advanceTimersByTime(5_000);
+			await vi.waitFor(() =>
+				expect(service.getState()).toMatchObject({
+					lanes: [{ id: started.lane?.id, metro: 'ready' }],
+				})
+			);
+			expect(service.getState().error).toBeUndefined();
+			await nextTurn();
+			expect(unhandled).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
 	it('notifies subscribers with a validated state on every change', async () => {
 		const listener = vi.fn();
 		service.subscribe(listener);
