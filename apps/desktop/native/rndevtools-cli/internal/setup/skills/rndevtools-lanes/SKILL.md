@@ -220,9 +220,10 @@ rndevtools native --operation plan --worktree "$PWD" --udid <UDID>
 The result carries `fingerprintHash`, `cache` (`hit` | `miss` | `no-provider`),
 `installed`, and a one-line `recommendation` that starts with the verb to act
 on. `installed` only means the bundle exists, not that its native fingerprint
-matches. An explicit cached install refreshes that binary. A build opens the
-app as soon as it installs it, even with `--no-bundler`, so restart the app on
-the lane afterward:
+matches, and it is left out when the Simulator is not booted or listing its apps
+fails; the recommendation then ends by saying why. An explicit cached install
+refreshes that binary. A build opens the app as soon as it installs it, even
+with `--no-bundler`, so restart the app on the lane afterward:
 
 | `recommendation` starts with | Do |
 | --- | --- |

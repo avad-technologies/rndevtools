@@ -74,6 +74,7 @@ import { AgentCliError, type AgentCliHandler } from './agent-cli-service';
 import { type JobService, TERMINAL_JOB_STATUSES, waitForJob } from './job-wait';
 import { NativeHostResponseError } from './native-host-client';
 import type { NativePlanResult } from './native-plan';
+import { sanitizeDialogText } from './security';
 import type { SimulatorActionContext } from './simulator-service';
 import { sanitizeSupabaseText } from './supabase/cli-redact';
 import type {
@@ -104,6 +105,21 @@ const CONNECTED_WAIT_RETRY_MS = 250;
 const RELEASE_STOP_BUDGET_MS = 1_500;
 /** The contract's bound on one log line, kept after redacting it again. */
 const MAX_SUPABASE_LOG_LINE = 2_000;
+/**
+ * How much of a failed app listing's message a native plan's one-line
+ * recommendation quotes. The simulator service already redacted it.
+ */
+const MAX_LISTING_FAILURE_LENGTH = 300;
+/** How that recommendation names a Simulator that is not booted. */
+const UNBOOTED_STATE_WORDS: Readonly<
+	Record<Exclude<SimulatorState['devices'][number]['state'], 'booted'>, string>
+> = {
+	shutdown: 'shut down',
+	booting: 'still booting',
+	shuttingDown: 'shutting down',
+	creating: 'still being created',
+	unknown: 'in an unknown state',
+};
 /**
  * How many recordings' starters are remembered. Only recordings still under
  * way are kept, and the simulator service holds at most 200 jobs without
@@ -1794,26 +1810,46 @@ function createRoutes({
 					},
 					context.signal
 				);
-				// Installed state: list the Simulator's apps and look for the bundle
-				// the worktree declares. Only when a UDID was given.
+				// Installed state, for a plan given a UDID: list the Simulator's
+				// apps now and look for the bundle the worktree declares. Only a
+				// listing that completes counts. A Simulator that is not booted
+				// cannot be listed, and what it listed while it last ran may be
+				// stale, so installed is then left out and the recommendation says
+				// why. An install never asks: it refreshes the binary either way.
 				let installed: boolean | undefined;
+				let installedUnknown: string | undefined;
 				let target: SimulatorState['devices'][number] | undefined;
 				if (command.udid) {
 					target = simulatorByUdid(await simulator.refresh(), command.udid);
-					if (plan.bundleIdentifier) {
-						await runSimulatorAction(
-							simulator,
-							{
-								actionId: actionId(context.requestId),
-								kind: 'app.list',
-								udid: target.udid,
-							},
-							context.signal
-						);
-						const wanted = plan.bundleIdentifier.toLowerCase();
-						installed = (
-							simulator.getState().appsByDevice[target.udid] ?? []
-						).some((app) => app.bundleIdentifier.toLowerCase() === wanted);
+					const bundle = plan.bundleIdentifier;
+					if (command.operation === 'plan' && bundle) {
+						if (target.state !== 'booted') {
+							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (lane up boots it).`;
+						} else {
+							const listing = (await runSimulatorAction(
+								simulator,
+								{
+									actionId: actionId(context.requestId),
+									kind: 'app.list',
+									udid: target.udid,
+								},
+								context.signal
+							)) as SimulatorJob;
+							if (listing.status === 'complete') {
+								const wanted = bundle.toLowerCase();
+								installed = (
+									simulator.getState().appsByDevice[target.udid] ?? []
+								).some((app) => app.bundleIdentifier.toLowerCase() === wanted);
+							} else {
+								installedUnknown = `installed is left out: listing this Simulator's apps failed (${sanitizeDialogText(
+									listing.message,
+									{
+										maxLength: MAX_LISTING_FAILURE_LENGTH,
+										fallback: listing.status,
+									}
+								)}).`;
+							}
+						}
 					}
 				}
 				// Debug is run:ios's default, and Expo CLI starts its own Metro (on
@@ -1838,7 +1874,7 @@ function createRoutes({
 					: undefined;
 				const startLaneAdvice =
 					'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.';
-				const recommendation =
+				const advice =
 					plan.cache === 'hit'
 						? target
 							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
@@ -1848,6 +1884,9 @@ function createRoutes({
 							: plan.cache === 'miss'
 								? `build: no cached binary for this fingerprint; run \`${buildCommand}\` once (the build cache will store it for every other worktree).`
 								: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${buildCommand}\`.`;
+				const recommendation = installedUnknown
+					? `${advice} ${installedUnknown}`
+					: advice;
 				if (command.operation === 'plan') {
 					return {
 						...plan,

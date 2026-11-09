@@ -1774,11 +1774,39 @@ describe('agent command router', () => {
 	});
 
 	describe('native plan and install', () => {
-		/** Simulator port whose app.list/app.install jobs complete and update appsByDevice. */
-		function simulatorWithApps(initial: string[]) {
+		/**
+		 * Simulator port that remembers `initial` as the apps it last listed.
+		 * Its app.list/app.install jobs complete and update appsByDevice. On a
+		 * device that is not booted they fail as the service's do, and so does
+		 * every listing given `listFailure`, leaving the remembered apps.
+		 */
+		function simulatorWithApps(
+			initial: string[],
+			{
+				deviceState = 'booted',
+				listFailure,
+			}: {
+				deviceState?: SimulatorState['devices'][number]['state'];
+				listFailure?: string;
+			} = {}
+		) {
 			let apps = [...initial];
 			const listeners = new Set<(state: SimulatorState) => void>();
-			let state = simulatorState();
+			const listed = () => ({
+				[UDID]: apps.map((bundleIdentifier) => ({
+					bundleIdentifier,
+					displayName: bundleIdentifier,
+					isSystem: false,
+				})),
+			});
+			let state = simulatorStateSchema.parse({
+				...simulatorState(),
+				devices: simulatorState().devices.map((device) => ({
+					...device,
+					state: deviceState,
+				})),
+				appsByDevice: listed(),
+			});
 			const actions: Array<{
 				action: SimulatorAction;
 				context: { selectedPath?: string } | undefined;
@@ -1793,26 +1821,26 @@ describe('agent command router', () => {
 					actions.push({ action, context: actionContext });
 					const jobId = `job-${actions.length}`;
 					queueMicrotask(() => {
-						if (action.kind === 'app.install')
+						const failure =
+							deviceState !== 'booted'
+								? 'Simulator must be booted for this action.'
+								: action.kind === 'app.list'
+									? listFailure
+									: undefined;
+						if (!failure && action.kind === 'app.install')
 							apps = [...apps, 'com.example.app'];
 						state = simulatorStateSchema.parse({
 							...state,
-							appsByDevice: {
-								[UDID]: apps.map((bundleIdentifier) => ({
-									bundleIdentifier,
-									displayName: bundleIdentifier,
-									isSystem: false,
-								})),
-							},
+							...(failure ? {} : { appsByDevice: listed() }),
 							jobs: [
 								{
 									id: jobId,
 									actionId: action.actionId,
 									kind: action.kind,
-									status: 'complete',
+									status: failure ? 'failed' : 'complete',
 									progressSequence: 1,
-									phase: 'complete',
-									message: 'done',
+									phase: failure ? 'failed' : 'complete',
+									message: failure ?? 'done',
 									createdAt: now,
 									finishedAt: now + 1,
 									deviceUdid: UDID,
@@ -2062,6 +2090,135 @@ describe('agent command router', () => {
 			)) as Record<string, unknown>;
 			expect(result).toMatchObject({ cache: 'hit', installed: false });
 			expect(String(result.recommendation)).toMatch(/^install: /);
+		});
+
+		it.each([
+			['hit', /^install: /],
+			['miss', /^build: /],
+		] as const)(
+			'leaves installed out on a Simulator that is not booted, whatever it last listed (cache %s)',
+			async (cache, verb) => {
+				const { dependencies } = fixture();
+				const { port, actions } = simulatorWithApps(['com.example.app'], {
+					deviceState: 'shutdown',
+				});
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					nativePlan: plan(cache),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result).toMatchObject({ cache, simulatorUdid: UDID });
+				expect(result).not.toHaveProperty('installed');
+				const recommendation = String(result.recommendation);
+				expect(recommendation).toMatch(verb);
+				expect(recommendation).toMatch(
+					/ installed is left out: this Simulator is shut down, and its apps can be listed only while it is booted \(lane up boots it\)\.$/
+				);
+				// A Simulator that is not booted has nothing to list.
+				expect(actions).toHaveLength(0);
+			}
+		);
+
+		it.each([
+			['booting', 'still booting'],
+			['shuttingDown', 'shutting down'],
+			['creating', 'still being created'],
+			['unknown', 'in an unknown state'],
+		] as const)(
+			'says in words why installed is left out on a Simulator that is %s',
+			async (deviceState, words) => {
+				const { dependencies } = fixture();
+				const { port, actions } = simulatorWithApps(['com.example.app'], {
+					deviceState,
+				});
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					nativePlan: plan('hit'),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result).not.toHaveProperty('installed');
+				expect(String(result.recommendation)).toContain(
+					` installed is left out: this Simulator is ${words}, and its apps can be listed only while it is booted`
+				);
+				expect(actions).toHaveLength(0);
+			}
+		);
+
+		it("leaves installed out when listing a booted Simulator's apps fails", async () => {
+			const { dependencies } = fixture();
+			const { port, actions } = simulatorWithApps(['com.example.app'], {
+				listFailure: 'simctl listapps timed out.\nRetry later.',
+			});
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: port,
+				nativePlan: plan('hit'),
+			});
+			const result = (await handler(
+				{
+					kind: 'native',
+					operation: 'plan',
+					configuration: 'Debug',
+					worktreePath: '/Users/dev/app',
+					udid: UDID,
+				},
+				context
+			)) as Record<string, unknown>;
+			expect(result).not.toHaveProperty('installed');
+			const recommendation = String(result.recommendation);
+			expect(recommendation).toMatch(/^install: /);
+			expect(recommendation).toMatch(
+				/ installed is left out: listing this Simulator's apps failed \(simctl listapps timed out\. Retry later\.\)\.$/
+			);
+			expect(actions.map(({ action }) => action.kind)).toEqual(['app.list']);
+		});
+
+		it('installs without listing the apps first, and fails as app.install does on a Simulator that is not booted', async () => {
+			const { dependencies } = fixture();
+			const { port, actions } = simulatorWithApps(['com.example.app'], {
+				deviceState: 'shutdown',
+			});
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: port,
+				nativePlan: plan('hit'),
+			});
+			await expect(
+				handler(
+					{
+						kind: 'native',
+						operation: 'install',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)
+			).rejects.toMatchObject({
+				code: 'action_failed',
+				message: 'Simulator must be booted for this action.',
+			});
+			expect(actions.map(({ action }) => action.kind)).toEqual(['app.install']);
 		});
 
 		it('installs the cached artifact through app.install with the artifact as the selected path', async () => {
