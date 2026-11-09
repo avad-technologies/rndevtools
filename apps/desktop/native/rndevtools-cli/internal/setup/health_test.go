@@ -496,3 +496,25 @@ func TestAgentHealthSkillReviewDoesNotRewriteVendorContent(t *testing.T) {
 		t.Fatal("modified vendor skill")
 	}
 }
+
+func TestAgentHealthFindsXcodeBuildMCPAsASimulatorController(t *testing.T) {
+	// XcodeBuildMCP (npm package and binary xcodebuildmcp, run as
+	// `xcodebuildmcp mcp` or through npx) boots, builds onto, and drives
+	// Simulators, so it overlaps RN Devtools' holds like ios-simulator does.
+	options := healthFixture(t)
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[mcp_servers.xcodebuildmcp]\ncommand = \"/opt/homebrew/bin/xcodebuildmcp\"\nargs = [\"mcp\"]\n[mcp_servers.apple-build]\ncommand = \"npx\"\nargs = [\"-y\", \"xcodebuildmcp@latest\", \"mcp\"]\n")
+	healthPut(t, filepath.Join(options.Home, ".claude.json"), `{"mcpServers":{"XcodeBuildMCP":{"type":"stdio","command":"xcodebuildmcp","args":["mcp"]}}}`)
+	report, err := CheckAgents(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]int{}
+	for _, f := range report.Findings {
+		if strings.HasPrefix(f.Rule, "controller") && f.Title == "XcodeBuildMCP can also control simulators" {
+			found[f.Client]++
+		}
+	}
+	if found["codex"] != 2 || found["claude"] != 1 {
+		t.Fatalf("XcodeBuildMCP controllers found: %v in %+v", found, report.Findings)
+	}
+}

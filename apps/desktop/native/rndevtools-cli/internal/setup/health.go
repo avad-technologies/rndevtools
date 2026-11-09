@@ -18,7 +18,7 @@ import (
 )
 
 const healthFileLimit = 2 * 1024 * 1024
-const healthRulesVersion = "2026-11-06.1"
+const healthRulesVersion = "2026-11-09.1"
 
 // HealthOptions are local filesystem inputs, never accepted through the MCP.
 type HealthOptions struct {
@@ -275,8 +275,13 @@ func (s *healthScanner) validateDocument(doc map[string]any, file, client string
 	}
 }
 
+// controllerNames are signatures of MCP servers and plugins that drive
+// Simulators themselves, matched in a server's name, command, and arguments.
+// xcodebuildmcp is XcodeBuildMCP's npm package and binary (`xcodebuildmcp
+// mcp`, or `npx -y xcodebuildmcp@latest`), whose boot_sim and build_run_sim
+// ignore RN Devtools' holds.
 var controllerNames = []struct{ signature, name string }{
-	{"simview", "SimView"}, {"argent", "Argent"}, {"agent-device", "agent-device"}, {"maestro", "Maestro"}, {"radon", "Radon"}, {"ios-simulator", "iOS Simulator MCP"}, {"serve-sim", "serve-sim"}, {"appium", "Appium"}, {"mobile-mcp", "Mobile MCP"}, {"bridge4simulator", "bridge4simulator"},
+	{"simview", "SimView"}, {"argent", "Argent"}, {"agent-device", "agent-device"}, {"maestro", "Maestro"}, {"radon", "Radon"}, {"ios-simulator", "iOS Simulator MCP"}, {"serve-sim", "serve-sim"}, {"appium", "Appium"}, {"mobile-mcp", "Mobile MCP"}, {"bridge4simulator", "bridge4simulator"}, {"xcodebuildmcp", "XcodeBuildMCP"},
 }
 
 func healthController(name string, entry map[string]any) string {

@@ -10,9 +10,10 @@ visible. **Recheck** always reads fresh configuration.
 The check covers Claude Code and Codex default user configuration, the selected
 registered project, RN Devtools MCP registration, routing instructions, its two
 skills, and installed steering hooks. It flags known simulator controllers such
-as SimView, Maestro, Argent, Radon, agent-device and Appium. A registered
-controller is a potential overlap; the check does not start it or claim it has
-interfered with a lane. Hosted Supabase and Expo cloud tools are not disabled.
+as XcodeBuildMCP, iOS Simulator MCP, SimView, Maestro, Argent, Radon,
+agent-device and Appium. A registered controller is a potential overlap; the
+check does not start it or claim it has interfered with a lane. Hosted Supabase
+and Expo cloud tools are not disabled.
 
 Select a repository/worktree to include its overrides. Each finding shows its
 client, source, scope, and available action. Clicking a repair opens a native
@@ -72,7 +73,9 @@ managed instruction block and offer updates when that block is stale.
 
 Custom configuration homes, Codex profiles, ancestor project overrides, managed
 organization policy, unknown wrappers, detailed plugin tool filters, remote
-clients, and currently loaded tool lists are not certified. Hook files being
+clients, and currently loaded tool lists are not certified. Kiro and Cursor
+configuration is not scanned: setup registers RN Devtools there, but a
+simulator controller registered in them needs review in that client. Hook files being
 installed does not prove approval or execution. Shell hooks steer supported
 shell payloads; they are not an MCP firewall.
 
