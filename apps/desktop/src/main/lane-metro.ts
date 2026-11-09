@@ -272,6 +272,16 @@ function metroEnvironment(
 		// Every launch URL and QR code the CLI emits gets the automation
 		// parameters, so agents see the app rather than the launcher sheet.
 		EXPO_NO_DEV_MENU: '1',
+		// Expo advertises every dev server over Bonjour unless CI is set, and
+		// lanes unset CI below. A lane's dev client is sent its own Metro's URL
+		// and a --localhost Metro serves nobody else, yet the advert tells the
+		// network the app's name, slug, bundle identifiers and Expo username,
+		// and lists every lane's server in each lane's dev launcher. In
+		// @expo/cli 57.0.28 this switch defaults to on outside a WebContainer
+		// and is read with getenv's boolish, which takes true, false, 1 or 0
+		// (build/src/utils/env.js:276-277); off, announceAsync returns before
+		// advertising (build/src/start/server/Bonjour.js:70).
+		EXPO_UNSTABLE_BONJOUR: '0',
 		// `--localhost` binds whatever "localhost" resolves to; Node's verbatim
 		// DNS order picks [::1] on macOS while the dev client rewrites its
 		// packager host to 127.0.0.1. Force IPv4 so the app can actually reach

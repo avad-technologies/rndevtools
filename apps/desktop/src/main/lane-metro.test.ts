@@ -217,6 +217,7 @@ describe('Metro launch', () => {
 			EXPO_NO_DOTENV: '1',
 			EXPO_NO_INTERACTIVE: '1',
 			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
 			NODE_OPTIONS: '--max-old-space-size=4096 --dns-result-order=ipv4first',
 		});
 	});
@@ -235,6 +236,7 @@ describe('Metro launch', () => {
 			EXPO_NO_DOTENV: '1',
 			EXPO_NO_INTERACTIVE: '1',
 			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
 			NODE_OPTIONS: '--dns-result-order=ipv4first',
 		});
 	});
@@ -276,6 +278,7 @@ describe('Metro launch', () => {
 			EXPO_NO_DOTENV: '1',
 			EXPO_NO_INTERACTIVE: '1',
 			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
 			NODE_OPTIONS: '--dns-result-order=ipv4first',
 		});
 	});
@@ -300,6 +303,7 @@ describe('Metro launch', () => {
 			EXPO_NO_DOTENV: '1',
 			EXPO_NO_INTERACTIVE: '1',
 			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
 			NODE_OPTIONS: '--dns-result-order=ipv4first',
 		});
 	});
@@ -323,6 +327,27 @@ describe('Metro launch', () => {
 		expect(toolPathAsked).toBe(false);
 		expect(existsSync(path.join(root, 'lane.log'))).toBe(false);
 	});
+
+	it.each(['inherited', 'metroEnv', 'laneEnv'] as const)(
+		"keeps Expo's Bonjour advert off when %s turns it on",
+		async (source) => {
+			const { metro, spawned } = supervisor({
+				PATH: '/usr/bin:/bin',
+				...(source === 'inherited' ? { EXPO_UNSTABLE_BONJOUR: '1' } : {}),
+			});
+			await launch(metro, {
+				...(source === 'metroEnv'
+					? { metroEnv: { EXPO_UNSTABLE_BONJOUR: 'true' } }
+					: {}),
+				...(source === 'laneEnv'
+					? { laneEnv: { EXPO_UNSTABLE_BONJOUR: '1' } }
+					: {}),
+			});
+			expect(spawned[0]?.options.env).toMatchObject({
+				EXPO_UNSTABLE_BONJOUR: '0',
+			});
+		}
+	);
 
 	it.each(['inherited', 'metroEnv', 'laneEnv', 'all'] as const)(
 		'omits CI from %s so managed development lanes keep Metro watch mode',

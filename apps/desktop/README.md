@@ -51,8 +51,11 @@ Local iOS Simulator tooling on macOS:
   `RNDEVTOOLS_AGENT_SESSION_ID`, and every `CLAUDE_*` and `CODEX_*` variable.
   Metro also never inherits `EXPO_PUBLIC_*`, `SUPABASE_*`, `PG*` or
   `RNDEVTOOLS_*`; a lane gets those only from its lane environment's
-  `metroEnv` or its local backend. The plan runs without `DEBUG`. To strip
-  more, such as another harness's variables, start the desktop with
+  `metroEnv` or its local backend. A lane's Metro binds to loopback and never
+  advertises itself over Bonjour (`EXPO_UNSTABLE_BONJOUR=0`), which would
+  announce the app's identity to the network and list every lane in each
+  lane's dev launcher. The plan runs without `DEBUG`. To strip more, such as
+  another harness's variables, start the desktop with
   `RNDEVTOOLS_CHILD_ENV_STRIP` set to comma-separated exact names and
   `NAME_PREFIX*` patterns, for example `EXAMPLE_AGENT_*,EXAMPLE_TOKEN` (at
   most 64 entries and 4,096 characters). A malformed list fails lane starts
