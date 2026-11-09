@@ -1301,6 +1301,9 @@ function updateSimulatorPolling(): void {
 	);
 	simulatorService?.setPollingActive(visible);
 	slimmingService?.setPollingActive(visible);
+	// While no window is visible, agent discovery slows to once a minute rather
+	// than stopping, as long as an agent holds something: it is what notices an
+	// exited session, so abandoned lanes, claims and stacks still release.
 	agentService?.setPollingActive(visible);
 	// Live screens are the most expensive poller; they also stop when every
 	// window is merely unfocused, not just hidden.

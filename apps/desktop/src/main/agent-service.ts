@@ -32,6 +32,13 @@ import {
 import { writeFileAtomic } from './private-files';
 
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
+/**
+ * How often discovery still runs while no window is visible, and only while an
+ * agent holds something. Discovery is what notices a holder's session exit:
+ * without it the dead session stays live in the cache, so the hold's
+ * abandonment clock never starts and its lane, claim or stack never releases.
+ */
+const HIDDEN_POLL_INTERVAL_MS = 60_000;
 const MAX_CLAIMS = 200;
 const MAX_TOUCHES = 1_000;
 const EVERY_AGENT_KIND: ReadonlySet<AgentKind> = new Set([
@@ -177,6 +184,8 @@ export class AgentService {
 	#updatedAt: number;
 	#timer: NodeJS.Timeout | undefined;
 	#pollingActive = true;
+	/** When discovery last ran, which paces it while no window is visible. */
+	#discoveredAt: number | undefined;
 	#refreshPromise: Promise<AgentState> | undefined;
 	#stopped = false;
 
@@ -208,8 +217,12 @@ export class AgentService {
 	async start(): Promise<void> {
 		await this.#store.start();
 		await this.refresh();
+		// A quit that arrived while starting must not leave a poll behind.
+		if (this.#stopped) return;
 		this.#timer = setInterval(() => {
-			if (this.#pollingActive) void this.refresh().catch(() => undefined);
+			if (this.#pollingActive || this.#hiddenPollDue()) {
+				void this.refresh().catch(() => undefined);
+			}
 		}, this.#pollIntervalMs);
 		this.#timer.unref?.();
 	}
@@ -219,6 +232,12 @@ export class AgentService {
 		if (this.#timer) clearInterval(this.#timer);
 	}
 
+	/**
+	 * `active` is whether any window is visible. While one is, discovery runs
+	 * every poll interval. While none is, it runs once a minute, and only while
+	 * an agent holds a lane, a claim, or another resource, so an abandoned hold
+	 * still starts its clock and releases with every window closed.
+	 */
 	setPollingActive(active: boolean): void {
 		this.#pollingActive = active;
 	}
@@ -386,6 +405,7 @@ export class AgentService {
 	}
 
 	async #refreshInternal(): Promise<AgentState> {
+		this.#discoveredAt = this.#now();
 		let result: SessionDiscoveryResult;
 		try {
 			result = await this.#discover();
@@ -453,6 +473,28 @@ export class AgentService {
 			})),
 			...this.#holders(),
 		];
+	}
+
+	/**
+	 * Whether a poll is due while no window is visible: a minute has passed
+	 * since discovery last ran, and some holder's clock depends on it. With
+	 * nothing held there is nothing to notice, so nothing runs.
+	 */
+	#hiddenPollDue(): boolean {
+		if (
+			this.#discoveredAt !== undefined &&
+			this.#now() - this.#discoveredAt < HIDDEN_POLL_INTERVAL_MS
+		) {
+			return false;
+		}
+		try {
+			return this.#namedHolders().length > 0;
+		} catch {
+			// This runs on the timer, outside the refresh's own catch: a holder
+			// source that throws must not escape it. Poll anyway, at this slow
+			// pace, so a hold whose holder is gone still gets noticed.
+			return true;
+		}
 	}
 
 	/**
