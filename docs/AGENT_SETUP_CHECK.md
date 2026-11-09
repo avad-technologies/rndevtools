@@ -13,7 +13,12 @@ skills, and installed steering hooks. It flags known simulator controllers such
 as XcodeBuildMCP, iOS Simulator MCP, SimView, Maestro, Argent, Radon,
 agent-device and Appium. A registered controller is a potential overlap; the
 check does not start it or claim it has interfered with a lane. Hosted Supabase
-and Expo cloud tools are not disabled.
+and Expo cloud tools are not disabled. With a project selected, the skills and
+the routing block that `rndevtools setup --project` installs in that project
+count in place of missing user-level copies: Codex reads the project's
+`AGENTS.md`, and Claude Code reads its `CLAUDE.md`, which may import that file
+with an `@AGENTS.md` line. An outdated user-level copy is still reported,
+because every project loads it.
 
 Select a repository/worktree to include its overrides. Each finding shows its
 client, source, scope, and available action. Clicking a repair opens a native

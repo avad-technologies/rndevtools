@@ -746,3 +746,53 @@ func TestAgentHealthRaisesAShortCodexToolTimeoutAsSetupDoes(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentHealthAcceptsGuidanceSetupInstalledInTheProject(t *testing.T) {
+	// setup --project installs the skills into the project and the routing
+	// block into its AGENTS.md instead of the user directories. Checked with
+	// that project, they count; user-level copies are not reported missing.
+	options := healthFixture(t)
+	options.Project = filepath.Join(options.Home, "code", "example-app")
+	if _, err := Apply(Options{Home: options.Home, Executable: options.Executable, Project: options.Project, Agents: []Agent{AgentClaude, AgentCodex}, SkipLink: true}); err != nil {
+		t.Fatal(err)
+	}
+	rules := func(options HealthOptions) map[string]bool {
+		report, err := CheckAgents(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := map[string]bool{}
+		for _, f := range report.Findings {
+			found[f.Client+" "+f.Rule] = true
+		}
+		return found
+	}
+	found := rules(options)
+	for _, rule := range []string{"codex routing", "codex skill-rndevtools-lanes", "codex skill-rndevtools-supabase", "claude skill-rndevtools-lanes", "claude skill-rndevtools-supabase"} {
+		if found[rule] {
+			t.Errorf("reported %s although setup installed it in the project: %v", rule, found)
+		}
+	}
+	// Claude Code reads CLAUDE.md, so AGENTS.md alone does not route it.
+	if !found["claude routing"] {
+		t.Fatalf("Claude reads CLAUDE.md, not AGENTS.md: %v", found)
+	}
+	healthPut(t, filepath.Join(options.Project, "CLAUDE.md"), "@AGENTS.md\n")
+	if rules(options)["claude routing"] {
+		t.Fatal("a CLAUDE.md that imports the project's AGENTS.md routes Claude")
+	}
+	// A stale user-level copy is still loaded in every project, so it is still
+	// reported, and so is everything missing when no project is selected.
+	healthPut(t, filepath.Join(options.Home, ".agents", "skills", "rndevtools-lanes", "SKILL.md"), "outdated\n")
+	if !rules(options)["codex skill-rndevtools-lanes"] {
+		t.Fatal("a stale user-level skill must be reported")
+	}
+	global := options
+	global.Project = ""
+	found = rules(global)
+	for _, rule := range []string{"codex routing", "claude routing", "codex skill-rndevtools-supabase", "claude skill-rndevtools-lanes"} {
+		if !found[rule] {
+			t.Errorf("user scope must report missing %s: %v", rule, found)
+		}
+	}
+}

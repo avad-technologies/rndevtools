@@ -624,6 +624,8 @@ func (s *healthScanner) scanGuidance(client string) {
 	start, blockEnd, found, valid := agentsBlockSpan(string(data))
 	if !valid {
 		s.add(HealthFinding{Client: client, Rule: "routing-incomplete", Severity: "review", Title: "Routing instructions are incomplete", Detail: "The RN Devtools instruction markers do not form one complete block. Review the file before repairing its instructions.", file: file})
+	} else if !found && s.projectRouting(client) {
+		// setup --project wrote the block into the project instead.
 	} else if !found || string(data[start:blockEnd]) != healthRoutingBlock() {
 		title, label := "Add RN Devtools routing instructions", "Add routing instructions"
 		if found {
@@ -647,8 +649,14 @@ func (s *healthScanner) scanGuidance(client string) {
 	}
 	for _, name := range skillNames() {
 		file := filepath.Join(s.options.Home, skillDir, "skills", name, "SKILL.md")
-		data, _ := s.read(file, client)
+		data, present := s.read(file, client)
 		wanted, _ := skillFiles.ReadFile("skills/" + name + "/SKILL.md")
+		if !present && s.options.Project != "" {
+			// setup --project installs the skills into the project instead.
+			if installed, _ := s.peek(filepath.Join(s.options.Project, skillDir, "skills", name, "SKILL.md")); bytes.Equal(installed, wanted) {
+				continue
+			}
+		}
 		if !bytes.Equal(data, wanted) {
 			s.add(HealthFinding{Client: client, Rule: "skill-" + name, Severity: "warning", Title: "Update " + name + " instructions", Detail: "Install the skill matching this RN Devtools build. Only this RN Devtools skill file changes.", file: file, format: "text", mode: "skill", value: string(wanted), FixLabel: "Update RN Devtools skill"})
 		}
@@ -696,6 +704,56 @@ func (s *healthScanner) scanGuidance(client string) {
 			}
 		}
 	}
+}
+
+// peek reads a file that may stand in for a missing one, such as the copy
+// setup --project installed in the project. Like read, it counts toward the
+// fingerprint; unlike read, a file it cannot read only means no stand-in.
+func (s *healthScanner) peek(file string) ([]byte, bool) {
+	data, present, err := healthRead(file)
+	switch {
+	case err != nil:
+		s.files[file] = "unreadable"
+		return nil, false
+	case present:
+		s.files[file] = healthHash(data)
+	default:
+		s.files[file] = "missing"
+	}
+	return data, present
+}
+
+// projectRouting reports whether the selected project carries this client's
+// routing as setup --project writes it, current: Codex reads the project's
+// AGENTS.md, and Claude Code its CLAUDE.md, which may import AGENTS.md.
+func (s *healthScanner) projectRouting(client string) bool {
+	if s.options.Project == "" {
+		return false
+	}
+	current := func(name string) bool {
+		data, present := s.peek(filepath.Join(s.options.Project, name))
+		start, end, found, valid := agentsBlockSpan(string(data))
+		return present && valid && found && string(data[start:end]) == AgentsBlock(s.options.Project)
+	}
+	if client == "codex" {
+		return current("AGENTS.md")
+	}
+	if current("CLAUDE.md") {
+		return true
+	}
+	claude, _ := s.peek(filepath.Join(s.options.Project, "CLAUDE.md"))
+	return importsAgentsFile(claude) && current("AGENTS.md")
+}
+
+// importsAgentsFile reports a CLAUDE.md with a line that imports the
+// AGENTS.md beside it (@AGENTS.md).
+func importsAgentsFile(claude []byte) bool {
+	for _, line := range strings.Split(string(claude), "\n") {
+		if line := strings.TrimSpace(line); line == "@AGENTS.md" || line == "@./AGENTS.md" {
+			return true
+		}
+	}
+	return false
 }
 
 func asHealthList(value any) []any { list, _ := value.([]any); return list }
