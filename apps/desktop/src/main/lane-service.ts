@@ -291,6 +291,15 @@ function runtimeVersion(device: SimulatorDevice): number {
 	return match ? Number(match[1]) + Number(match[2]) / 100 : 0;
 }
 
+/** Whether `url` uses `scheme`, compared as URL schemes are: case-insensitively. */
+function hasScheme(url: string, scheme: string): boolean {
+	try {
+		return new URL(url).protocol === `${scheme.toLowerCase()}:`;
+	} catch {
+		return false;
+	}
+}
+
 /** Resolves once `promise` settles either way; rejects if `signal` aborts first. */
 function whenSettled(
 	promise: Promise<unknown>,
@@ -1888,16 +1897,25 @@ export class LaneService {
 		// FBSOpenApplicationServiceErrorDomain error; check first and say what to
 		// build. The check only runs when the worktree told us its bundle id.
 		await this.#assertDevClientInstalled(lane, signal);
+		// A URL in the lane's own scheme is for the lane's own app, so it opens
+		// there without iOS asking "Open in …?" first, as after `expo run:ios`.
+		// Any other URL opens as it is, and iOS may ask.
+		const ownApp =
+			lane.bundleIdentifier && lane.scheme && hasScheme(target, lane.scheme)
+				? { bundleIdentifier: lane.bundleIdentifier }
+				: {};
+		let opened: SimulatorJob | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			this.#assertLaunchTarget(lane, signal);
 			this.#assertRequiredBackendReady(lane);
 			try {
-				await this.#runSimulatorAction(
+				opened = await this.#runSimulatorAction(
 					{
 						actionId: `lane-launch-${randomUUID()}`,
 						kind: 'url.open',
 						udid: lane.simulatorUdid,
 						url: target,
+						...ownApp,
 					},
 					signal
 				);
@@ -1929,6 +1947,10 @@ export class LaneService {
 				}
 			}
 		}
+		// The URL opened, but a best-effort step before it may not have: with
+		// its scheme unapproved, iOS may ask "Open in …?" first. The lane's
+		// agent reads the lane log, so each warning goes there.
+		await this.#noteInLog(lane, opened?.warnings ?? []);
 		// The checks and the open awaited, and a stop or a Metro restart may
 		// have run meanwhile: write onto the lane as it is now. A lane stopped
 		// mid-launch stays stopped, and a Metro that replaced the one that was
@@ -2057,6 +2079,17 @@ export class LaneService {
 			await sleep(METRO_EXIT_POLL_INTERVAL_MS);
 		}
 		return true;
+	}
+
+	/** Adds notes to the lane's log; a note that cannot be written changes nothing. */
+	async #noteInLog(lane: Lane, notes: readonly string[]): Promise<void> {
+		for (const note of notes) {
+			try {
+				await this.#metro.appendLogNote(lane.logPath, note);
+			} catch {
+				// The log is diagnostics; the launch it describes already happened.
+			}
+		}
 	}
 
 	async #recordMetroStop(lane: Lane, reason: string): Promise<void> {

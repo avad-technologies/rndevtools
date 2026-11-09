@@ -521,6 +521,7 @@ describe('AgentService holds through the lane reconcile', () => {
 			this.stopped.push({ pid, port });
 		};
 		readLogTail = async () => '';
+		appendLogNote = async () => undefined;
 	}
 
 	function unused(): never {

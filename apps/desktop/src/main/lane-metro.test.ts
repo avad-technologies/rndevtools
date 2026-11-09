@@ -1543,3 +1543,34 @@ describe('Metro log tail', () => {
 		expect(await readLogTail(path.join(root, 'absent.log'), 1_024)).toBe('');
 	});
 });
+
+describe('Metro log notes', () => {
+	let root: string;
+
+	beforeEach(async () => {
+		root = await mkdtemp(path.join(os.tmpdir(), 'rndevtools-metro-note-'));
+	});
+
+	afterEach(async () => {
+		await rm(root, { recursive: true, force: true });
+	});
+
+	it("appends a note after Metro's output as one line marked as the desktop's", async () => {
+		const file = path.join(root, 'lane.log');
+		await writeFile(file, 'Starting Metro Bundler\n');
+		const { appendLogNote, readLogTail } = createMetroSupervisor();
+		await appendLogNote(file, 'first\nsecond\r\n\tthird\u2028fourth ');
+		await appendLogNote(file, 'x'.repeat(5_000));
+		expect(await readLogTail(file, 16 * 1024)).toBe(
+			`Starting Metro Bundler\n[RN Devtools] first second third fourth\n[RN Devtools] ${'x'.repeat(4_096)}\n`
+		);
+	});
+
+	it('creates a log that is gone readable by its owner alone', async () => {
+		const file = path.join(root, 'absent.log');
+		const { appendLogNote, readLogTail } = createMetroSupervisor();
+		await appendLogNote(file, 'note');
+		expect(await readLogTail(file, 1_024)).toBe('[RN Devtools] note\n');
+		expect(statSync(file).mode & 0o777).toBe(0o600);
+	});
+});

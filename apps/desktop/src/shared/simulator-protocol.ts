@@ -59,6 +59,8 @@ const timeZoneSchema = z
 		{ message: 'Invalid time-zone identifier.' }
 	);
 const MAX_PUSH_PAYLOAD_BYTES = 4_096;
+/** How many warnings one Simulator job keeps; later ones are dropped. */
+export const MAX_SIMULATOR_JOB_WARNINGS = 8;
 const MIN_CAPTURE_RETENTION_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_CAPTURE_RETENTION_BYTES = 100 * 1024 * 1024 * 1024;
 const UNSAFE_URL_PROTOCOLS = new Set([
@@ -315,6 +317,12 @@ const simulatorJobSchema = z.strictObject({
 	finishedAt: timestampSchema.optional(),
 	message: shortTextSchema,
 	captureId: simulatorCaptureIdSchema.optional(),
+	/**
+	 * What a best-effort step of the job could not do, redacted and bounded as
+	 * a failure's message is. The job went on without it, so a job that
+	 * completed with warnings still did what it was asked.
+	 */
+	warnings: z.array(shortTextSchema).max(MAX_SIMULATOR_JOB_WARNINGS).optional(),
 });
 export type SimulatorJob = z.infer<typeof simulatorJobSchema>;
 
@@ -994,6 +1002,12 @@ export const simulatorActionSchema = z.union([
 		...deviceActionBase,
 		kind: z.literal('url.open'),
 		url: simulatorUrlSchema,
+		/**
+		 * The app the URL is for. When set, the URL's scheme is approved for
+		 * that app before it opens, as `expo run:ios` does for its dev client,
+		 * so iOS opens it without first asking "Open in …?".
+		 */
+		bundleIdentifier: bundleIdentifierSchema.optional(),
 	}),
 	z.strictObject({
 		...deviceActionBase,

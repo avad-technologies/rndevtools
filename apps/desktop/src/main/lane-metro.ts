@@ -1,6 +1,6 @@
 import { type SpawnOptions, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync } from 'node:fs';
-import { open, realpath, stat } from 'node:fs/promises';
+import { appendFile, open, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import {
@@ -12,6 +12,7 @@ import { runSimulatorCommand } from './simulator-command-runner';
 
 const METRO_PROBE_TIMEOUT_MS = 750;
 const METRO_LOG_TAIL_BYTES = 256 * 1024;
+const MAX_LOG_NOTE_LENGTH = 4 * 1024;
 const LSOF_PATH = '/usr/sbin/lsof';
 const OWNER_PROBE_TIMEOUT_MS = 3_000;
 const OWNER_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
@@ -81,6 +82,11 @@ export type MetroSupervisorPort = {
 		options?: { force?: boolean }
 	) => Promise<void>;
 	readLogTail: (logPath: string, maxCharacters: number) => Promise<string>;
+	/**
+	 * Adds `note` to the end of a lane's Metro log as one line marked as the
+	 * desktop's: what the desktop did for the lane that Metro cannot report.
+	 */
+	appendLogNote: (logPath: string, note: string) => Promise<void>;
 };
 
 /**
@@ -817,6 +823,21 @@ export async function readLogTail(
 	}
 }
 
+/**
+ * Appends a note to a lane's Metro log: one line, its line breaks and other
+ * controls turned into spaces, cut to MAX_LOG_NOTE_LENGTH and marked as the
+ * desktop's. Metro writes the log through a descriptor opened for appending,
+ * as this one is, so neither overwrites the other. A log that is gone comes
+ * back readable by its owner alone, as startMetro creates it.
+ */
+async function appendLogNote(logPath: string, note: string): Promise<void> {
+	const line = note
+		.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ')
+		.trim()
+		.slice(0, MAX_LOG_NOTE_LENGTH);
+	await appendFile(logPath, `[RN Devtools] ${line}\n`, { mode: 0o600 });
+}
+
 export function createMetroSupervisor({
 	runCommand = runSimulatorCommand,
 	spawnProcess = spawn,
@@ -846,6 +867,7 @@ export function createMetroSupervisor({
 		stop: (pid, port, appDirectory, options) =>
 			stopMetro(pid, port, appDirectory, runCommand, options?.force === true),
 		readLogTail,
+		appendLogNote,
 	};
 }
 

@@ -132,6 +132,8 @@ class FakeSimulator implements LaneSimulatorPort {
 	/** When set, a boot's job finishes only once this settles. */
 	bootGate: Promise<unknown> | undefined;
 	onBootStarted: (() => void) | undefined;
+	/** What every `url.open` job reports it could not do, as it completes. */
+	openWarnings: string[] | undefined;
 
 	constructor(devices: Array<{ udid: string; state: 'booted' | 'shutdown' }>) {
 		this.state = simulatorState(devices);
@@ -161,6 +163,9 @@ class FakeSimulator implements LaneSimulatorPort {
 				finishedAt: 2,
 				message: failure ?? 'done',
 				deviceUdid: 'udid' in action ? action.udid : undefined,
+				...(action.kind === 'url.open' && this.openWarnings
+					? { warnings: this.openWarnings }
+					: {}),
 			} as unknown as SimulatorJob;
 			if (action.kind === 'device.boot' && !failure) {
 				this.state = simulatorState(
@@ -363,6 +368,13 @@ class FakeMetro implements MetroSupervisorPort {
 		if (this.listeners.get(port) === pid) this.listeners.delete(port);
 	};
 	readLogTail = async (logPath: string) => this.logs.get(logPath) ?? '';
+	/** Every note the desktop added to a lane log, in order. */
+	readonly notes: Array<{ logPath: string; note: string }> = [];
+	failNotes = false;
+	appendLogNote = async (logPath: string, note: string) => {
+		if (this.failNotes) throw new Error('EACCES: permission denied');
+		this.notes.push({ logPath, note });
+	};
 }
 
 class FakeWorktrees implements WorktreeInspectorPort {
@@ -599,6 +611,8 @@ describe('LaneService', () => {
 		expect(launch.url).toBe(
 			'exampleapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'
 		);
+		// The lane's own scheme opens in its own app without iOS asking first.
+		expect(launch.bundleIdentifier).toBe('com.example.app');
 		expect(metro.started[0]).toMatchObject({
 			worktreePath: WORKTREE,
 			port: 8_100,
@@ -1230,6 +1244,93 @@ describe('LaneService', () => {
 			{ kind: 'url.open' }
 		>;
 		expect(open.url).toBe('exampleapp://checkout/cart');
+		expect(open.bundleIdentifier).toBe('com.example.app');
+	});
+
+	it("approves only the lane's own scheme for its app", async () => {
+		metro.healthyPorts.add(8_100);
+		const started = await service.runOperation({
+			actionId: 'op-1',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: UDID,
+			environment: 'development',
+			launch: false,
+		});
+		const laneId = started.lane?.id as string;
+		for (const [index, url] of [
+			'https://example.com/items/1',
+			'otherapp://home',
+		].entries()) {
+			const launched = await service.runOperation({
+				actionId: `op-other-${index}`,
+				kind: 'lane.launch',
+				laneId,
+				url,
+			});
+			expect(launched.completed).toBe(true);
+			const open = simulator.actions.at(-1) as Extract<
+				SimulatorAction,
+				{ kind: 'url.open' }
+			>;
+			expect(open.url).toBe(url);
+			expect(open).not.toHaveProperty('bundleIdentifier');
+		}
+		const own = await service.runOperation({
+			actionId: 'op-own',
+			kind: 'lane.launch',
+			laneId,
+			url: 'ExampleApp://settings',
+		});
+		expect(own.completed).toBe(true);
+		expect(simulator.actions.at(-1)).toMatchObject({
+			kind: 'url.open',
+			url: 'ExampleApp://settings',
+			bundleIdentifier: 'com.example.app',
+		});
+	});
+
+	it("notes in the lane log what the dev client's open could not do, and launches anyway", async () => {
+		metro.healthyPorts.add(8_100);
+		const started = await service.runOperation({
+			actionId: 'op-1',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: UDID,
+			environment: 'development',
+			launch: true,
+		});
+		expect(started.completed).toBe(true);
+		// An open that warned of nothing leaves the log to Metro.
+		expect(metro.notes).toEqual([]);
+		const laneId = started.lane?.id as string;
+		const logPath = started.lane?.logPath;
+		const warning =
+			'The exampleapp URL scheme could not be approved for com.example.app (xcrun failed with exit code 1.), so iOS may ask "Open in …?" before the app opens.';
+		simulator.openWarnings = [warning];
+		now += 1_000;
+		const launched = await service.runOperation({
+			actionId: 'op-2',
+			kind: 'lane.launch',
+			laneId,
+		});
+		expect(launched.completed).toBe(true);
+		expect(launched.lane).toMatchObject({
+			metro: 'ready',
+			lastLaunchedAt: now,
+		});
+		expect(metro.notes).toEqual([{ logPath, note: warning }]);
+
+		// A log that cannot take the note fails nothing either.
+		metro.failNotes = true;
+		now += 1_000;
+		const again = await service.runOperation({
+			actionId: 'op-3',
+			kind: 'lane.launch',
+			laneId,
+		});
+		expect(again.completed).toBe(true);
+		expect(again.lane).toMatchObject({ lastLaunchedAt: now });
 	});
 
 	it('never hands a lane to another session that launches or resumes it', async () => {
@@ -1773,6 +1874,10 @@ describe('LaneService', () => {
 					attempts
 				);
 				expect(new Set(actions.map((action) => action.url)).size).toBe(1);
+				// Each attempt opens the lane's own scheme, approved for its app.
+				expect(actions.map((action) => action.bundleIdentifier)).toEqual(
+					Array.from({ length: attempts }, () => 'com.example.app')
+				);
 			}
 		);
 
