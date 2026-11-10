@@ -35,7 +35,7 @@ Use the narrowest workspace command that proves a change, then run that workspac
 - Both npm packages ship TypeScript source because Reanimated worklets must be compiled by the consuming app. Do not add a bundler without solving workletization first.
 - Devtools code must never be reachable from a release bundle. `withDevtoolsPruning` and `rndevtools-verify-bundle` are a pair; weakening either breaks the guarantee that makes this safe to depend on.
 - Redact and bound anything captured from a running app before it enters a store or crosses the socket. The broker is unauthenticated loopback.
-- The vendored SimSlim tree and its SHA-256 provenance manifests are byte-anchored. Never edit `native/rndevtools-sim-helper/vendor/**`, the `rndevtools.1` patch artifact, or either `*_SHA256SUMS` file without following the update procedure in its `PROVENANCE.md`.
+- The vendored SimSlim and go-toml trees and their SHA-256 provenance manifests are byte-anchored. Never edit `native/rndevtools-sim-helper/vendor/**`, its `rndevtools.1` patch artifact, its `UPSTREAM_SOURCE_SHA256SUMS` and `VENDORED_SOURCE_SHA256SUMS`, `native/rndevtools-cli/vendor/**`, or that directory's `VENDORED_SOURCE_SHA256SUMS` without following the update procedure in the same directory's `PROVENANCE.md`.
 - Add or update focused tests for behavior changes. Run the relevant workspace's `quality` command before calling work complete.
 - Keep commits and PRs small and use Conventional Commit messages.
 
