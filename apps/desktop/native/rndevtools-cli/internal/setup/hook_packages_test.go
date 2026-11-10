@@ -32,7 +32,7 @@ func newPackageFixture(t *testing.T) packageFixture {
 		`"start":"expo start","dev":"expo --dev-client","bare":"expo","web":"expo start --web",`+
 		`"rn":"react-native start","ios":"expo run:ios","build:ios":"expo run:ios --no-bundler",`+
 		`"chain":"npm run dev","loop":"npm run loop","lint":"eslint .","test":"jest",`+
-		`"install-deps":"expo install","count":3}}`)
+		`"install-deps":"expo install","add":"expo start","count":3}}`)
 	write(t, filepath.Join(fixture.src, "index.ts"), "")
 	write(t, filepath.Join(fixture.plain, "package.json"), `{"scripts":{"start":"node server.js"}}`)
 	write(t, filepath.Join(fixture.broken, "package.json"), `{"scripts":{"start":"expo start"`)
@@ -79,6 +79,18 @@ func TestHookReadsThePackageScriptsALineRuns(t *testing.T) {
 		{fixture.app, "npm run rn", metro},
 		{fixture.app, "npm run ios", []string{"`npm run ios` runs the `ios` script", "Blocked `expo run:ios`", "`rndevtools native --operation plan --worktree " + fixture.app + " --udid <UDID>`"}},
 		{fixture.app, "npm run ios -- --device X", []string{"Blocked `expo run:ios`"}},
+		// yarn and pnpm run a script named without run, unless the name is one
+		// of their own commands.
+		{fixture.app, "yarn ios", []string{"`yarn ios` runs the `ios` script of " + manifest + ": `expo run:ios`.", "Blocked `expo run:ios`"}},
+		{fixture.app, "pnpm ios", []string{"`pnpm ios` runs the `ios` script", "Blocked `expo run:ios`"}},
+		{fixture.app, "yarn ios --device X", []string{"Blocked `expo run:ios`"}},
+		{fixture.app, "yarn dev", metro},
+		{fixture.app, "pnpm dev", metro},
+		{fixture.app, "pnpm bare", metro},
+		{fixture.src, "yarn web", metro},
+		{fixture.plain, "yarn --cwd " + fixture.app + " ios", []string{"Blocked `expo run:ios`"}},
+		{fixture.plain, "pnpm -C " + fixture.app + " dev", metro},
+		{fixture.app, "timeout 600 pnpm dev", metro},
 		// A script that runs another is followed into it.
 		{fixture.app, "npm run chain", []string{"`npm run chain` runs the `chain` script", "`npm run dev` runs the `dev` script", "Blocked starting Metro by hand"}},
 		// The nearest package.json, from wherever the command runs.
@@ -129,7 +141,7 @@ func TestHookReadsThePackageScriptsALineRuns(t *testing.T) {
 		{fixture.app, "npm run count"},
 		// A script that runs itself is followed only so deep.
 		{fixture.app, "npm run loop"},
-		// Workspaces the rule cannot place, and a script named without run.
+		// Workspaces the rule cannot place.
 		{fixture.app, "pnpm --filter mobile start"},
 		{fixture.app, "pnpm -r run start"},
 		{fixture.app, "pnpm -w start"},
@@ -138,7 +150,20 @@ func TestHookReadsThePackageScriptsALineRuns(t *testing.T) {
 		{fixture.app, "npm run start --workspaces"},
 		{fixture.app, "yarn workspace mobile start"},
 		{fixture.app, "bun run --filter mobile start"},
-		{fixture.app, "yarn ios"},
+		{fixture.app, "pnpm -r ios"},
+		// A manager's own command runs, not a script of that name; npm runs no
+		// script named without run, and bun's way of doing so is not read.
+		{fixture.app, "yarn add expo"},
+		{fixture.app, "pnpm add expo"},
+		{fixture.app, "yarn install"},
+		{fixture.app, "pnpm install"},
+		{fixture.app, "npm ios"},
+		{fixture.app, "bun ios"},
+		// A script named without run that starts no Metro, or none at all.
+		{fixture.app, "yarn ios --no-bundler"},
+		{fixture.app, "pnpm lint"},
+		{fixture.app, "yarn missing"},
+		{fixture.app, "pnpm count"},
 		// Mentions, and RN Devtools' own CLI.
 		{fixture.app, "echo 'npm start'"},
 		{fixture.app, "git commit -m 'npm start runs expo start'"},
@@ -182,6 +207,11 @@ func TestParsePackageScriptReadsTheManagersOwnWords(t *testing.T) {
 		{"pnpm --dir=app run start", "start", nil, "app"},
 		{"yarn --cwd app start", "start", nil, "app"},
 		{"yarn run ios --no-bundler", "ios", []string{"--no-bundler"}, ""},
+		{"yarn ios", "ios", nil, ""},
+		{"yarn ios --no-bundler", "ios", []string{"--no-bundler"}, ""},
+		{"yarn --cwd app ios -- --device X", "ios", []string{"--device", "X"}, "app"},
+		{"pnpm ios", "ios", nil, ""},
+		{"pnpm --dir app dev --port 8082", "dev", []string{"--port", "8082"}, "app"},
 		{"bun --cwd app run start", "start", nil, "app"},
 		{"timeout 60 npm start", "start", nil, ""},
 		{"sudo -u me npm start", "start", nil, ""},
@@ -196,8 +226,13 @@ func TestParsePackageScriptReadsTheManagersOwnWords(t *testing.T) {
 	for _, command := range []string{
 		"npm", "npm test", "npm install", "npm run", "npm run --silent", "npm -w app start",
 		"npm run start --workspace=app", "pnpm --filter app start", "pnpm -r start", "pnpm -w start",
-		"yarn workspace app start", "yarn ios", "bun run --filter app start", "npx expo start",
+		"yarn workspace app start", "bun run --filter app start", "npx expo start",
 		"command -v npm", "npm run -- start",
+		// Own commands of yarn and pnpm, and the managers that run no script
+		// named without run here.
+		"yarn add expo", "pnpm add expo", "yarn install", "pnpm i", "yarn dlx expo", "pnpm dlx expo",
+		"yarn exec expo", "pnpm exec expo", "yarn create expo-app", "pnpm why expo", "pnpm -r ios",
+		"yarn", "pnpm", "yarn -- ios", "npm ios", "bun ios",
 	} {
 		if invocation, ok := parsePackageScript(strings.Fields(command)); ok {
 			t.Errorf("parsePackageScript(%q) = %+v, want no package script", command, invocation)

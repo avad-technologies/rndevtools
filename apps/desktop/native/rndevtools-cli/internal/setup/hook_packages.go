@@ -9,16 +9,16 @@ import (
 	"unicode/utf8"
 )
 
-// Package scripts. `npm start` and `yarn run ios` run a script from the
-// nearest package.json, and in an Expo app that script is often `expo start`,
-// a bare `expo`, or `expo run:ios`: Metro on a shared port, which neither the
-// text rule nor the word rules see in the line itself. packageRules reads the
-// script and judges it as a line of its own, from the directory of its
-// package.json, with the Simulator rules and with these rules again (a script
-// may run another). Like the other rules they fail open: a command in a
-// directory the hook cannot place or under a workspace option it cannot
-// resolve, a package.json it cannot read, and a script it does not find all
-// run.
+// Package scripts. `npm start`, `yarn run ios`, and `yarn ios` run a script
+// from the nearest package.json, and in an Expo app that script is often
+// `expo start`, a bare `expo`, or `expo run:ios`: Metro on a shared port,
+// which neither the text rule nor the word rules see in the line itself.
+// packageRules reads the script and judges it as a line of its own, from the
+// directory of its package.json, with the Simulator rules and with these
+// rules again (a script may run another). Like the other rules they fail
+// open: a command in a directory the hook cannot place or under a workspace
+// option it cannot resolve, a package.json it cannot read, and a script it
+// does not find all run.
 
 const (
 	// maxManifestBytes bounds a package.json read.
@@ -40,6 +40,9 @@ type packageManagerOptions struct {
 	workspaces map[string]bool
 	// run are the commands that name the script to run; start is one too.
 	run map[string]bool
+	// own, when set, are the manager's own commands: it runs a script named
+	// without run (yarn ios, pnpm dev) by any other name.
+	own map[string]bool
 	// npm reads its own options anywhere before --, and hands the script only
 	// its operands and what follows --. The others hand it every word after
 	// its name.
@@ -59,11 +62,34 @@ var packageManagers = map[string]packageManagerOptions{
 		chdir:      names("-C", "--dir"),
 		workspaces: names("-F", "--filter", "--filter-prod", "-r", "--recursive", "-w", "--workspace-root"),
 		run:        names("run", "run-script"),
+		// The commands pnpm 11 registers (lib/cmd/index.js, with their aliases
+		// and the ones it names as not implemented). Its parseCliArgs runs any
+		// other name as `pnpm run <name>` (fallbackCommand: "run").
+		own: names("access", "add", "adduser", "approve-builds", "audit", "bin", "bugs", "c", "cache",
+			"cat-file", "cat-index", "change", "ci", "clean", "clean-install", "completion", "completion-server",
+			"config", "create", "dedupe", "deploy", "deprecate", "dislink", "dist-tag", "dist-tags", "dlx",
+			"docs", "doctor", "edit", "env", "exec", "fetch", "find", "find-hash", "get", "help", "home", "i",
+			"ic", "ignored-builds", "import", "info", "init", "install", "install-clean", "install-test",
+			"issues", "it", "la", "lane", "licenses", "link", "list", "ll", "ln", "login", "logout", "ls", "m",
+			"multi", "outdated", "owner", "owners", "pack", "pack-app", "patch", "patch-commit", "patch-remove",
+			"peers", "ping", "pkg", "prefix", "profile", "prune", "publish", "purge", "rb", "rebuild",
+			"recursive", "remove", "repo", "restart", "rm", "root", "rt", "run", "run-script", "runtime", "s",
+			"sbom", "se", "search", "self-update", "set", "set-script", "setup", "show", "ss", "stage", "star",
+			"stars", "store", "team", "token", "un", "undeprecate", "uni", "uninstall", "unlink", "unpublish",
+			"unstar", "up", "update", "upgrade", "v", "version", "view", "whoami", "why", "with", "xmas"),
 	},
 	"yarn": {
 		values: names("--cwd"),
 		chdir:  names("--cwd"),
 		run:    names("run"),
+		// Yarn's own commands, Classic (1.x) and Berry (2 and later)
+		// together. Yarn runs any other name as the script of that name.
+		own: names("access", "add", "audit", "autoclean", "bin", "cache", "check", "config", "constraints",
+			"create", "dedupe", "dlx", "exec", "explain", "generate-lock-entry", "global", "help", "import",
+			"info", "init", "install", "licenses", "link", "list", "login", "logout", "node", "npm",
+			"outdated", "owner", "pack", "patch", "patch-commit", "plugin", "policies", "publish", "rebuild",
+			"remove", "run", "search", "set", "stage", "tag", "team", "unlink", "unplug", "up", "upgrade",
+			"upgrade-interactive", "version", "versions", "why", "workspace", "workspaces"),
 	},
 	"bun": {
 		values:     names("--cwd", "-F", "--filter"),
@@ -103,9 +129,11 @@ func withoutRedirections(words []string) []string {
 // parsePackageScript reads a command's words for the package script it runs:
 // npm, pnpm, yarn, or bun with start, or with a run command and the script's
 // name (npm run ios, pnpm --dir app run start, yarn --cwd app start, bun run
-// start), behind the launchers that only run their operand (timeout 60, env
-// FOO=1), redirections aside. Other forms are not read: a script named
-// without run (yarn ios), a workspace filter, npm test.
+// start), or yarn or pnpm with a script named without run (yarn ios, pnpm
+// dev) that is none of their own commands, behind the launchers that only run
+// their operand (timeout 60, env FOO=1), redirections aside. Other forms are
+// not read: a workspace filter, npm test, and bun with a script named without
+// run, whose rules for it the hook does not model.
 func parsePackageScript(words []string) (packageScript, bool) {
 	words = skipPrefixWords(withoutRedirections(words))
 	at := 0
@@ -158,6 +186,10 @@ func parsePackageScript(words []string) (packageScript, bool) {
 		if !options() || len(rest) == 0 || rest[0] == "--" {
 			return packageScript{}, false
 		}
+		invocation.name, rest = rest[0], rest[1:]
+	case manager.own != nil && !manager.own[rest[0]] && !strings.HasPrefix(rest[0], "-"):
+		// A script named without run, which the manager hands its arguments
+		// as run would.
 		invocation.name, rest = rest[0], rest[1:]
 	default:
 		return packageScript{}, false
