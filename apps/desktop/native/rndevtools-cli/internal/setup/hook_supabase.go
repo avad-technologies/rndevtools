@@ -865,13 +865,19 @@ func (rules *supabaseRules) judgeSupabase(line shellLine, index int, invocation 
 
 // judgeManaged applies the rules for a worktree RN Devtools runs.
 func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind supabaseCommandKind, command string, root steeringRoot, runDirectory string) HookDecision {
-	worktree := displayPath(root.worktreeRoot)
-	upHint := fmt.Sprintf("the rndevtools `supabase` tool (operation up, worktree %s) or `rndevtools supabase --operation up --worktree %s`", worktree, shellJoin([]string{root.worktreeRoot}))
+	// The root is a repository's path: the commands name it as a word the
+	// shell reads as it is, and a path the reason cannot quote whole as a
+	// placeholder.
+	worktree, word := worktreePlaceholder, worktreePlaceholder
+	if quoted, ok := pathWord(root.worktreeRoot); ok {
+		worktree, word = root.worktreeRoot, quoted
+	}
+	upHint := fmt.Sprintf("the rndevtools `supabase` tool (operation up, worktree %s) or `rndevtools supabase --operation up --worktree %s`", worktree, word)
 	switch kind {
 	case supabaseStart, supabaseRestart, supabasePrepare, supabaseDev:
 		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; `rndevtools lane --operation up` does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, root.runner))
 	case supabaseStop:
-		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Release it with the rndevtools `supabase` tool (operation down, worktree %s) or `rndevtools supabase --operation down --worktree %s`; it stops once nobody else uses it, and its data is kept.", command, worktree, shellJoin([]string{root.worktreeRoot})))
+		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Release it with the rndevtools `supabase` tool (operation down, worktree %s) or `rndevtools supabase --operation down --worktree %s`; it stops once nobody else uses it, and its data is kept.", command, worktree, word))
 	case supabaseDatabaseStart:
 		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead.", command, upHint))
 	}
@@ -888,8 +894,12 @@ func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind sup
 	return HookDecision{}
 }
 
+// worktreePlaceholder stands for a worktree's path in a reason that cannot
+// name it.
+const worktreePlaceholder = "<this worktree's absolute path>"
+
 func stopOwnStack(directory string, without string) string {
-	worktree := "<this worktree's absolute path>"
+	worktree := worktreePlaceholder
 	if directory != "" {
 		if root := gitWorktreeRoot(directory); root != "" {
 			directory = root

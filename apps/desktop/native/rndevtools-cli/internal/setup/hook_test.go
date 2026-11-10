@@ -1829,6 +1829,32 @@ func TestSupabaseManagedModeWaitsForTheBranchStack(t *testing.T) {
 	fixture.expect(t, in, "supabase db diff")
 }
 
+func TestSupabaseManagedAdviceQuotesTheWorktreeAsItIs(t *testing.T) {
+	// A managed root is a repository's path, and a directory's name may hold
+	// `$(…)`: the command the agent is told to run must not run it.
+	fixture := newSupabaseFixture(t)
+	managed := func(name string) string {
+		root := filepath.Join(fixture.base, "wt", name)
+		write(t, filepath.Join(root, ".git", "HEAD"), "ref: refs/heads/feat-c\n")
+		write(t, filepath.Join(root, "supabase", "config.toml"), "[experimental]\nstack = true\n")
+		write(t, filepath.Join(root, "node_modules", ".bin", "supabase"), "#!/bin/sh\n")
+		fixture.steering.roots = append(fixture.steering.roots, steeringRoot{
+			worktreeRoot: root, projectRoot: root, branchContext: "refs/heads/feat-c", stackReady: true, runner: "npx supabase",
+		})
+		return root
+	}
+	root := managed("x$(touch pwned)")
+	word := "'" + root + "'"
+	fixture.expect(t, root, "supabase start", "`rndevtools supabase --operation up --worktree "+word+"`", "(operation up, worktree "+root+")")
+	fixture.expect(t, root, "supabase stop", "`rndevtools supabase --operation down --worktree "+word+"`")
+	// A path the reason would strip names another directory: a placeholder
+	// stands in for it instead.
+	odd := managed("x`id`")
+	placeholder := "<this worktree's absolute path>"
+	fixture.expect(t, odd, "supabase start", "`rndevtools supabase --operation up --worktree "+placeholder+"`", "(operation up, worktree "+placeholder+")")
+	fixture.expect(t, odd, "supabase stop", "`rndevtools supabase --operation down --worktree "+placeholder+"`")
+}
+
 func TestSupabaseManagedModeMatchesTheProjectAndTheRepository(t *testing.T) {
 	fixture := newSupabaseFixture(t)
 	nested := filepath.Join(fixture.managed, "apps", "other")
