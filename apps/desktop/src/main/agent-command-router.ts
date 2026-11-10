@@ -1767,8 +1767,8 @@ function createRoutes({
 						code: 'simulator_not_booted',
 						message: `${target.name} is ${target.state}; input needs a booted Simulator.`,
 						retryable: true,
-						recovery:
-							'Boot it (rndevtools lane up, or the desktop app) and retry.',
+						// The CLI takes every operation as a flag, never positionally.
+						recovery: `Boot it with \`rndevtools simulator --operation boot --udid ${target.udid}\` when this session holds it (its lane's or its claim's), or start a lane on it with \`rndevtools lane --operation up --worktree <app directory> --udid ${target.udid}\`, then retry.`,
 					});
 				}
 				assertDeviceAccess(agents, target.udid, context.agent);

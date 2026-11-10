@@ -3341,6 +3341,8 @@ describe('agent command router', () => {
 			).rejects.toEqual(
 				expect.objectContaining<Partial<AgentCliError>>({
 					code: 'simulator_not_booted',
+					// The CLI takes lane operations as flags, never positionally.
+					recovery: `Boot it with \`rndevtools simulator --operation boot --udid ${UDID}\` when this session holds it (its lane's or its claim's), or start a lane on it with \`rndevtools lane --operation up --worktree <app directory> --udid ${UDID}\`, then retry.`,
 				})
 			);
 		});
