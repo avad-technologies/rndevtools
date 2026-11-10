@@ -431,7 +431,8 @@ func hookDocument(executable string) (preToolUse map[string]any, sessionEnd map[
 		"hooks": []any{map[string]any{
 			"type":    "command",
 			"command": hookCommand(executable, "session-end"),
-			// Codex caps SessionEnd at 3 s; the release is one socket round trip.
+			// Codex caps SessionEnd at 3 s; the release is one socket round trip,
+			// which the desktop answers within about 1.5 s.
 			"timeout": 3,
 		}},
 	}
