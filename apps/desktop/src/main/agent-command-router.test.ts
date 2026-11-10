@@ -4454,6 +4454,53 @@ describe('agent command router', () => {
 			);
 		});
 
+		it('sends a lane with no URL scheme to a launch with a full URL, which lane up cannot take', async () => {
+			const { scheme: _scheme, ...bare } = lane;
+			const error = `Lane ${lane.id} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`${launchAgain} --url <full launch URL>\`, which lane up cannot take.`;
+			const url =
+				"'<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'";
+			const recovery = `Lane ${lane.id} has no URL scheme for its dev client: the worktree's app.json gave none when the lane started, and a lane keeps what it started with. Only a launch with a full URL opens it: \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers. Or declare a scheme in app.json and replace the lane: \`rndevtools lane --operation down --lane-id ${lane.id}\`, then \`${upAgain}\`. ${log}`;
+			const up = await failure(
+				{ completed: false, error, lane: bare },
+				upCommand
+			);
+			expect(up.message).toBe(`Lane ${lane.id} did not launch: ${error}`);
+			expect(up.recovery).toBe(recovery);
+			const launched = await failure(
+				{ completed: false, error, lane: bare },
+				launchCommand
+			);
+			expect(launched.recovery).toBe(recovery);
+			// A restart asked for goes with that launch.
+			const restarted = await failure(
+				{ completed: false, error, lane: bare },
+				{ ...upCommand, restart: true }
+			);
+			expect(restarted.recovery).toContain(
+				`\`${launchAgain} --url ${url} --restart\``
+			);
+			// A Metro that is gone comes back from a lane up that launches nothing.
+			const stopped = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				launchCommand
+			);
+			expect(stopped.recovery).toContain(
+				`Only a launch with a full URL opens it, once \`${upAgain} --launch=false\` has started Metro again: \`${launchAgain} --url ${url}\``
+			);
+			// A deep link of its own needs no scheme, and is retried as before.
+			const linked = await failure(
+				{ completed: false, error: timedOut, lane: bare },
+				{ ...launchCommand, url: 'exampleapp://checkout' }
+			);
+			expect(linked.recovery).toContain(
+				`run \`${launchAgain}\` with the same --url to open it again`
+			);
+		});
+
 		it('keeps a failure that names no lane as it was', async () => {
 			const refused = await failure(
 				{ completed: false, error: 'CoreSimulator refused to boot.' },

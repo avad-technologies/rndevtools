@@ -2188,8 +2188,10 @@ export class LaneService {
 					? laneDevClientLaunchUrl(lane.scheme, lane.port)
 					: undefined;
 		if (!target) {
+			// A lane reads its scheme only when it starts, so declaring one now
+			// gives this lane none: only a launch with a URL of its own opens it.
 			throw new Error(
-				'The worktree declares no URL scheme in app.json, so the dev client cannot be deep-linked. Pass --url with the full launch URL.'
+				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`, which lane up cannot take.`
 			);
 		}
 		// Opening a scheme the Simulator has no app for fails with an opaque

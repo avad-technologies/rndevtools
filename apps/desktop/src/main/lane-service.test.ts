@@ -5722,6 +5722,34 @@ describe('LaneService', () => {
 	});
 
 	describe('dev client presence', () => {
+		it('names a lane with no URL scheme and how to open it, which lane up cannot', async () => {
+			// No scheme, and no slug to take the dev client's default from.
+			worktrees.identity = { bundleIdentifier: 'com.example.app' };
+			metro.healthyPorts.add(8_100);
+			const receipt = await service.runOperation({
+				actionId: 'op-no-scheme',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+			});
+			expect(receipt.completed).toBe(false);
+			const laneId = receipt.lane?.id as string;
+			expect(laneId).toBeDefined();
+			expect(receipt.error).toBe(
+				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`, which lane up cannot take.`
+			);
+			// A full launch URL opens it.
+			const opened = await service.runOperation({
+				actionId: 'op-no-scheme-url',
+				kind: 'lane.launch',
+				laneId,
+				url: 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100',
+			});
+			expect(opened.completed).toBe(true);
+		});
+
 		it('refuses to launch when the worktree bundle is not installed and says what to build', async () => {
 			healthyMetro();
 			simulator.installedApps = ['com.apple.mobilesafari'];

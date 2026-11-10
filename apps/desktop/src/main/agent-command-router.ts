@@ -24,6 +24,7 @@ import {
 	type LaneState,
 	type LaneView,
 	laneAppDirectory,
+	laneDevClientLaunchUrl,
 } from '../shared/lane-protocol';
 import type {
 	DesktopAction,
@@ -1225,7 +1226,8 @@ function shellWord(value: string): string {
  * runs on. Lane launch only opens the app against a running Metro and a
  * backend that serves it, so it is retried as itself only then, and through
  * lane up otherwise. A deep link is named, never repeated: it may hold a
- * token.
+ * token. A lane with no URL scheme opens its dev client only through a
+ * launch with a full URL, which lane up cannot take, so that is its retry.
  */
 function laneRetryRecovery(
 	lane: LaneView,
@@ -1246,10 +1248,22 @@ function laneRetryRecovery(
 			: ` --environment ${lane.environment}`;
 	// A lane up that asked for no launch is retried without one.
 	const opens = laneVerb(asked) === 'launch';
-	const up = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}${opens ? restart : ' --launch=false'}`;
+	const upBare = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}`;
+	const up = `${upBare}${opens ? restart : ' --launch=false'}`;
 	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}`;
 	const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
 	const run = interrupted ? 'Run' : 'Once the cause is fixed, run';
+	if (opens && asked.url === undefined && !lane.scheme) {
+		// A lane reads its scheme from app.json only when it starts, so one
+		// with none never opens its dev client without a URL, however it is
+		// retried, and lane up takes no URL.
+		const url = shellWord(laneDevClientLaunchUrl('<scheme>', lane.port));
+		const first =
+			lane.metro === 'stopped' || backendFailed
+				? `, once \`${upBare} --launch=false\` has started ${backendFailed ? 'its backend' : 'Metro'} again`
+				: '';
+		return `Lane ${lane.id} has no URL scheme for its dev client: the worktree's app.json gave none when the lane started, and a lane keeps what it started with. Only a launch with a full URL opens it${first}: \`${launch} --url ${url}${restart}\`, with <scheme> the URL scheme the app registers. Or declare a scheme in app.json and replace the lane: \`rndevtools lane --operation down --lane-id ${lane.id}\`, then \`${upBare}\`. ${log}`;
+	}
 	if (asked.operation === 'up') {
 		return `The lane keeps its Simulator and port ${lane.port}. ${run} \`${up}\` to ${opens ? 'launch' : 'start'} it again; it starts Metro again first if Metro exited. ${log}`;
 	}
