@@ -211,9 +211,10 @@ as-built notes are in [`experiments/supabase-backends/`](experiments/supabase-ba
   like Simulators. One stops 60 s after its last holder releases it, 10 min after
   a Claude Code holder's process has exited, or at once when its worktree is
   deleted. A Codex holder keeps its hold until it releases it or its session-end
-  hook runs, because an idle Codex chat is no proof that the session ended. Data
-  is kept. Destroying is never automatic: Clean up suggests orphaned, stale-branch and
-  long-stopped stacks with their sizes.
+  hook runs, because an idle Codex chat is no proof that the session ended, and
+  so does a holder known only by `RNDEVTOOLS_AGENT_SESSION_ID`, whose end RN
+  Devtools cannot see. Data is kept. Destroying is never automatic: Clean up
+  suggests orphaned, stale-branch and long-stopped stacks with their sizes.
 - **Branch switches.** Stack identity includes the git branch. RN Devtools follows
   a held stack to the new branch after HEAD has been stable for 30 s and no rebase
   or merge is running, and switching back reattaches the old one. Following from

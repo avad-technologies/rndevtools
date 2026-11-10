@@ -241,7 +241,8 @@ JSON payload on stdin.
   session-end    Release everything the ending session holds: stop its lanes,
                  drop its claims, release its stacks. Devices return to the
                  pool at once; without it a Claude Code session's holds go
-                 10 minutes after its process exits, and a Codex session's
+                 10 minutes after its process exits, and those of a Codex
+                 session, or of one known only by RNDEVTOOLS_AGENT_SESSION_ID,
                  stay until it releases them.
 
 Any other event exits 0 with a note on stderr: only a block exits 2.

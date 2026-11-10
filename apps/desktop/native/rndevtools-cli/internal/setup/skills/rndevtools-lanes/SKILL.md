@@ -96,6 +96,8 @@ a private local socket.
   A Claude hold with a confirmed dead session is released after 10 minutes.
   Codex’s recent-thread list is not a process-liveness signal: an idle or
   unlisted Codex chat keeps its lanes and databases until explicit release.
+  So does a session known only by `RNDEVTOOLS_AGENT_SESSION_ID`, whose end
+  RN Devtools cannot see.
   Supported session-end hooks release at once. Run `release --all` when the
   task is finished unless the user wants the lanes left running.
 - **Only RN Devtools respects holds.** Other Simulator MCP servers
