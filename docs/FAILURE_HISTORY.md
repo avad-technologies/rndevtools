@@ -17,6 +17,10 @@ are shown in the UI. Unreadable history is preserved instead of overwritten.
 A resource diagnostic (for example, CoreSimulator disk writes with “Action taken:
 none”) is shown as a warning, not proof of a crash. A disappeared Metro adopted
 from an earlier desktop session has an unknown exit code/signal; the UI says so.
+So does one whose recorded PID now names another process, as after a reboot:
+the lane forgets that PID, and the history still records its Metro as gone.
+A Metro that RN Devtools asked to stop is not reported as missing: the request
+is kept with its lane's context, not among the latest 200 events.
 An OS crash is evidence to investigate, not proof that application code is wrong.
 Reports are associated with a known lane only within its observed lifetime.
 Failed simulator operations use the operation's start time for association, even

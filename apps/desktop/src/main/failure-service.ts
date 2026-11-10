@@ -356,6 +356,7 @@ export class FailureService {
 				previous.startedAt !== lane.startedAt ||
 				previous.endedAt !== undefined
 			) {
+				if (previous) changed = this.#forgotMetro(lane, previous) || changed;
 				this.#remember(lane);
 				changed = true;
 			}
@@ -413,6 +414,44 @@ export class FailureService {
 			return { ...context, ...record };
 		});
 		if (changed) void this.#save();
+	}
+
+	/**
+	 * Records a Metro the lane forgot. The lane service drops a recorded PID
+	 * only once it names some other process, and marks the lane stopped in
+	 * the same write, so the stopped lane never lists the PID that went: the
+	 * context it ran under still does. Whether that Metro crashed is not
+	 * known, and the record says so. A Metro RN Devtools asked to stop, or
+	 * whose exit is on record, is not reported.
+	 */
+	#forgotMetro(lane: Lane, previous: LaneContext): boolean {
+		const pid = previous.metroPid;
+		if (
+			lane.metro !== 'stopped' ||
+			lane.metroPid !== undefined ||
+			pid === undefined ||
+			previous.endedAt !== undefined ||
+			previous.stopRequestedAt !== undefined ||
+			this.#expected.has(pid) ||
+			this.#records.some(
+				(record) =>
+					record.metroPid === pid &&
+					(record.kind === 'metro-exit' ||
+						(record.kind === 'lane-lifecycle' && record.laneId === lane.id))
+			)
+		)
+			return false;
+		return this.#add({
+			...this.#context(previous),
+			id: failureId(`metro-missing:${pid}:${lane.id}`),
+			at: this.#now(),
+			kind: 'metro-exit',
+			severity: 'error',
+			title: 'Metro is no longer running',
+			detail:
+				'The stored Metro PID now names another process, so the lane forgot it: its own Metro is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane log and nearby diagnostic reports.',
+			source: 'Lane health check',
+		});
 	}
 
 	observeSimulator(state: SimulatorState): void {

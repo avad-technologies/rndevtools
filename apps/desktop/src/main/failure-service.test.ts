@@ -283,6 +283,55 @@ describe('persistent failure monitoring', () => {
 		]);
 	});
 
+	describe('a lane that forgot a Metro PID now naming another process', () => {
+		// The lane service drops a recorded PID once it names some other
+		// process, marking the lane stopped in the same write.
+		const { metroPid: _forgotten, ...rest } = lane;
+		const forgotten = { ...rest, metro: 'stopped' } as Lane;
+		const missing = (service: FailureService) =>
+			service
+				.getState()
+				.records.filter(
+					(record) => record.title === 'Metro is no longer running'
+				);
+
+		it('reports that Metro as no longer running, with no cause, once', async () => {
+			let service = make();
+			await service.start();
+			service.observeLanes([lane]);
+			await service.stop();
+			// As after a reboot: the desktop starts again and adopts the lane.
+			service = make();
+			await service.start();
+			service.observeLanes([forgotten]);
+			expect(missing(service)).toEqual([
+				expect.objectContaining({
+					kind: 'metro-exit',
+					severity: 'error',
+					laneId: lane.id,
+					project: lane.worktreePath,
+					metroPid: 1234,
+					port: 8100,
+					detail:
+						'The stored Metro PID now names another process, so the lane forgot it: its own Metro is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane log and nearby diagnostic reports.',
+				}),
+			]);
+			service.observeLanes([forgotten]);
+			expect(missing(service)).toHaveLength(1);
+		});
+
+		it('reports nothing for a Metro RN Devtools asked to stop', async () => {
+			const service = make();
+			await service.start();
+			service.observeLanes([lane]);
+			await service.laneIntent(lane, 'Required backend failed to attach');
+			service.observeLanes([{ ...lane, metro: 'stopped' }]);
+			now += 61_000;
+			service.observeLanes([forgotten]);
+			expect(missing(service)).toEqual([]);
+		});
+	});
+
 	it('keeps a bounded redacted Metro log with an unexpected exit', async () => {
 		const service = make();
 		await service.start();
