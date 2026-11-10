@@ -130,6 +130,15 @@ recovery message instead of misreading it, and an older CLI never sends it.
   the call requests cancellation of the job. The read-only `simulators` list
   is unchanged. The Go schema and the desktop's agent CLI schema accept and
   reject the same requests (`command_test.go`, `agent-cli-protocol.test.ts`).
+- `lane.restart`: a boolean, accepted only with `operation: "up"` or
+  `"launch"`; `true` is refused on an `up` with `launch: false`. It asks the
+  desktop to terminate the lane's app on the lane's Simulator before the dev
+  client or the `url` opens, by the bundle identifier the worktree's app.json
+  declared when the lane started (a lane without one refuses it), and a
+  terminate that fails fails the launch. Without it only a lane's first
+  dev-client launch terminates the app, best effort. The Go schema and the
+  desktop's agent CLI schema accept and reject the same requests
+  (`command_test.go`, `agent-cli-protocol.test.ts`).
 
 The PreToolUse hook also reads `steering.json` v1, which the desktop writes
 into the agent socket directory; it is a local file contract between the
