@@ -384,12 +384,14 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 		t.Fatalf("lane restart parameter: %v", restart)
 	}
 	usage, _ := restart["description"].(string)
-	for _, phrase := range []string{"(up, launch)", "first launch", "another lane or a person", "debug target", "without restart keeps the app's state", "ios.bundleIdentifier"} {
+	for _, phrase := range []string{"(up, launch)", "a terminate that fails fails the launch", "first dev-client launch", "warnings", "another lane or a person", "debug target", "without restart keeps the app's state", "ios.bundleIdentifier"} {
 		if !strings.Contains(usage, phrase) {
 			t.Fatalf("restart description lacks %q: %s", phrase, usage)
 		}
 	}
-	for _, phrase := range []string{"pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)"} {
+	// A lane's first dev-client launch restarts the app by itself, as far as
+	// app.json names the app and the Simulator lets it.
+	for _, phrase := range []string{"first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's warnings say when it could not)", "pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)"} {
 		if !strings.Contains(lane.Description, phrase) {
 			t.Fatalf("lane description lacks %q", phrase)
 		}
@@ -399,9 +401,16 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 	if udid, _ := properties["udid"].(map[string]any)["description"].(string); !strings.Contains(udid, "Omit it to let RN Devtools pick a free iPhone") {
 		t.Fatalf("udid description: %s", udid)
 	}
-	for _, phrase := range []string{"leave udid out and the desktop picks a free device", "pass udid when the user named a device or is using one", "Pass restart to lane (operation up or launch)", "started by another lane or by hand", "launch, terminate, or io directly"} {
+	for _, phrase := range []string{"leave udid out and the desktop picks a free device", "pass udid when the user named a device or is using one", "Pass restart to lane (operation up or launch)", "started by another lane or by hand", "restarts its app on its first dev-client launch by itself", "launch, terminate, or io directly"} {
 		if !strings.Contains(instructions, phrase) {
 			t.Fatalf("instructions lack %q: %s", phrase, instructions)
+		}
+	}
+	for _, text := range []string{lane.Description, usage, instructions} {
+		for _, stale := range []string{"new lane's first launch", "new lane does that", "new lane restarts"} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%q is stale in %s", stale, text)
+			}
 		}
 	}
 	if strings.Contains(instructions, "always pass") {

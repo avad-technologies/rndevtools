@@ -531,7 +531,7 @@ const instructions = `RN Devtools controls the iOS Simulators on this Mac and, w
 	`still be one a person is using, so pass udid when the user named a device or is using one. Pass ` +
 	`restart to lane (operation up or launch) when the app on the lane's Simulator was started by another lane or by ` +
 	`hand: a dev client only re-pointed at a new Metro stays registered as a debug target on the Metro it ` +
-	`came from (a new lane restarts its app on its first launch by itself). To recover a Simulator this exact session ` +
+	`came from (a lane restarts its app on its first dev-client launch by itself). To recover a Simulator this exact session ` +
 	`already holds, use simulator with operation "shutdown" or "boot" and its UDID. Follow a pending job before ` +
 	`starting the next operation. For a worktree with ` +
 	`supabase/config.toml, get its own database with supabase (operation "up") or lane (operation up), which ` +
