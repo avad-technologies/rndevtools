@@ -164,7 +164,7 @@ var commandFields = map[protocol.Command][]fieldSpec{
 	protocol.CommandNative: {
 		{flagName: "operation", path: []string{"operation"}, kind: fieldString, usage: "plan (fingerprint + cache + installed state, builds nothing) or install (put a cached binary on the Simulator)."},
 		{flagName: "worktree", path: []string{"worktreePath"}, kind: fieldString, usage: "Absolute path of the Expo app directory to fingerprint.", cwdRelative: true},
-		{flagName: "udid", path: []string{"udid"}, kind: fieldString, usage: "Simulator UDID to check or install on (required for install)."},
+		{flagName: "udid", path: []string{"udid"}, kind: fieldString, usage: "Simulator UDID to check or install on (required for install). plan leaves installed out when this Simulator's apps cannot be listed: it is not booted, or the listing failed."},
 		{flagName: "configuration", path: []string{"configuration"}, kind: fieldString, usage: "Debug (default) or Release."},
 	},
 }

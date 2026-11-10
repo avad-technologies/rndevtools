@@ -38,6 +38,16 @@ func TestDescribeMirrorsTheFlagTable(t *testing.T) {
 	}
 }
 
+func TestNativeUsageSaysWhenAPlanLeavesInstalledOut(t *testing.T) {
+	// A plan reports installed only from a listing of the Simulator's apps
+	// that completed: one that is not booted, or whose listing failed, has
+	// no installed field, and the recommendation says why.
+	flat := strings.Join(strings.Fields(Usage(protocol.CommandNative)), " ")
+	if !strings.Contains(flat, "plan leaves installed out when this Simulator's apps cannot be listed") {
+		t.Fatalf("native usage:\n%s", Usage(protocol.CommandNative))
+	}
+}
+
 func TestBuildPlacesTypedArgumentsLikeFlags(t *testing.T) {
 	fromFlags, err := Parse(protocol.CommandInput, []string{
 		"--udid", "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", "--kind", "swipe",

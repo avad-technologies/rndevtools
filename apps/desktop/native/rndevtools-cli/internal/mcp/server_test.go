@@ -801,6 +801,28 @@ func TestClaimIsDescribedAsTheHoldTheDesktopEnforces(t *testing.T) {
 	t.Fatal("no claim tool is listed")
 }
 
+func TestDoctorAndNativeDescribeWhatTheirResultsMayLeaveOut(t *testing.T) {
+	// doctor carries the read-only agent setup check as agentSetup, or
+	// {status: "not-checked", message} when that check could not run; a
+	// native plan leaves installed out when it cannot list the Simulator's
+	// apps.
+	wants := map[string][]string{
+		"doctor": {"agentSetup", `{status: "not-checked", message}`, "Claude Code and Codex", "Agent setup checks"},
+		"native": {"installed is left out when the Simulator's apps cannot be listed"},
+	}
+	for _, tool := range Tools() {
+		for _, phrase := range wants[tool.Name] {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Errorf("%s description lacks %q: %s", tool.Name, phrase, tool.Description)
+			}
+		}
+		delete(wants, tool.Name)
+	}
+	if len(wants) > 0 {
+		t.Fatalf("tools not listed: %v", wants)
+	}
+}
+
 func TestNativeToolGivesTheBuildWithoutAPort(t *testing.T) {
 	// Expo CLI refuses --port with --no-bundler, so the build native plan
 	// gives names no port, and a lane launch with restart then reopens the
