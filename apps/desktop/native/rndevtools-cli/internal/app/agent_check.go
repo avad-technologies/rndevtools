@@ -76,9 +76,10 @@ func runAgentCheck(config Config) int {
 	default:
 		return usage("Unknown agent-check operation; use scan, plan, apply, undo, or probe.")
 	}
-	for flag, path := range map[string]string{"project": *project, "config-home": *home, "executable": *executable} {
-		if path != "" && !filepath.IsAbs(path) {
-			return usage("--" + flag + " must be an absolute path.")
+	// In flag order, so that with several relative paths the same one is named.
+	for _, path := range []struct{ name, value string }{{"project", *project}, {"config-home", *home}, {"executable", *executable}} {
+		if path.value != "" && !filepath.IsAbs(path.value) {
+			return usage("--" + path.name + " must be an absolute path.")
 		}
 	}
 	options := setup.HealthOptions{Home: *home, Project: *project, Executable: *executable}

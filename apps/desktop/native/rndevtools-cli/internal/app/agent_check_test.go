@@ -78,6 +78,25 @@ func TestAgentCheckRejectsBadArgumentsAsUsageErrors(t *testing.T) {
 	}
 }
 
+func TestAgentCheckNamesTheFirstRelativePathInFlagOrder(t *testing.T) {
+	// With several relative paths the error names the same flag every time:
+	// --project, then --config-home, then --executable.
+	for _, row := range []struct {
+		arguments []string
+		want      string
+	}{
+		{[]string{"--project", "example-app", "--config-home", "home", "--executable", "rndevtools"}, "--project must be an absolute path."},
+		{[]string{"--executable", "rndevtools", "--config-home", "home"}, "--config-home must be an absolute path."},
+	} {
+		for range 100 {
+			code, _, failure := runAgentCheckCLI(t, row.arguments...)
+			if code != ExitUsage || failure["message"] != row.want {
+				t.Fatalf("%v: exit %d, error %v; want %q", row.arguments, code, failure, row.want)
+			}
+		}
+	}
+}
+
 func TestAgentCheckScansPlansAppliesAndUndoesThroughTheCLI(t *testing.T) {
 	home, executable, config := agentCheckHome(t)
 	original, _ := os.ReadFile(config)
