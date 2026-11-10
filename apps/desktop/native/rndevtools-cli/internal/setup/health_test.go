@@ -741,6 +741,67 @@ func TestAgentHealthPlanNamesTheFileItWritesThroughALink(t *testing.T) {
 	}
 }
 
+func TestAgentHealthPlanNamesNoLinkAboveTheConfigurationHome(t *testing.T) {
+	// The home itself can be reached through links: macOS keeps temporary
+	// directories under /var, a link to /private/var, and a home can be a
+	// link to another volume. A plain file in it is written where it is, so
+	// the preview names no second file; a link inside the home still names
+	// the file it resolves to.
+	base := t.TempDir()
+	real := filepath.Join(base, "volume", "example")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "home")
+	if err := os.Symlink(real, home); err != nil {
+		t.Fatal(err)
+	}
+	options := HealthOptions{Home: home, Executable: filepath.Join(home, "RN Devtools.app", "rndevtools")}
+	plan := func(client string) HealthPlan {
+		t.Helper()
+		plan, err := PlanAgentFix(options, healthFinding(t, options, client, "plugin-controller").ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	settings := filepath.Join(home, ".claude", "settings.json")
+	original := `{"enabledPlugins":{"simview@tools":true}}`
+	healthPut(t, settings, original)
+	got := plan("claude")
+	if got.Source != "~/.claude/settings.json" || got.Target != "" {
+		t.Fatalf("a plain file in a home reached through a link needs no second name: %+v", got)
+	}
+	if _, err := ApplyAgentFix(options, got.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UndoAgentFix(options, got.ID); err != nil || string(mustRead(t, settings)) != original {
+		t.Fatalf("undo through the home's link: %v", err)
+	}
+	target := filepath.Join(home, "dotfiles", "codex.toml")
+	healthPut(t, target, "[plugins.simview]\nenabled=true\n")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(home, ".codex", "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan("codex"); got.Source != "~/.codex/config.toml" || got.Target != "~/dotfiles/codex.toml" {
+		t.Fatalf("a link inside the home must name the file it writes: %+v", got)
+	}
+	// So does a link to a directory inside the home.
+	if err := os.RemoveAll(filepath.Join(home, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	healthPut(t, filepath.Join(home, "dotfiles", "codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "codex"), filepath.Join(home, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan("codex"); got.Target != "~/dotfiles/codex/config.toml" {
+		t.Fatalf("a directory link inside the home must name the file it writes: %+v", got)
+	}
+}
+
 func TestAgentHealthOffersNoProjectRepairThatWritesOutsideTheProject(t *testing.T) {
 	// A repository can commit .claude/settings.local.json as a link to the
 	// user's own settings. A "Selected project" repair through it would edit

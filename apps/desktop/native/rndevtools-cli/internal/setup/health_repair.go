@@ -636,17 +636,41 @@ func PlanAgentFix(options HealthOptions, findingID string) (HealthPlan, error) {
 			return HealthPlan{}, err
 		}
 		j.Fingerprint = report.Fingerprint
-		target := ""
-		if j.Target != finding.file {
-			target = healthLabel(options.Home, j.Target)
-		}
-		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Target: target, Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(healthPlanLifetime).UnixMilli()}
+		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Target: healthLinkTarget(options, finding.file, j.Target), Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(healthPlanLifetime).UnixMilli()}
 		if err = healthSave(options, id, ".json", j); err != nil {
 			return HealthPlan{}, err
 		}
 		return j.Plan, nil
 	}
 	return HealthPlan{}, errors.New("This finding changed or has no automatic fix. Recheck agent setup.")
+}
+
+// healthLinkTarget names target, the file a repair of file writes, when a
+// link makes that another file: file itself is a link, or a directory
+// between the configuration home (or the selected project) and file is. A
+// link above them, such as macOS's /var for /private/var or a home that is a
+// link to another volume, leaves file where it is, and "" names no second
+// file. Both sides of the comparison are fully resolved.
+func healthLinkTarget(options HealthOptions, file, target string) string {
+	written := file
+	for _, base := range []string{options.Project, options.Home} {
+		if base == "" || !healthInside(base, file) {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(base); err == nil {
+			rel, _ := filepath.Rel(base, file)
+			written = filepath.Join(resolved, rel)
+		}
+		break
+	}
+	if target == written {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(options.Home); err == nil && !healthInside(options.Home, target) && healthInside(resolved, target) && target != resolved {
+		rel, _ := filepath.Rel(resolved, target)
+		return "~/" + rel
+	}
+	return healthLabel(options.Home, target)
 }
 
 func healthWithLock(options HealthOptions, fn func() error) error {
