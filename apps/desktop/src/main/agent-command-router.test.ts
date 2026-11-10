@@ -4323,6 +4323,24 @@ describe('agent command router', () => {
 			);
 		});
 
+		it('retries a lane up without launch that failed on its resumed lane as itself', async () => {
+			// A lane up resuming a stored lane names it when its Simulator boot,
+			// slim, backend or Metro fails, before any launch.
+			const resumed = await failure(
+				{ completed: false, error: 'CoreSimulator refused to boot.', lane },
+				{ ...upCommand, launch: false }
+			);
+			expect(resumed).toMatchObject({
+				code: 'lane_failed',
+				retryable: true,
+				message: `Lane ${lane.id} did not start: CoreSimulator refused to boot.`,
+			});
+			// The retry keeps launch=false: the caller did not ask for the app.
+			expect(resumed.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Once the cause is fixed, run \`${upAgain} --launch=false\` to start it again; it starts Metro again first if Metro exited. ${log}`
+			);
+		});
+
 		it('keeps a failure that names no lane as it was', async () => {
 			const refused = await failure(
 				{ completed: false, error: 'CoreSimulator refused to boot.' },

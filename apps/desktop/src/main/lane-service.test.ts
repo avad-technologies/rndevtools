@@ -2181,6 +2181,64 @@ describe('LaneService', () => {
 			held.release();
 		});
 
+		describe('a lane up that resumes a stored lane', () => {
+			let laneId: string;
+
+			beforeEach(async () => {
+				laneId = (await startLane()).lane?.id as string;
+				// The lane's Simulator was shut down since, so a lane up boots it.
+				simulator.state = simulatorState([
+					{ udid: UDID, state: 'shutdown' },
+					{ udid: OTHER_UDID, state: 'booted' },
+				]);
+			});
+
+			function resume(signal?: AbortSignal) {
+				return service.runOperation(
+					{
+						actionId: 'op-resume',
+						kind: 'lane.start',
+						worktreePath: WORKTREE,
+						simulatorUdid: UDID,
+						environment: 'development',
+						launch: true,
+					},
+					signal
+				);
+			}
+
+			it('names the lane when it is cancelled while the Simulator boots', async () => {
+				const booting = deferred<void>();
+				simulator.bootGate = new Promise<void>(() => undefined);
+				simulator.onBootStarted = () => booting.resolve();
+				const controller = new AbortController();
+				const resuming = resume(controller.signal);
+				await booting.promise;
+				controller.abort();
+				const receipt = await resuming;
+				expect(receipt).toMatchObject({
+					completed: false,
+					cancelled: true,
+					error: 'Lane operation cancelled.',
+					lane: { id: laneId },
+				});
+				expect(service.getState().lanes.map((lane) => lane.id)).toEqual([
+					laneId,
+				]);
+			});
+
+			it('names the lane when its Simulator fails to boot', async () => {
+				simulator.failNext = 'CoreSimulator refused to boot.';
+				const receipt = await resume();
+				expect(receipt).toMatchObject({
+					completed: false,
+					error: 'CoreSimulator refused to boot.',
+					lane: { id: laneId },
+				});
+				expect(receipt).not.toHaveProperty('cancelled');
+			});
+		});
+
 		it('keeps the Metro that replaced the checked one while the dev client opened', async () => {
 			const started = await startLane();
 			const laneId = started.lane?.id as string;

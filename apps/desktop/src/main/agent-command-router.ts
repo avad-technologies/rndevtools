@@ -1187,12 +1187,24 @@ function laneForTarget(
 	return lane;
 }
 
-/** How a lane up or launch asked for the launch its receipt reports on. */
+/**
+ * How a lane up or launch asked for the launch its receipt reports on. A
+ * lane up with `launch` false asked for none: it failed while it resumed
+ * its stored lane, before any launch.
+ */
 type LaneLaunchAsk = {
 	operation: 'up' | 'launch';
+	launch?: boolean | undefined;
 	restart?: boolean | undefined;
 	url?: string | undefined;
 };
+
+/** What a lane up or launch that failed on a stored lane did not do. */
+function laneVerb(asked: LaneLaunchAsk): 'launch' | 'start' {
+	return asked.operation === 'up' && asked.launch === false
+		? 'start'
+		: 'launch';
+}
 
 /** `value` as one shell word: as it is when nothing in it needs quoting. */
 function shellWord(value: string): string {
@@ -1222,12 +1234,14 @@ function laneRetryRecovery(
 		lane.environment === 'development'
 			? ''
 			: ` --environment ${lane.environment}`;
-	const up = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}${restart}`;
+	// A lane up that asked for no launch is retried without one.
+	const opens = laneVerb(asked) === 'launch';
+	const up = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}${opens ? restart : ' --launch=false'}`;
 	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}`;
 	const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
 	const run = cancelled ? 'Run' : 'Once the cause is fixed, run';
 	if (asked.operation === 'up') {
-		return `The lane keeps its Simulator and port ${lane.port}. ${run} \`${up}\` to launch it again; it starts Metro again first if Metro exited. ${log}`;
+		return `The lane keeps its Simulator and port ${lane.port}. ${run} \`${up}\` to ${opens ? 'launch' : 'start'} it again; it starts Metro again first if Metro exited. ${log}`;
 	}
 	if (lane.metro === 'stopped' || backendFailed) {
 		// lane up opens the dev client (restarting the app when asked), so
@@ -1262,7 +1276,7 @@ function laneReceiptResult(
 		}
 		throw new AgentCliError({
 			code,
-			message: `Lane ${lane.id} did not launch: ${error}`,
+			message: `Lane ${lane.id} did not ${laneVerb(asked)}: ${error}`,
 			retryable: true,
 			recovery: laneRetryRecovery(lane, asked, {
 				cancelled: receipt.cancelled === true,
@@ -1640,7 +1654,7 @@ function laneUpResult(receipt: LaneOperationReceipt, asked: LaneLaunchAsk) {
 		throw new AgentCliError({
 			code: 'lane_failed',
 			message: receipt.lane
-				? `Lane ${receipt.lane.id} did not launch: ${failure}`
+				? `Lane ${receipt.lane.id} did not ${laneVerb(asked)}: ${failure}`
 				: failure,
 			retryable: true,
 			recovery:
@@ -2564,6 +2578,7 @@ function createRoutes({
 						}
 						return laneUpResult(receipt, {
 							operation: 'up',
+							launch: command.launch ?? true,
 							restart: command.restart,
 						});
 					}

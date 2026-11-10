@@ -232,9 +232,10 @@ class LaneBackendError extends Error {
 
 /**
  * A launch, of the dev client or a deep link, that failed on a stored lane,
- * with the failure's own message. The `lane.start`, `lane.provide-device`, or
- * `lane.launch` receipt then names the lane, so the caller can open that lane
- * again rather than start another.
+ * or a lane up that failed or was cancelled while resuming a stored lane,
+ * with the failure's own message. The `lane.start`, `lane.provide-device`,
+ * or `lane.launch` receipt then names the lane, so the caller can open that
+ * lane again rather than start another.
  */
 class LaneLaunchError extends Error {
 	readonly laneId: string;
@@ -945,9 +946,14 @@ export class LaneService {
 					);
 			}
 		} catch (error) {
-			// A launch that failed on a stored lane names the lane as it is now.
+			// A launch, or a lane up, that failed on a stored lane names the lane
+			// as it is now. One that is stopping is about to go, and a retry on it
+			// cannot work.
 			const launch = error instanceof LaneLaunchError ? error : undefined;
-			const lane = launch ? this.#store.get(launch.laneId) : undefined;
+			const lane =
+				launch && !this.#stoppingLanes.has(launch.laneId)
+					? this.#store.get(launch.laneId)
+					: undefined;
 			const cause = launch ? launch.cause : error;
 			return laneOperationReceiptSchema.parse({
 				...base,
@@ -1716,7 +1722,7 @@ export class LaneService {
 	async #resumeLane(
 		existing: Lane,
 		input: Extract<LaneOperation, { kind: 'lane.start' }>,
-		{ environment, branch }: { environment: LaneEnvironment; branch: string },
+		worktree: { environment: LaneEnvironment; branch: string },
 		reservation: LaneReservation,
 		signal: AbortSignal
 	): Promise<Lane> {
@@ -1727,6 +1733,33 @@ export class LaneService {
 		if (restart && !existing.bundleIdentifier) {
 			throw restartWithoutBundleIdentifier(existing.id);
 		}
+		// Past the lane lookup and the restart check the lane exists, so
+		// whatever stops this lane up names it: a boot, a slim, a backend or a
+		// Metro that failed or was cancelled, as much as its launch.
+		try {
+			return await this.#resumeLaneNow(
+				existing,
+				input,
+				worktree,
+				reservation,
+				restart,
+				signal
+			);
+		} catch (error) {
+			throw error instanceof LaneLaunchError
+				? error
+				: new LaneLaunchError(existing.id, error);
+		}
+	}
+
+	async #resumeLaneNow(
+		existing: Lane,
+		input: Extract<LaneOperation, { kind: 'lane.start' }>,
+		{ environment, branch }: { environment: LaneEnvironment; branch: string },
+		reservation: LaneReservation,
+		restart: boolean,
+		signal: AbortSignal
+	): Promise<Lane> {
 		reservation.simulatorUdid = existing.simulatorUdid;
 		reservation.worktreePath = existing.worktreePath;
 		let lane = existing;

@@ -399,7 +399,11 @@ export const laneOperationReceiptSchema = z.strictObject({
 	 * `lane.provide-device`, or `lane.launch` whose launch (of the dev client
 	 * or a deep link) failed on a stored lane (`completed: false`) names it
 	 * too, so the caller can open that lane again; its `metro` reads
-	 * `stopped` when Metro exited, which only a lane start brings back.
+	 * `stopped` when Metro exited, which only a lane start brings back. So
+	 * does a `lane.start` that resumed a stored lane and failed or was
+	 * cancelled before its launch: booting the lane's Simulator, slimming,
+	 * ensuring its backend, or starting its Metro again. A lane that is
+	 * stopping is not named.
 	 */
 	lane: laneViewSchema.optional(),
 	/**
