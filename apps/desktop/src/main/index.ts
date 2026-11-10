@@ -78,7 +78,7 @@ import { BuildInsightsService } from './build-insights-service';
 import { BuildInsightsStore } from './build-insights-store';
 import { desktopActionConfirmationCopy } from './desktop-action-confirmation';
 import { DesktopSettingsStore } from './desktop-settings-store';
-import { FailureHandoff } from './failure-handoff';
+import { FailureHandoff, handoffOpens } from './failure-handoff';
 import { createFailureIpcHandlers } from './failure-ipc';
 import { FailureService } from './failure-service';
 import { createLaneIpcHandlers } from './lane-ipc';
@@ -1567,9 +1567,10 @@ if (!app.requestSingleInstanceLock()) {
 							.worktrees.map((worktree) => worktree.path) ?? []),
 					]),
 				],
-				// The handoff builds the whole message box, Cancel default included.
+				// The handoff builds the whole message box, Cancel default included,
+				// and says which answer opens the session.
 				confirm: async (options) =>
-					(await dialog.showMessageBox(options)).response === 1,
+					handoffOpens((await dialog.showMessageBox(options)).response),
 				openTerminal: async (script) => {
 					const error = await shell.openPath(script);
 					if (error)

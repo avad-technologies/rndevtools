@@ -144,6 +144,19 @@ function handoffEvidence(record: FailureRecord): string[] {
 	];
 }
 
+/** The confirmation's answers: the index of the button pressed. */
+const CANCEL_RESPONSE = 0;
+const OPEN_RESPONSE = 1;
+
+/**
+ * Whether the confirmation's answer (the message box's `response`, the
+ * index of the button pressed) opens the session. This module owns the
+ * button order, so the desktop reads the answer through this alone.
+ */
+export function handoffOpens(response: number): boolean {
+	return response === OPEN_RESPONSE;
+}
+
 /**
  * The message box that asks before an agent session opens. It names what the
  * prompt sends and to whom. Cancel is the first button and the default, so
@@ -156,8 +169,8 @@ type HandoffConfirmation = {
 	message: string;
 	detail: string;
 	buttons: [cancel: string, open: string];
-	defaultId: 0;
-	cancelId: 0;
+	defaultId: typeof CANCEL_RESPONSE;
+	cancelId: typeof CANCEL_RESPONSE;
 	noLink: true;
 };
 
@@ -181,9 +194,10 @@ function handoffConfirmation(
 				.join('\n')}`,
 			`Opens an interactive terminal using your existing subscription login. ${approvals} Review its results there before marking this failure resolved.`,
 		].join('\n\n'),
+		// At CANCEL_RESPONSE and OPEN_RESPONSE, as handoffOpens reads them.
 		buttons: ['Cancel', `Open ${name}`],
-		defaultId: 0,
-		cancelId: 0,
+		defaultId: CANCEL_RESPONSE,
+		cancelId: CANCEL_RESPONSE,
 		noLink: true,
 	};
 }

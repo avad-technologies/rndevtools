@@ -22,6 +22,7 @@ import {
 	FailureHandoff,
 	failurePrompt,
 	handoffArguments,
+	handoffOpens,
 	subscriptionEnvironment,
 } from './failure-handoff';
 
@@ -188,6 +189,30 @@ describe('local subscription handoff', () => {
 					noLink: true,
 				})
 			);
+		}
+	);
+	it.each(['claude', 'codex'] as const)(
+		'reads the answer that opens %s from the button it shows for that',
+		async (client) => {
+			await fakeClient(client);
+			let dialog:
+				| { buttons: readonly string[]; defaultId: number; cancelId: number }
+				| undefined;
+			await make({
+				confirm: async (options) => {
+					dialog = options;
+					return false;
+				},
+			}).run(record, request(client, 'fix'));
+			if (!dialog) throw new Error('Expected the confirmation to be shown');
+			const open = client === 'claude' ? 'Open Claude Code' : 'Open Codex';
+			// The desktop decodes the message box's answer, the index of the
+			// button pressed, with what the handoff exports, whatever the order.
+			expect(
+				dialog.buttons.map((_label, index) => handoffOpens(index))
+			).toEqual(dialog.buttons.map((label) => label === open));
+			expect(handoffOpens(dialog.defaultId)).toBe(false);
+			expect(handoffOpens(dialog.cancelId)).toBe(false);
 		}
 	);
 	it.each([
