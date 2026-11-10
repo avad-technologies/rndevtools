@@ -2234,11 +2234,17 @@ export class LaneService {
 				);
 			} catch (error) {
 				// A PID that now names some other process proves the lane's own
-				// Metro is gone, which is all a stop wants. A PID whose owner could
-				// not be checked keeps the lane, as does an Expo on the lane's port
-				// serving from elsewhere: it may be the lane's own Metro after its
-				// worktree moved, and dropping the lane would orphan it.
-				if (error instanceof NotLaneMetroError) return;
+				// Metro is gone, which is all a stop wants, and so does one that is
+				// not running: a Metro that exits between its proof and the signal
+				// makes the kill fail with ESRCH. A PID whose owner could not be
+				// checked keeps the lane, as does an Expo on the lane's port serving
+				// from elsewhere: it may be the lane's own Metro after its worktree
+				// moved, and dropping the lane would orphan it.
+				if (
+					error instanceof NotLaneMetroError ||
+					!this.#metro.isProcessRunning(pid)
+				)
+					return;
 				throw error;
 			}
 			if (

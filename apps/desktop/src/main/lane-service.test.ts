@@ -1735,6 +1735,48 @@ describe('LaneService', () => {
 			expect(service.getState().lanes).toEqual([]);
 		});
 
+		it('is gone when it exits between its proof and its SIGKILL, and the lane goes', async () => {
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				// What process.kill throws for a PID that exited after the proof.
+				metro.deadPids.add(target);
+				throw Object.assign(new Error('kill ESRCH'), {
+					code: 'ESRCH',
+					syscall: 'kill',
+				});
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(true);
+			expect(stopped.error).toBeUndefined();
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('keeps the lane when its proof fails at the SIGKILL stage, and says why', async () => {
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				throw new Error(
+					`Could not inspect process ${target} to confirm it is this lane's Metro (lsof timed out); refusing to stop it.`
+				);
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(false);
+			expect(stopped.error).toBe(
+				`Could not inspect process ${pid} to confirm it is this lane's Metro (lsof timed out); refusing to stop it.`
+			);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(true);
+			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([laneId]);
+		});
+
 		it('keeps the lane when it outlives SIGKILL too, so a later stop can finish it', async () => {
 			const original = metro.stop;
 			metro.stop = async (target, _port, _directory, options) => {
