@@ -485,9 +485,10 @@ export class LaneService {
 	/** Maintenance that has already committed to changing a durable lease. */
 	readonly #maintenanceWrites = new Set<Promise<void>>();
 	/**
-	 * Metro spawns, and cleanups of Metros no lane keeps, under way. A Metro
-	 * whose spawn finishes as the lanes stop is cleaned up, and the app must
-	 * not exit before that cleanup has signalled it.
+	 * Metro spawns, cleanups of Metros no lane keeps, and stops of a required
+	 * lane's Metro its backend failed, under way. A Metro whose spawn finishes
+	 * as the lanes stop is cleaned up, and the app must not exit before that
+	 * cleanup, or such a stop, has signalled it, SIGKILL and all.
 	 */
 	readonly #metroWork = new Set<Promise<unknown>>();
 	#worktreeCache: LaneWorktree[] = [];
@@ -3590,9 +3591,12 @@ export class LaneService {
 	}
 
 	/**
-	 * Stops a `required` lane's Metro once its backend failed to attach. The
-	 * lane stays listed with the reason, holding its device, until it is
-	 * stopped or started again.
+	 * Stops a `required` lane's Metro once its backend failed to attach, as a
+	 * lane stop does: SIGTERM, then a proven SIGKILL for one that outlives
+	 * it, until it is gone. From the first signal it serves the lane no more,
+	 * so nothing reads the lane as ready meanwhile, nor after a stop that
+	 * failed. The lane stays listed with the reason, holding its device,
+	 * until it is stopped or started again.
 	 */
 	async #stopMetroWithoutBackend(
 		lane: Lane,
@@ -3603,12 +3607,19 @@ export class LaneService {
 			: '';
 		const pid = lane.metroPid;
 		if (pid === undefined || !this.#metro.isProcessRunning(pid)) return;
+		this.#unverifyMetro(lane.id, pid);
+		let failure: unknown;
 		try {
 			await this.#recordMetroStop(lane, 'Required backend failed to attach');
-			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
+			if (!(await this.#trackMetroWork(this.#stopMetroUntilGone(lane, pid)))) {
+				failure = new Error('It did not exit after SIGTERM and SIGKILL.');
+			}
 		} catch (error) {
+			failure = error;
+		}
+		if (failure !== undefined) {
 			record.note = backendReason(
-				`The lane requires its local backend, but its Metro could not be stopped: ${safeErrorText(error)}${why}`
+				`The lane requires its local backend, but its Metro could not be stopped: ${safeErrorText(failure)}${why}`
 			);
 			return;
 		}

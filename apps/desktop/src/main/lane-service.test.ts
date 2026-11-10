@@ -4336,6 +4336,95 @@ describe('LaneService', () => {
 			});
 		});
 
+		it("kills a required lane's Metro that outlives its SIGTERM once its late attach fails, and the lane stays stopped", async () => {
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const receipt = await up({ backend: 'required' });
+			expect(receipt.completed).toBe(true);
+			const pid = receipt.lane?.metroPid as number;
+			// A Metro whose main thread is stuck lets its SIGTERM go by.
+			const signals: Array<{ pid: number; force: boolean }> = [];
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			late.resolve({
+				summary: {
+					policy: 'required',
+					status: 'failed',
+					reason: 'failed',
+					reasonText: 'The database did not become healthy.',
+					appEnvNames: [],
+					warnings: [],
+				},
+			});
+			await eventually(() => expect(signals).toHaveLength(1));
+			// While it waits for that Metro to exit, it serves the lane no more:
+			// a lane status pass never calls the lane ready.
+			await lanes.runOperation({ actionId: 'op-pass-1', kind: 'lane.refresh' });
+			expect(lanes.getState().lanes[0]?.metro).not.toBe('ready');
+			await advanceClockUntil(() => signals.length === 2);
+			await eventually(() =>
+				expect(lanes.getState().lanes[0]?.metro).toBe('stopped')
+			);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(false);
+			await lanes.runOperation({ actionId: 'op-pass-2', kind: 'lane.refresh' });
+			expect(lanes.getState().lanes[0]).toMatchObject({
+				metro: 'stopped',
+				backend: {
+					status: 'failed',
+					reasonText:
+						'The lane requires its local backend, so its Metro was stopped. The database did not become healthy.',
+				},
+			});
+			expect(kinds()).not.toContain('url.open');
+		});
+
+		it("says a required lane's Metro could not be stopped when it outlives SIGKILL too, and never calls it ready", async () => {
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const receipt = await up({ backend: 'required' });
+			const pid = receipt.lane?.metroPid as number;
+			const signals: boolean[] = [];
+			metro.stop = async (_target, _port, _directory, options) => {
+				signals.push(options?.force === true);
+			};
+			late.resolve({
+				summary: {
+					policy: 'required',
+					status: 'failed',
+					reason: 'failed',
+					reasonText: 'The database did not become healthy.',
+					appEnvNames: [],
+					warnings: [],
+				},
+			});
+			// Both waits run on the injected clock: move it until the stop gives up.
+			await advanceClockUntil(
+				() =>
+					lanes
+						.getState()
+						.lanes[0]?.backend?.reasonText?.includes('could not be stopped') ===
+					true
+			);
+			expect(lanes.getState().lanes[0]?.backend?.reasonText).toBe(
+				'The lane requires its local backend, but its Metro could not be stopped: It did not exit after SIGTERM and SIGKILL. The database did not become healthy.'
+			);
+			expect(signals).toEqual([false, true]);
+			expect(metro.isProcessRunning(pid)).toBe(true);
+			await lanes.runOperation({ actionId: 'op-pass', kind: 'lane.refresh' });
+			expect(lanes.getState().lanes[0]).toMatchObject({
+				metroPid: pid,
+				metro: 'starting',
+			});
+		});
+
 		it('makes no backend call when the policy is off, by default or by choice', async () => {
 			backends.policy = 'off';
 			const byDefault = await up();
