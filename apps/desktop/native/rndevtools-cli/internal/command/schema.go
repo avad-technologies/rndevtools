@@ -218,7 +218,7 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 			return errors.New("operation must be status, set, or clear")
 		}
 		if (value.Operation == "set") != (value.ProfileID != nil) {
-			return errors.New("only network set requires profileId")
+			return errors.New("the set operation requires profileId, and no other operation takes it")
 		}
 		return validateOptionalIdentifier(value.ProfileID, "profileId")
 	case protocol.CommandRecipe:
@@ -274,20 +274,20 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 		switch value.Operation {
 		case "status":
 			if value.UDIDs != nil || value.ProfileID != nil {
-				return errors.New("slimming status does not accept udids or profileId")
+				return errors.New("the status operation does not accept udids or profileId")
 			}
 			return nil
 		case "doctor", "undo", "restore":
 			if len(value.UDIDs) == 0 {
-				return fmt.Errorf("slimming %s requires udids", value.Operation)
+				return fmt.Errorf("the %s operation requires udids", value.Operation)
 			}
 			if value.ProfileID != nil {
-				return fmt.Errorf("slimming %s does not accept profileId", value.Operation)
+				return fmt.Errorf("the %s operation does not accept profileId", value.Operation)
 			}
 			return nil
 		default:
 			if len(value.UDIDs) == 0 || value.ProfileID == nil {
-				return errors.New("slimming preview, verify, and apply require udids and profileId")
+				return errors.New("the preview, verify, and apply operations require udids and profileId")
 			}
 			return validateIdentifier(*value.ProfileID, "profileId")
 		}
@@ -315,7 +315,7 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 		}
 		if value.Backend != nil {
 			if value.Operation != "up" {
-				return errors.New("only lane up accepts backend")
+				return errors.New("only the up operation accepts backend")
 			}
 			if !oneOf(*value.Backend, "auto", "off", "required") {
 				return errors.New("backend must be auto, off, or required")
@@ -445,7 +445,7 @@ func Validate(encoded json.RawMessage, expectedKind protocol.Command) error {
 				return err
 			}
 		} else if value.Operation == "install" {
-			return errors.New("native install requires udid")
+			return errors.New("the install operation requires udid")
 		}
 		if value.Configuration != nil && !oneOf(*value.Configuration, "Debug", "Release") {
 			return errors.New("configuration must be Debug or Release")
@@ -517,27 +517,27 @@ func validateLane(
 	switch operation {
 	case "up":
 		if worktreePath == nil {
-			return errors.New("lane up requires worktreePath")
+			return errors.New("the up operation requires worktreePath")
 		}
 		if laneID != nil || url != nil || maxCharacters != nil {
-			return errors.New("lane up does not accept laneId, url, or maxCharacters")
+			return errors.New("the up operation does not accept laneId, url, or maxCharacters")
 		}
 	case "ls":
 		if worktreePath != nil || udid != nil || environment != nil || preferredPort != nil ||
 			launch != nil || slimProfileID != nil || laneID != nil || url != nil || maxCharacters != nil || agent != nil {
-			return errors.New("lane ls does not accept other fields")
+			return errors.New("the ls operation does not accept other fields")
 		}
 	case "down":
 		if !targetsLane || udid != nil || environment != nil || preferredPort != nil || launch != nil || slimProfileID != nil || url != nil || maxCharacters != nil || agent != nil {
-			return errors.New("lane down takes exactly one of laneId or worktreePath")
+			return errors.New("the down operation takes exactly one of laneId or worktreePath")
 		}
 	case "launch":
 		if !targetsLane || udid != nil || environment != nil || preferredPort != nil || launch != nil || slimProfileID != nil || maxCharacters != nil {
-			return errors.New("lane launch takes exactly one of laneId or worktreePath, plus an optional url")
+			return errors.New("the launch operation takes exactly one of laneId or worktreePath, plus an optional url")
 		}
 	case "log":
 		if !targetsLane || udid != nil || environment != nil || preferredPort != nil || launch != nil || slimProfileID != nil || url != nil || agent != nil {
-			return errors.New("lane log takes exactly one of laneId or worktreePath, plus an optional maxCharacters")
+			return errors.New("the log operation takes exactly one of laneId or worktreePath, plus an optional maxCharacters")
 		}
 	}
 	return nil
@@ -551,10 +551,10 @@ func validateLaneRestart(operation string, restart, launch *bool) error {
 		return nil
 	}
 	if operation != "up" && operation != "launch" {
-		return errors.New("only lane up and launch accept restart")
+		return errors.New("only the up and launch operations accept restart")
 	}
 	if *restart && launch != nil && !*launch {
-		return errors.New("lane up cannot take restart with launch false: restart terminates the app for the launch that follows")
+		return errors.New("the up operation cannot take restart with launch false: restart terminates the app for the launch that follows")
 	}
 	return nil
 }
@@ -877,24 +877,24 @@ func (value supabaseCommand) validate() error {
 	}
 	if operation == "ls" {
 		if value.WorktreePath != nil || value.StackID != nil {
-			return errors.New("supabase ls lists every stack and takes no worktreePath or stackId")
+			return errors.New("the ls operation lists every stack and takes no worktreePath or stackId")
 		}
 	} else if (value.WorktreePath == nil) == (value.StackID == nil) {
-		return fmt.Errorf("supabase %s takes exactly one of worktreePath or stackId", operation)
+		return fmt.Errorf("the %s operation takes exactly one of worktreePath or stackId", operation)
 	}
 	if value.WaitMS != nil {
 		if operation != "up" {
-			return errors.New("only supabase up accepts waitMs")
+			return errors.New("only the up operation accepts waitMs")
 		}
 		if *value.WaitMS < 0 || *value.WaitMS > supabaseMaxWaitMS {
 			return fmt.Errorf("waitMs must be between 0 and %d", supabaseMaxWaitMS)
 		}
 	}
 	if value.Seed != nil && operation != "reset" {
-		return errors.New("only supabase reset accepts seed")
+		return errors.New("only the reset operation accepts seed")
 	}
 	if (value.Services != nil || value.Tail != nil || value.Since != nil) && operation != "log" {
-		return errors.New("only supabase log accepts services, tail, and since")
+		return errors.New("only the log operation accepts services, tail, and since")
 	}
 	if value.Services != nil {
 		if err := validateLogServices(*value.Services); err != nil {
@@ -909,7 +909,7 @@ func (value supabaseCommand) validate() error {
 	}
 	if value.Note != nil {
 		if operation != "destroy" && operation != "reset" {
-			return errors.New("only supabase destroy and reset accept note")
+			return errors.New("only the destroy and reset operations accept note")
 		}
 		if utf16Length(*value.Note) > supabaseMaxNoteLength {
 			return fmt.Errorf("note must be at most %d characters", supabaseMaxNoteLength)

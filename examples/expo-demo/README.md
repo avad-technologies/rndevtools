@@ -121,8 +121,8 @@ pnpm --dir "$app_a" exec supabase db query --local "$qa_query"
 pnpm --dir "$app_b" exec supabase db query --local "$qa_query"
 ```
 
-Each query should return exactly its own marker. Inspect the native plan for
-each assigned simulator.
+Each query should return exactly its own marker. Inspect each assigned
+simulator's native build plan.
 
 ```sh
 rndevtools native --operation plan --worktree "$app_a" --udid "$udid_a"

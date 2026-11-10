@@ -395,9 +395,9 @@ func TestLaneRestartIsForUpAndLaunchOnly(t *testing.T) {
 		}
 	}
 	for _, rejected := range []struct{ encoded, reason string }{
-		{`{"kind":"lane","operation":"ls","restart":true}`, "only lane up and launch accept restart"},
-		{`{"kind":"lane","operation":"down","laneId":"` + laneID + `","restart":true}`, "only lane up and launch accept restart"},
-		{`{"kind":"lane","operation":"log","laneId":"` + laneID + `","restart":false}`, "only lane up and launch accept restart"},
+		{`{"kind":"lane","operation":"ls","restart":true}`, "only the up and launch operations accept restart"},
+		{`{"kind":"lane","operation":"down","laneId":"` + laneID + `","restart":true}`, "only the up and launch operations accept restart"},
+		{`{"kind":"lane","operation":"log","laneId":"` + laneID + `","restart":false}`, "only the up and launch operations accept restart"},
 		{`{"kind":"lane","operation":"up","worktreePath":"/Users/dev/app","restart":true,"launch":false}`, "cannot take restart with launch false"},
 		{`{"kind":"lane","operation":"launch","laneId":"` + laneID + `","restart":null}`, "restart must not be null"},
 		{`{"kind":"lane","operation":"launch","laneId":"` + laneID + `","restart":"yes"}`, "restart"},
@@ -409,7 +409,7 @@ func TestLaneRestartIsForUpAndLaunchOnly(t *testing.T) {
 	}
 	// The flag parser applies the same rule before anything is sent.
 	if _, err := Parse(protocol.CommandLane, []string{"--operation", "ls", "--restart"}, strings.NewReader(""), false); err == nil ||
-		!strings.Contains(err.Error(), "only lane up and launch accept restart") {
+		!strings.Contains(err.Error(), "only the up and launch operations accept restart") {
 		t.Fatalf("lane ls --restart: %v", err)
 	}
 	if !strings.Contains(Usage(protocol.CommandLane), "--restart") {

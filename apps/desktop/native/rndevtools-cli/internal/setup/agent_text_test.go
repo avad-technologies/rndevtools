@@ -1,8 +1,13 @@
 package setup
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -42,6 +47,44 @@ func TestAgentTextsSpellOperationsAsTheCLIParsesThem(t *testing.T) {
 	for name, text := range agentTexts(t) {
 		if match := positionalOperation.FindString(text); match != "" {
 			t.Errorf("%s spells an operation as a positional word, which the CLI rejects: %q", name, match)
+		}
+	}
+}
+
+func TestNoStringOfTheCLISpellsAnOperationAsAWord(t *testing.T) {
+	// Every string of the CLI's sources can reach an agent: an argument
+	// error, a flag's usage, an MCP tool's description, the MCP
+	// instructions, a hook's reason. The desktop's agent-text test reads its
+	// own sources with the same pattern.
+	fileSet := token.NewFileSet()
+	for _, root := range []string{"..", filepath.Join("..", "..", "cmd")} {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			// Comments are left out of the tree unless asked for.
+			file, err := parser.ParseFile(fileSet, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				literal, ok := node.(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					return true
+				}
+				text, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("%s: %v", fileSet.Position(literal.Pos()), err)
+				}
+				if match := positionalOperation.FindString(text); match != "" {
+					t.Errorf("%s spells an operation as a positional word, which the CLI rejects: %q", fileSet.Position(literal.Pos()), match)
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 }

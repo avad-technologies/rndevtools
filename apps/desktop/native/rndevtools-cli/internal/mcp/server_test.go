@@ -326,7 +326,7 @@ func TestSupabaseToolFollowsLaneAndSpeaksTheWireContract(t *testing.T) {
 	if properties["service"].(map[string]any)["type"] != "array" {
 		t.Fatalf("service must be an array: %v", properties["service"])
 	}
-	for _, phrase := range []string{"supabase/config.toml", "--runtime native", "never run supabase start, stop, stack, or local", "lane up", "jobId"} {
+	for _, phrase := range []string{"supabase/config.toml", "--runtime native", "never run supabase start, stop, stack, or local", "lane (operation up)", "jobId"} {
 		if !strings.Contains(supabase.Description, phrase) {
 			t.Fatalf("supabase description lacks %q", phrase)
 		}
@@ -399,7 +399,7 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 	if udid, _ := properties["udid"].(map[string]any)["description"].(string); !strings.Contains(udid, "Omit it to let RN Devtools pick a free iPhone") {
 		t.Fatalf("udid description: %s", udid)
 	}
-	for _, phrase := range []string{"leave udid out and the desktop picks a free device", "pass udid when the user named a device or is using one", "Pass restart to lane up or launch", "started by another lane or by hand", "launch, terminate, or io directly"} {
+	for _, phrase := range []string{"leave udid out and the desktop picks a free device", "pass udid when the user named a device or is using one", "Pass restart to lane (operation up or launch)", "started by another lane or by hand", "launch, terminate, or io directly"} {
 		if !strings.Contains(instructions, phrase) {
 			t.Fatalf("instructions lack %q: %s", phrase, instructions)
 		}
@@ -423,7 +423,7 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 		t.Fatalf("launch command: %s", launch.request.Command)
 	}
 	refused := responses[1]["result"].(map[string]any)
-	if refused["isError"] != true || !strings.Contains(fmt.Sprint(refused["content"]), "only lane up and launch accept restart") {
+	if refused["isError"] != true || !strings.Contains(fmt.Sprint(refused["content"]), "only the up and launch operations accept restart") {
 		t.Fatalf("lane ls with restart must be a tool error that says why: %v", refused)
 	}
 }

@@ -100,10 +100,10 @@ var toolMeta = map[protocol.Command]meta{
 			"the dev client or a deep link (lane-id, url, restart). \"log\" tails Metro (lane-id, max-characters). Optional " +
 			"slim applies a SimSlim profile to the device before Metro starts (when SimSlim is enabled in RN Devtools " +
 			"and the device is free or yours); lane.slim in the result says applied, skipped (with why), or failed. " +
-			"Optional backend (auto, off, required): with auto, the development default, lane up also starts this " +
+			"Optional backend (auto, off, required): with auto, the development default, up also starts this " +
 			"worktree's local Supabase and passes its URL and publishable key to Metro, so never start Supabase by hand " +
 			"for a lane; lane.backend reports ready, starting (the app launches when it is ready; if the result has a " +
-			"jobId, call wait (condition job), and without one call lane up again in a few seconds), skipped, " +
+			"jobId, call wait (condition job), and without one call up again in a few seconds), skipped, " +
 			"shadowed (the app's own .env files override the injected URL), refused, or failed, with the reason.",
 	},
 	protocol.CommandSupabase: {
@@ -116,7 +116,7 @@ var toolMeta = map[protocol.Command]meta{
 			"exec supabase), and next steps; a lane on the worktree gets Metro restarted with the stack's URL and " +
 			"publishable key. A first start downloads services once: if the result has a jobId, call wait " +
 			"(condition job), and without one (the start is queued behind RN Devtools' own automatic start) call " +
-			"up again in a few seconds. lane up already does this for its worktree; call up yourself only for database work " +
+			"up again in a few seconds. lane (operation up) already does this for its worktree; call up yourself only for database work " +
 			"without a lane, after creating your git branch (each branch gets its own database). \"down\" releases " +
 			"your hold (the stack stops once unused, data kept); \"ls\" lists every stack with lanes and holders; " +
 			"\"status\" shows services; \"env\" returns the URLs and the publishable and anon keys (never secret keys " +
@@ -132,7 +132,7 @@ var toolMeta = map[protocol.Command]meta{
 	},
 	protocol.CommandSimulators: {
 		title:       "List Simulators",
-		description: "List the iOS Simulators on this Mac with name, udid, runtime, state (booted or shutdown), lanes, and attached agents. Call this first to choose a udid for lane up, input, or capture; prefer a booted device nobody else has claimed.",
+		description: "List the iOS Simulators on this Mac with name, udid, runtime, state (booted or shutdown), lanes, and attached agents. Call this first to choose a udid for lane (operation up), input, or capture; prefer a booted device nobody else has claimed.",
 		readOnly:    true,
 	},
 	protocol.CommandSimulator: {
@@ -167,7 +167,7 @@ var toolMeta = map[protocol.Command]meta{
 	},
 	protocol.CommandWait: {
 		title:       "Wait for the connected app",
-		description: "Block until a condition holds in the connected app: condition element (element-id appears), screen-change (screen differs from screen-hash), job (job-id finishes), or network-idle (no requests for quiet-ms). timeout-ms caps the wait. Use it after act or lane launch instead of sleeping.",
+		description: "Block until a condition holds in the connected app: condition element (element-id appears), screen-change (screen differs from screen-hash), job (job-id finishes), or network-idle (no requests for quiet-ms). timeout-ms caps the wait. Use it after act or lane (operation launch) instead of sleeping.",
 		readOnly:    true,
 	},
 	protocol.CommandScreen: {
@@ -181,9 +181,9 @@ var toolMeta = map[protocol.Command]meta{
 			"build is cached or must be built, and whether the bundle exists on the Simulator (installed is left out when the Simulator's apps cannot be listed: " +
 			"it is not booted, or the listing failed; the recommendation then says why). A bundle ID alone does not verify its native fingerprint. Follow " +
 			"its recommendation (install: / cached: / build:); it builds nothing and takes about two seconds, or up to 15 s longer when a build " +
-			"is due and the worktree's lane is still starting. Call it when lane up reports the dev " +
+			"is due and the worktree's lane is still starting. Call it when lane (operation up) reports the dev " +
 			"client is missing, and before running expo run:ios yourself. operation \"install\" puts a cached " +
-			"build on the Simulator (udid), refreshing an older copy of the same bundle. Reserve a lane first when asked (lane up with launch=false). " +
+			"build on the Simulator (udid), refreshing an older copy of the same bundle. Reserve a lane first when asked (lane with operation up and launch=false). " +
 			"The build command names no port, because Expo CLI refuses --port with --no-bundler, and the build opens the app against port 8081: " +
 			"after it, call lane with operation launch, the lane-id, and restart, so the app starts with the lane's Metro. worktree is the absolute app directory; configuration Debug (default) " +
 			"or Release. A first native build takes 5-15 minutes; tell the user it is running rather than waiting " +
@@ -197,7 +197,7 @@ var toolMeta = map[protocol.Command]meta{
 	},
 	protocol.CommandClaim: {
 		title:       "Claim a Simulator for this session",
-		description: "Mark a Simulator as held by this agent session. A claim is a hold: claiming a device someone else holds fails with device_held, and while you hold it, other sessions' lane up, launch, and down, input, native install, slimming, recipe runs, and job or recording cancels on it fail with device_held too, except that a session can always stop or cancel a recording it started itself. act and network are not gated: any session can still act in the app on a held device or change its network profile. note explains why; release when finished.",
+		description: "Mark a Simulator as held by this agent session. A claim is a hold: claiming a device someone else holds fails with device_held, and while you hold it, other sessions' lane operations up, launch, and down, input, the native tool's installs, slimming, recipe runs, and job or recording cancels on it fail with device_held too, except that a session can always stop or cancel a recording it started itself. act and network are not gated: any session can still act in the app on a held device or change its network profile. note explains why; release when finished.",
 	},
 	protocol.CommandRelease: {
 		title:       "Release a claimed Simulator",
@@ -232,7 +232,7 @@ var toolMeta = map[protocol.Command]meta{
 			"doctor and verify check a device. apply (udids, profile-id) applies a profile, undo reverts the last managed change, " +
 			"restore puts all managed services back. Mutations work only on devices you hold or that are free (device_held otherwise), " +
 			"only while the user has enabled SimSlim in RN Devtools, and only on runtime/profile combinations SimSlim has verified or " +
-			"the user has approved once; the error says which. Prefer lane up with slim to slim the device a lane is about to use.",
+			"the user has approved once; the error says which. Prefer lane (operation up) with slim to slim the device a lane is about to use.",
 		readOnly: false,
 	},
 	protocol.CommandDoctor: {

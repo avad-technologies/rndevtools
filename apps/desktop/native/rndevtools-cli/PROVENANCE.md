@@ -148,7 +148,7 @@ needs a CLI change, and an older CLI shows them unread:
   4 KiB, each saying what the lane's first launch could not do of what it does
   unasked: terminate a copy of the app already running, or name the app at
   all when the worktree's app.json declares no bundle identifier. The launch
-  went ahead, and the lane log says the same.
+  went ahead, and the lane's log says the same.
 - `restart` on a device request (`deviceRequest` in a `lane` `up` result and
   `deviceRequests` in `lane` `ls`): the parked start asked for a restart,
   kept for when it runs.

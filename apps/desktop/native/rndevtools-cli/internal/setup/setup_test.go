@@ -474,7 +474,7 @@ func TestAgentTextsAgreeOnAStartingBackendWithoutAJobId(t *testing.T) {
 	for _, row := range []struct{ text, name, phrase string }{
 		{skill("rndevtools-lanes"), "the lanes skill", "has none: wait a few seconds, then call `lane --operation up` again"},
 		{skill("rndevtools-supabase"), "the supabase skill", "has no `jobId`: wait a few seconds, then call `up` again"},
-		{tools["lane"], "the lane tool", "without one call lane up again in a few seconds"},
+		{tools["lane"], "the lane tool", "without one call up again in a few seconds"},
 		{tools["supabase"], "the supabase tool", "without one (the start is queued behind RN Devtools' own automatic start) call up again in a few seconds"},
 	} {
 		if !strings.Contains(row.text, row.phrase) {

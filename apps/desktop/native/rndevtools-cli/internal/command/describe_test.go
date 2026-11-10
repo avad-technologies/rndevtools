@@ -145,7 +145,7 @@ func TestBuildTakesLaneRestartAsABoolean(t *testing.T) {
 	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "launch", "lane-id": laneID, "restart": "true"}, nil); err == nil || !strings.Contains(err.Error(), "boolean") {
 		t.Fatalf("a string restart was accepted: %v", err)
 	}
-	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "log", "lane-id": laneID, "restart": true}, nil); err == nil || !strings.Contains(err.Error(), "only lane up and launch accept restart") {
+	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "log", "lane-id": laneID, "restart": true}, nil); err == nil || !strings.Contains(err.Error(), "only the up and launch operations accept restart") {
 		t.Fatalf("restart on log was accepted: %v", err)
 	}
 }

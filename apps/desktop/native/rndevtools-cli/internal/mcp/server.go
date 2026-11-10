@@ -527,21 +527,21 @@ const instructions = `RN Devtools controls the iOS Simulators on this Mac and, w
 	`it started itself; act and network are not gated, so a hold does not keep other sessions out ` +
 	`of the app itself. Start with lane ` +
 	`(operation "up") for a worktree; leave udid out and the desktop picks a free device, or parks a ` +
-	`deviceRequest for the user when none is free (then poll lane ls). A booted Simulator nobody holds can ` +
+	`deviceRequest for the user when none is free (then poll lane with operation ls). A booted Simulator nobody holds can ` +
 	`still be one a person is using, so pass udid when the user named a device or is using one. Pass ` +
-	`restart to lane up or launch when the app on the lane's Simulator was started by another lane or by ` +
+	`restart to lane (operation up or launch) when the app on the lane's Simulator was started by another lane or by ` +
 	`hand: a dev client only re-pointed at a new Metro stays registered as a debug target on the Metro it ` +
 	`came from (a new lane restarts its app on its first launch by itself). To recover a Simulator this exact session ` +
 	`already holds, use simulator with operation "shutdown" or "boot" and its UDID. Follow a pending job before ` +
 	`starting the next operation. For a worktree with ` +
-	`supabase/config.toml, get its own database with supabase (operation "up") or lane up, which ` +
+	`supabase/config.toml, get its own database with supabase (operation "up") or lane (operation up), which ` +
 	`connects the app automatically; if RN Devtools says it is not managing that worktree, start ` +
 	`it yourself from the worktree with supabase start --runtime native (never without --runtime ` +
 	`native). Use the worktree's own supabase CLI with --local for migrations, resets, and types; ` +
 	`never start or stop a stack RN Devtools manages by hand, and never run supabase stop --all, ` +
 	`stack destroy, or kill postgres, which hit other agents' stacks. When your task is done, call ` +
 	`release with all=true so your devices go back to the pool and your stacks stop (data kept). ` +
-	`Errors carry "recovery" text and native plan carries a "recommendation"; follow them before ` +
+	`Errors carry "recovery" text and native (operation plan) carries a "recommendation"; follow them before ` +
 	`improvising.`
 
 // Tool is one MCP tool entry.
