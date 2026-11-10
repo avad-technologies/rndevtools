@@ -22,7 +22,11 @@ description: >
 > arguments; prefer them, and read this skill for the workflow. The CLI remains
 > the fallback when no MCP server is registered. On the command line an
 > operation is always the `--operation` flag (`rndevtools lane --operation up`);
-> the CLI rejects an operation written as a positional word.
+> the CLI rejects an operation written as a positional word. A command given
+> any field flag never reads stdin, so an input that stays open cannot hang it;
+> one given none, such as a bare `rndevtools simulators`, reads a JSON command
+> from stdin unless that is a terminal, so add `--stdin=false` where stdin may
+> stay open.
 
 A **lane** is one git worktree running on one Simulator, served by one Metro on
 a port the desktop leased for it. Lanes are how several branches, and the agents
@@ -129,10 +133,10 @@ rndevtools wait --condition job --job-id <jobId>  # if boot is pending
 rndevtools lane --operation launch --lane-id <laneId>
 ```
 
-`simulators` lists devices. Use `simulator` with both flags for lifecycle
-operations in automation that leaves stdin open. Both lifecycle operations
-require an exact owning session identity. If MCP reports a shared identity,
-run the CLI from the native agent session that owns the lane or claim.
+`simulators` lists devices; `simulator` takes both flags. Both lifecycle
+operations require an exact owning session identity. If MCP reports a shared
+identity, run the CLI from the native agent session that owns the lane or
+claim.
 
 ## Start a worktree on a Simulator
 

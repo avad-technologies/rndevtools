@@ -152,10 +152,10 @@ func TestValidateAllowsOnlyAppScopedNetworkProfileActions(t *testing.T) {
 	}
 }
 
-func TestParseMergesDistinctFlagsAndStdin(t *testing.T) {
+func TestParseMergesDistinctFlagsAndStdinWithTheStdinFlag(t *testing.T) {
 	parsed, err := Parse(
 		protocol.CommandSlimming,
-		[]string{"--operation", "preview", "--udids", testUDID, "--request-timeout-ms", "45000"},
+		[]string{"--operation", "preview", "--udids", testUDID, "--request-timeout-ms", "45000", "--stdin"},
 		strings.NewReader(`{"profileId":"rndevtools-development"}`),
 		true,
 	)
@@ -192,11 +192,11 @@ func TestParseDerivesWaitSocketDeadlineBeyondServerGrace(t *testing.T) {
 func TestParseRejectsAmbiguityAndOversizedInput(t *testing.T) {
 	if _, err := Parse(
 		protocol.CommandJobs,
-		[]string{"--operation", "list"},
+		[]string{"--operation", "list", "--stdin"},
 		strings.NewReader(`{"operation":"get","jobId":"job-1"}`),
 		true,
-	); err == nil {
-		t.Fatal("expected duplicate field rejection")
+	); err == nil || !strings.Contains(err.Error(), "already defined by stdin") {
+		t.Fatalf("expected duplicate field rejection, got %v", err)
 	}
 	if _, err := Parse(
 		protocol.CommandSimulators,
@@ -231,28 +231,72 @@ func TestCommandsWithoutFieldsNeverReadStdin(t *testing.T) {
 			t.Fatalf("%s usage must say it ignores stdin:\n%s", kind, Usage(kind))
 		}
 	}
-	// A command with fields still merges stdin with its flags.
-	if !strings.Contains(Usage(protocol.CommandSimulators), "JSON command object on stdin") {
-		t.Fatal("commands with fields still document stdin")
-	}
-}
-
-func TestSimulatorLifecycleWithBothFlagsNeverReadsStdin(t *testing.T) {
-	for _, operation := range []string{"boot", "shutdown"} {
-		args := []string{"--operation", operation, "--udid", testUDID}
-		parsed, err := Parse(protocol.CommandSimulator, args, unreadable{t}, true)
-		want := `{"kind":"simulator","operation":"` + operation + `","udid":"` + testUDID + `"}`
-		if err != nil || string(parsed.Command) != want {
-			t.Fatalf("%s: parsed %s, error %v; want %s", operation, parsed.Command, err, want)
+	// A command with fields still documents stdin, and when it reads it.
+	for _, phrase := range []string{"JSON command object on stdin", "stdin is never read", "--stdin=false"} {
+		if !strings.Contains(strings.Join(strings.Fields(Usage(protocol.CommandSimulators)), " "), phrase) {
+			t.Fatalf("simulators usage lacks %q:\n%s", phrase, Usage(protocol.CommandSimulators))
 		}
 	}
 }
 
-func TestSimulatorLifecycleReadsMissingUDIDFromClosedJSONStdin(t *testing.T) {
-	parsed, err := Parse(protocol.CommandSimulator, []string{"--operation", "boot"}, strings.NewReader(`{"udid":"`+testUDID+`"}`), true)
-	want := `{"kind":"simulator","operation":"boot","udid":"` + testUDID + `"}`
-	if err != nil || string(parsed.Command) != want {
-		t.Fatalf("parsed %s, error %v; want %s", parsed.Command, err, want)
+func TestFieldFlagsAreTheWholeCommandSoStdinIsNeverRead(t *testing.T) {
+	// Some agent harnesses run a command with a pipe or a socket for stdin
+	// that never closes, and lane up waited on one for good. A field flag
+	// makes the flags the whole command, so no command given one reads
+	// stdin, whether the flags make a valid command or not.
+	sample := map[fieldKind]string{
+		fieldString: "x", fieldInteger: "1", fieldNumber: "0.5", fieldBoolean: "true",
+		fieldCSV: "x", fieldObject: "{}", fieldList: "x",
+	}
+	for kind, specs := range commandFields {
+		for _, spec := range specs {
+			_, _ = Parse(kind, []string{"--" + spec.flagName + "=" + sample[spec.kind]}, unreadable{t}, true)
+		}
+	}
+	for _, testCase := range []struct {
+		kind      protocol.Command
+		arguments []string
+		want      string
+	}{
+		{protocol.CommandLane, []string{"--operation", "up", "--worktree", "/Users/example/app", "--udid", testUDID},
+			`{"kind":"lane","operation":"up","udid":"` + testUDID + `","worktreePath":"/Users/example/app"}`},
+		{protocol.CommandSimulator, []string{"--operation", "boot", "--udid", testUDID},
+			`{"kind":"simulator","operation":"boot","udid":"` + testUDID + `"}`},
+		{protocol.CommandSimulator, []string{"--operation", "shutdown", "--udid", testUDID},
+			`{"kind":"simulator","operation":"shutdown","udid":"` + testUDID + `"}`},
+		// --stdin=false keeps a command given no field flag off stdin too.
+		{protocol.CommandSimulators, []string{"--stdin=false"}, `{"kind":"simulators"}`},
+	} {
+		parsed, err := Parse(testCase.kind, testCase.arguments, unreadable{t}, true)
+		if err != nil || string(parsed.Command) != testCase.want {
+			t.Errorf("%s %v: parsed %s, error %v; want %s", testCase.kind, testCase.arguments, parsed.Command, err, testCase.want)
+		}
+	}
+	// A field flag leaves out the fields stdin holds: the command is refused
+	// for what it lacks, not completed from stdin.
+	if _, err := Parse(protocol.CommandSimulator, []string{"--operation", "boot"}, strings.NewReader(`{"udid":"`+testUDID+`"}`), true); err == nil {
+		t.Fatal("simulator boot without --udid must not take the udid from stdin")
+	}
+	// --request-timeout-ms is no field: stdin still holds the command.
+	parsed, err := Parse(protocol.CommandJobs, []string{"--request-timeout-ms", "5000"}, strings.NewReader(`{"operation":"list"}`), true)
+	if err != nil || string(parsed.Command) != `{"kind":"jobs","operation":"list"}` || parsed.Timeout != 5*time.Second {
+		t.Fatalf("jobs from stdin with a deadline: parsed %s (%s), error %v", parsed.Command, parsed.Timeout, err)
+	}
+	// Commands with no fields take no --stdin.
+	if _, err := Parse(protocol.CommandDoctor, []string{"--stdin"}, unreadable{t}, true); err == nil {
+		t.Fatal("doctor takes no fields and no --stdin")
+	}
+}
+
+func TestSimulatorLifecycleTakesTheMissingUDIDFromStdinWithTheStdinFlag(t *testing.T) {
+	// --stdin reads the object beside the flags, from a terminal too, where a
+	// person types it and ends it with Ctrl-D.
+	for _, available := range []bool{true, false} {
+		parsed, err := Parse(protocol.CommandSimulator, []string{"--operation", "boot", "--stdin"}, strings.NewReader(`{"udid":"`+testUDID+`"}`), available)
+		want := `{"kind":"simulator","operation":"boot","udid":"` + testUDID + `"}`
+		if err != nil || string(parsed.Command) != want {
+			t.Fatalf("stdin available %v: parsed %s, error %v; want %s", available, parsed.Command, err, want)
+		}
 	}
 }
 
@@ -407,7 +451,7 @@ func TestLaneAttributionComesFromAgentEnvironment(t *testing.T) {
 
 	// Explicit stdin attribution wins over the environment.
 	parsed, err = ParseWithEnvironment(protocol.CommandLane, []string{
-		"--operation", "up", "--worktree", "/Users/dev/app", "--udid", testUDID,
+		"--operation", "up", "--worktree", "/Users/dev/app", "--udid", testUDID, "--stdin",
 	}, strings.NewReader(`{"agent":{"kind":"codex","sessionId":"thread-9"}}`), true, lookup)
 	if err != nil {
 		t.Fatal(err)
@@ -583,8 +627,9 @@ func TestPathFlagsResolveAgainstTheWorkingDirectory(t *testing.T) {
 	if err != nil || !strings.Contains(string(parsed.Command), `"worktreePath":"/Users/dev/app/"`) {
 		t.Fatalf("absolute path changed: %s %v", parsed.Command, err)
 	}
-	if _, err := Parse(protocol.CommandSupabase, []string{"--operation", "up"}, strings.NewReader(`{"worktreePath":"."}`), true); err == nil {
-		t.Fatal("a relative stdin path must be rejected")
+	if _, err := Parse(protocol.CommandSupabase, nil, strings.NewReader(`{"operation":"up","worktreePath":"."}`), true); err == nil ||
+		!strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("a relative stdin path must be rejected as relative: %v", err)
 	}
 	if _, err := Build(protocol.CommandSupabase, map[string]any{"operation": "up", "worktree": "."}, nil); err == nil {
 		t.Fatal("a relative tool-call path must be rejected")
@@ -600,7 +645,7 @@ func TestSupabaseDeadlinesSitPastTheDesktopBudgets(t *testing.T) {
 		{[]string{"--operation", "up", "--worktree", "/w"}, "", 45 * time.Second},
 		{[]string{"--operation", "up", "--worktree", "/w", "--wait-ms", "0"}, "", 15 * time.Second},
 		{[]string{"--operation", "up", "--worktree", "/w", "--wait-ms", "45000"}, "", 60 * time.Second},
-		{[]string{"--operation", "up", "--worktree", "/w"}, `{"waitMs":20000}`, 35 * time.Second},
+		{[]string{"--operation", "up", "--worktree", "/w", "--stdin"}, `{"waitMs":20000}`, 35 * time.Second},
 		{[]string{"--operation", "reset", "--worktree", "/w"}, "", 75 * time.Second},
 		{[]string{"--operation", "ls"}, "", 45 * time.Second},
 		{[]string{"--operation", "down", "--worktree", "/w"}, "", 45 * time.Second},
@@ -616,7 +661,7 @@ func TestSupabaseDeadlinesSitPastTheDesktopBudgets(t *testing.T) {
 		}
 	}
 	// A wait read from stdin is a json.Number; it must still size the deadline.
-	wait, err := Parse(protocol.CommandWait, []string{"--condition", "network-idle"}, strings.NewReader(`{"timeoutMs":120000}`), true)
+	wait, err := Parse(protocol.CommandWait, nil, strings.NewReader(`{"condition":{"kind":"network-idle"},"timeoutMs":120000}`), true)
 	if err != nil {
 		t.Fatal(err)
 	}

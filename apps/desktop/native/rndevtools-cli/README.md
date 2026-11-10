@@ -47,10 +47,20 @@ or:
 
 Commands are `doctor`, `simulators`, `simulator`, `apps`, `screen`, `elements`, `act`,
 `wait`, `capture`, `record`, `network`, `recipe`, `jobs`, `slimming`, `lane`,
-`supabase`, `native`, `agents`, `claim`, `release`, and `input`. Run `rndevtools <command> --help` for structured flags. An optional JSON
-command object may be piped on standard input; flags may add different fields,
-but redefining a stdin field is rejected. `doctor` and `agents` take no fields
-and never read standard input, so a pipe left open cannot hang them. `slimming` exposes the read-only
+`supabase`, `native`, `agents`, `claim`, `release`, and `input`. Run `rndevtools <command> --help` for structured flags.
+
+Field flags are the whole command: given any of a command's field flags, the
+CLI never reads standard input, so a pipe or socket that is never closed (some
+agent harnesses run commands with one) cannot hang it. Given none, a command
+reads one JSON command object from standard input, unless that is a terminal,
+and waits for the input to end before it sends anything; `--request-timeout-ms`
+is no field flag. `--stdin` reads that object beside the flags, which may then
+add different fields (redefining a stdin field is rejected), and
+`--stdin=false` never reads standard input, for a command run with no field
+flag where the input may stay open. `doctor` and `agents` take no fields and
+never read standard input.
+
+`slimming` exposes the read-only
 `status`, `preview`, `doctor`, and `verify` operations and the mutating `apply`,
 `undo`, and `restore`; mutations run only while SimSlim is enabled in RN
 Devtools, only on Simulators the calling session holds or that nobody holds
@@ -77,11 +87,10 @@ rndevtools wait --condition job --job-id JOB_ID  # when boot returns pending
 rndevtools lane --operation launch --lane-id LANE_ID
 ```
 
-Providing both `--operation` and `--udid` makes this new command ignore stdin,
-so automation that leaves its input pipe open does not block it. Otherwise it
-accepts the missing fields from a JSON object on stdin. Existing `simulators`
-stdin behavior and read-only MCP approvals are unchanged. Reload the agent
-client to discover the new tool and review its tool-approval policy.
+Its flags, like any command's, make it ignore stdin, so automation that leaves
+its input pipe open does not block it; `--operation` and `--udid` are both
+required. Read-only MCP approvals are unchanged. Reload the agent client to
+discover the new tool and review its tool-approval policy.
 
 ## MCP server
 
