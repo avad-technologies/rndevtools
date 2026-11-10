@@ -3,6 +3,7 @@ import {
 	AGENT_SESSION_ENV_NAMES,
 	childEnvironmentStrip,
 	childEnvironmentStripProblem,
+	inheritedChildEnvironment,
 	isAgentHarnessVariable,
 } from './agent-harness-env';
 
@@ -175,5 +176,40 @@ describe('childEnvironmentStripProblem', () => {
 		]) {
 			expect(childEnvironmentStripProblem(environment)).toBeUndefined();
 		}
+	});
+});
+
+describe('inheritedChildEnvironment', () => {
+	it("keeps the desktop's environment but what childEnvironmentStrip names", () => {
+		expect(
+			inheritedChildEnvironment({
+				HOME: '/Users/example',
+				PATH: '/usr/bin:/bin',
+				LANG: 'en_US.UTF-8',
+				SHELL: '/bin/zsh',
+				CLAUDE_CODE_SESSION_ID: 'session-1',
+				CLAUDE_CODE_MESSAGING_TOKEN: 'example-token',
+				CODEX_THREAD_ID: 'thread-1',
+				AI_AGENT: 'example',
+				RNDEVTOOLS_AGENT_SESSION_ID: 'session-2',
+				EXAMPLE_AGENT_TOKEN: 'example-secret',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+			})
+		).toEqual({
+			HOME: '/Users/example',
+			PATH: '/usr/bin:/bin',
+			LANG: 'en_US.UTF-8',
+			SHELL: '/bin/zsh',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+		});
+	});
+
+	it('refuses a list it cannot read, as childEnvironmentStrip does', () => {
+		expect(() =>
+			inheritedChildEnvironment({
+				HOME: '/Users/example',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_FIRST,EXAMPLE TOKEN',
+			})
+		).toThrow(/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not /);
 	});
 });

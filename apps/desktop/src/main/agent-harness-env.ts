@@ -3,11 +3,13 @@
  * desktop itself may have been started from (`pnpm dev` in an agent's shell,
  * say). An agent harness exports its variables into every process it starts,
  * and the desktop would hand them on to each lane's Metro, and through it to
- * app.config.js, the Babel workers and whatever Metro spawns, and to the
- * native plan's Node, which evaluates app.config.js too. They carry that
- * session's identity, which the rndevtools CLI reads to act as that session,
- * and its control channels and their tokens. That session is whichever one
- * launched the desktop, never a lane's own agent, and none of it is the app's.
+ * app.config.js, the Babel workers and whatever Metro spawns, to the native
+ * plan's Node, which evaluates app.config.js too, and to the rndevtools CLI
+ * the desktop runs for agent setup and its checks. They carry that session's
+ * identity, which the rndevtools CLI reads to act as that session, and its
+ * control channels and their tokens. That session is whichever one launched
+ * the desktop, never a lane's own agent nor the operator, and none of it is
+ * the app's.
  */
 
 /**
@@ -122,4 +124,22 @@ export function childEnvironmentStrip(
 		isAgentHarnessVariable(name) ||
 		names.has(name) ||
 		prefixes.some((prefix) => name.startsWith(prefix));
+}
+
+/**
+ * The environment a child gets that otherwise inherits the desktop's as it
+ * is: the rndevtools CLI the desktop runs, and the login shell it asks for
+ * PATH. Everything stays (PATH, HOME, LANG, TMPDIR and the rest, which such
+ * a child needs as the user has them) but what childEnvironmentStrip names,
+ * and it throws as that does.
+ */
+export function inheritedChildEnvironment(
+	desktopEnvironment: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv {
+	const stripped = childEnvironmentStrip(desktopEnvironment);
+	const kept: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(desktopEnvironment)) {
+		if (value !== undefined && !stripped(name)) kept[name] = value;
+	}
+	return kept;
 }

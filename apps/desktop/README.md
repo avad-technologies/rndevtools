@@ -49,6 +49,8 @@ Local iOS Simulator tooling on macOS:
   without the variables of an agent session the desktop may have been started
   from: `AI_AGENT`, `CLAUDECODE`, `DEBUG_CLAUDE_AGENT_SDK`,
   `RNDEVTOOLS_AGENT_SESSION_ID`, and every `CLAUDE_*` and `CODEX_*` variable.
+  So does the `rndevtools` CLI the desktop runs for agent setup and its setup
+  checks, which would otherwise act as that session.
   Metro also never inherits `EXPO_PUBLIC_*`, `SUPABASE_*`, `PG*` or
   `RNDEVTOOLS_*`; a lane gets those only from its lane environment's
   `metroEnv` or its local backend. A lane's Metro binds to loopback and never
@@ -59,8 +61,8 @@ Local iOS Simulator tooling on macOS:
   `RNDEVTOOLS_CHILD_ENV_STRIP` set to comma-separated exact names and
   `NAME_PREFIX*` patterns, for example `EXAMPLE_AGENT_*,EXAMPLE_TOKEN` (at
   most 64 entries and 4,096 characters). A malformed list fails lane starts,
-  Metro restarts and native plans instead of letting through what it names; a
-  restart fails before it stops the lane's running Metro.
+  Metro restarts, native plans and agent setup instead of letting through what
+  it names; a restart fails before it stops the lane's running Metro.
 - A signed `rndevtools` local-agent CLI over a current-user `0600` Unix socket,
   including `lane --operation up|down|ls|launch|log` and agent skills
 - Local Supabase per worktree (alpha): the Supabase tab (⌘8) tracks every native

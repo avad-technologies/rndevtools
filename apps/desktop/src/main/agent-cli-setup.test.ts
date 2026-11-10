@@ -111,4 +111,42 @@ describe('summarizeAgentCliSetup', () => {
 			'/Users/me',
 		]);
 	});
+
+	it('runs the CLI without the agent session the desktop was started from', async () => {
+		// The CLI reads a session's identity from its environment and would set
+		// up, and dial the desktop, as that session.
+		await runAgentCliSetup('/x/rndevtools', '/Users/me', {
+			environment: {
+				HOME: '/Users/me',
+				PATH: '/usr/bin:/bin',
+				CLAUDE_CODE_SESSION_ID: 'session-1',
+				CLAUDE_CODE_MESSAGING_TOKEN: 'example-token',
+				CODEX_THREAD_ID: 'thread-1',
+				RNDEVTOOLS_AGENT_SESSION_ID: 'session-2',
+				EXAMPLE_AGENT_TOKEN: 'example-secret',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+			},
+		});
+		const options = execFile.mock.lastCall?.[2] as
+			| { env?: NodeJS.ProcessEnv }
+			| undefined;
+		expect(options?.env).toEqual({
+			HOME: '/Users/me',
+			PATH: '/usr/bin:/bin',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+		});
+	});
+
+	it('runs nothing while RNDEVTOOLS_CHILD_ENV_STRIP cannot be read', async () => {
+		const calls = execFile.mock.calls.length;
+		await expect(
+			runAgentCliSetup('/x/rndevtools', '/Users/me', {
+				environment: {
+					HOME: '/Users/me',
+					RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_FIRST,EXAMPLE TOKEN',
+				},
+			})
+		).rejects.toThrow(/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not /);
+		expect(execFile.mock.calls).toHaveLength(calls);
+	});
 });

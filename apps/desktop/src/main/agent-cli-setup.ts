@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { inheritedChildEnvironment } from './agent-harness-env';
 
 const execFileAsync = promisify(execFile);
 
@@ -29,13 +30,16 @@ const setupReportSchema = z.looseObject({
  * format); the desktop only launches it and relays the outcome. `doctor:
  * false` skips setup's closing doctor, which dials the socket under the real
  * home whatever `home` is: with an isolated test home that is an installed
- * RN Devtools, not this desktop.
+ * RN Devtools, not this desktop. The CLI gets the desktop's `environment`
+ * without the variables of the agent session the desktop may have been
+ * started from, which it would otherwise act as (agent-harness-env.ts).
  */
 export async function runAgentCliSetup(
 	executablePath: string,
 	home: string,
-	options: { doctor?: boolean } = {}
+	options: { doctor?: boolean; environment?: NodeJS.ProcessEnv } = {}
 ): Promise<string[]> {
+	const env = inheritedChildEnvironment(options.environment ?? process.env);
 	const { stdout } = await execFileAsync(
 		executablePath,
 		[
@@ -45,6 +49,7 @@ export async function runAgentCliSetup(
 			...(options.doctor === false ? ['--no-doctor'] : []),
 		],
 		{
+			env,
 			timeout: 60_000,
 			maxBuffer: 1024 * 1024,
 		}
