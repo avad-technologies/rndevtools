@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/adalloul0928/rndevtools-cli/internal/client"
 )
@@ -927,7 +928,12 @@ func displayPath(path string) string {
 	}
 	text := builder.String()
 	if len(text) > 200 {
-		text = "…" + text[len(text)-199:]
+		// Keep the tail, from the first character that starts in it.
+		cut := len(text) - 199
+		for cut < len(text) && !utf8.RuneStart(text[cut]) {
+			cut++
+		}
+		text = "…" + text[cut:]
 	}
 	return text
 }

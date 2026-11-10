@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // packageFixture is a Mac with an Expo app (app, with a src directory
@@ -206,6 +207,12 @@ func TestReasonsQuoteOnlyTheRepositoryTextThatShows(t *testing.T) {
 	}
 	if got := displayText(strings.Repeat("é", 10), 11); got != strings.Repeat("é", 5)+"…" {
 		t.Errorf("displayText bound: %q", got)
+	}
+	// A path past its bound keeps its tail, cut where a character starts.
+	for _, path := range []string{"/" + strings.Repeat("é", 150), "/" + strings.Repeat("日", 100), "//" + strings.Repeat("é", 150)} {
+		if got := displayPath(path); !utf8.ValidString(got) || !strings.HasPrefix(got, "…") || !strings.HasSuffix(path, strings.TrimPrefix(got, "…")) || len(got) > len("…")+199 {
+			t.Errorf("displayPath(%d bytes) = %q", len(path), got)
+		}
 	}
 	app := t.TempDir()
 	write(t, filepath.Join(app, "package.json"), `{"scripts":{"start":"expo start \u202e\u200b# trats opxe ton"}}`)
