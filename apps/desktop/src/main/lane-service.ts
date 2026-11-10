@@ -2468,6 +2468,8 @@ export class LaneService {
 			// old, dead PID says nothing about the Metro now serving the lane.
 			const lane = this.#store.get(snapshot.id);
 			if (!lane || lane.metroPid !== snapshot.metroPid) continue;
+			// A lane that is stopping is its stop's: it reports what is left.
+			if (this.#stoppingLanes.has(lane.id)) continue;
 			const hold = holds?.get(lane.simulatorUdid.toUpperCase());
 			if (
 				hold?.laneId === lane.id &&
@@ -2475,10 +2477,13 @@ export class LaneService {
 				hold.releaseAt !== undefined &&
 				now >= hold.releaseAt
 			) {
-				await this.#trackMaintenanceWrite(
+				// Not awaited: the stop waits for its Metro to exit, SIGKILL and
+				// all, and one Metro slow to go must not hold up every other
+				// lane's health or a Refresh. Quit still waits for it, and a
+				// later pass leaves the lane to it.
+				void this.#trackMaintenanceWrite(
 					this.stopLane(lane.id, 'Agent session exit grace period elapsed')
 				).catch(() => undefined);
-				changed = true;
 				continue;
 			}
 			const status = this.#metroStatus(lane);

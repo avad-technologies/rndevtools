@@ -13,7 +13,10 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setImmediate as nextTurn } from 'node:timers/promises';
+import {
+	setImmediate as nextTurn,
+	setTimeout as wait,
+} from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
 	Lane,
@@ -2368,12 +2371,90 @@ describe('LaneService', () => {
 		expect(withHolds.getState().lanes).toHaveLength(1);
 		expect(metro.stopped).toEqual([]);
 
-		// Grace elapsed: the lane is torn down and its Metro stopped.
+		// Grace elapsed: the lane is torn down and its Metro stopped. The
+		// refresh starts that stop and does not wait for the Metro to exit.
 		now = releaseAt;
 		await withHolds.runOperation({ actionId: 'op-r3', kind: 'lane.refresh' });
-		expect(withHolds.getState().lanes).toEqual([]);
+		await vi.waitFor(() => expect(withHolds.getState().lanes).toEqual([]));
 		expect(metro.stopped).toEqual([{ pid: lane.metroPid, port: lane.port }]);
 		await withHolds.stop();
+	});
+
+	it('keeps reconciling other lanes while an abandoned lane waits for its Metro to exit', async () => {
+		await service.stop();
+		const abandoned = new Set<string>();
+		service = new LaneService({
+			store,
+			simulator,
+			metro,
+			worktrees,
+			now: () => now,
+			holds: () =>
+				new Map(
+					service
+						.getState()
+						.lanes.filter((lane) => abandoned.has(lane.id))
+						.map((lane) => [
+							lane.simulatorUdid.toUpperCase(),
+							{
+								simulatorUdid: lane.simulatorUdid.toUpperCase(),
+								via: 'lane' as const,
+								laneId: lane.id,
+								holder: { kind: 'claude' as const, sessionId: 'session-a' },
+								holderLive: false,
+								abandonedSince: now - 1,
+								releaseAt: now,
+							},
+						])
+				),
+		});
+		await service.start();
+		const start = (worktreePath: string, simulatorUdid: string) =>
+			service.runOperation({
+				actionId: `op-two-${simulatorUdid}`,
+				kind: 'lane.start',
+				worktreePath,
+				simulatorUdid,
+				environment: 'development',
+				launch: false,
+			});
+		const first = (await start(WORKTREE, UDID)).lane as Lane;
+		const second = (await start(OTHER_WORKTREE, OTHER_UDID)).lane as Lane;
+		expect(second).toMatchObject({ port: 8_101, metro: 'starting' });
+		// The first lane's Metro ignores SIGTERM; only a SIGKILL ends it.
+		const signals: Array<{ pid: number; force: boolean }> = [];
+		const stop = metro.stop;
+		metro.stop = async (pid, port, directory, options) => {
+			if (pid !== first.metroPid) return stop(pid, port, directory, options);
+			signals.push({ pid, force: options?.force === true });
+			if (options?.force) await stop(pid, port, directory, options);
+		};
+		abandoned.add(first.id);
+		metro.healthyPorts.add(8_101);
+		const refreshed = service.runOperation({
+			actionId: 'op-two-refresh',
+			kind: 'lane.refresh',
+		});
+		await expect(
+			Promise.race([refreshed, wait(2_000, 'still waiting')])
+		).resolves.toMatchObject({ completed: true });
+		// The second lane got its health while the first lane's stop waits.
+		expect(service.getState().lanes).toMatchObject([
+			{ id: first.id },
+			{ id: second.id, metro: 'ready' },
+		]);
+		expect(signals).toEqual([{ pid: first.metroPid, force: false }]);
+		// Past its grace the first lane's Metro is killed and the lane goes.
+		now += 5_001;
+		await vi.waitFor(() =>
+			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([
+				second.id,
+			])
+		);
+		expect(signals).toEqual([
+			{ pid: first.metroPid, force: false },
+			{ pid: first.metroPid, force: true },
+		]);
 	});
 
 	it('reports a timed reconcile that could not save lane health instead of leaving it unhandled', async () => {
