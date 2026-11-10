@@ -94,7 +94,13 @@ const METRO_EXIT_TIMEOUT_MS = 10_000;
 const METRO_EXIT_POLL_INTERVAL_MS = 100;
 /**
  * How long a lane stop waits for Metro to exit after SIGTERM before it kills
- * it. Expo itself forces its exit about 4 s after a signal it handles.
+ * it. Expo CLI exits as soon as SIGTERM arrives: @expo/cli 57 registers
+ * `process.on('SIGTERM', () => process.exit(0))` in build/bin/cli before it
+ * runs a command, and Metro 0.84 adds no handler of its own. (The 4 s forced
+ * exit in build/src/utils/exit.js, ensureProcessExitsAfterDelay, runs only
+ * after `expo export`.) So this is a chosen margin for a main thread that is
+ * busy when the signal lands, not a delay Expo asks for; a Metro still
+ * running after it is stuck and is killed.
  */
 const METRO_STOP_GRACE_MS = 5_000;
 /** How long a stop waits for a killed Metro to be gone. */
