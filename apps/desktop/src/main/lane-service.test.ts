@@ -5785,6 +5785,33 @@ describe('LaneService', () => {
 			}
 		);
 
+		it('says on the receipt when a first launch could not restart the app', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			simulator.failKinds['app.terminate'] = 'xcrun failed with exit code 1.';
+			const receipt = await launch(laneId);
+			expect(receipt.completed).toBe(true);
+			expect(receipt.warnings).toEqual([
+				"com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.",
+			]);
+			// Only the first launch restarts unasked; a later one has nothing to say.
+			const later = await launch(laneId);
+			expect(later.completed).toBe(true);
+			expect(later).not.toHaveProperty('warnings');
+		});
+
+		it('says on the receipt when a first launch had no bundle identifier to restart the app by', async () => {
+			worktrees.identity = { scheme: 'exampleapp' };
+			const note =
+				"The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from.";
+			const started = await start();
+			expect(started.completed).toBe(true);
+			expect(kinds()).toEqual(['device.boot', 'url.open']);
+			expect(started.warnings).toEqual([note]);
+			// The lane's agent reads the lane log, so it says so there too.
+			expect(metro.notes.map((entry) => entry.note)).toEqual([note]);
+		});
+
 		it.each(['launch', 'deep link', 'up'] as const)(
 			'fails a %s asked to restart whose app could not be terminated, and opens nothing',
 			async (how) => {

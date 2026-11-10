@@ -4126,6 +4126,31 @@ describe('agent command router', () => {
 			expect(operations[4]).not.toHaveProperty('restart');
 		});
 
+		it('hands lane up and launch what their launch could not do unasked', async () => {
+			const { dependencies } = fixture();
+			const warning =
+				"com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.";
+			const { lanes } = lanesAnswering({
+				completed: true,
+				lane,
+				warnings: [warning],
+			});
+			const handler = createAgentCommandRouter({ ...dependencies, lanes });
+			for (const command of [
+				{
+					kind: 'lane',
+					operation: 'up',
+					worktreePath: '/Users/dev/app-feature',
+				},
+				{ kind: 'lane', operation: 'launch', laneId: lane.id },
+			] as const) {
+				expect(await handler(command, context)).toMatchObject({
+					completed: true,
+					warnings: [warning],
+				});
+			}
+		});
+
 		/** The typed error a lane command fails with when the lane service answers `outcome`. */
 		function failure(
 			outcome: Omit<LaneOperationReceipt, 'actionId' | 'kind'>,

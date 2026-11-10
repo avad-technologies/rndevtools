@@ -31,6 +31,8 @@ import {
 	laneOperationSchema,
 	laneStateSchema,
 	MAX_DEVICE_REQUESTS,
+	MAX_RECEIPT_WARNING_LENGTH,
+	MAX_RECEIPT_WARNINGS,
 } from '../shared/lane-protocol';
 import type {
 	SimulatorAction,
@@ -266,6 +268,20 @@ function restartWithoutBundleIdentifier(laneId?: string): Error {
 export type LaneStartOutcome =
 	| { lane: LaneView; deviceRequest?: undefined }
 	| { lane?: undefined; deviceRequest: LaneDeviceRequest };
+
+/**
+ * What the lane's first launch says when it had no app to terminate: a lane
+ * reads its bundle identifier from app.json only when it starts.
+ */
+const FIRST_LAUNCH_UNNAMED =
+	"The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from.";
+
+/** Adds `warning` to what a receipt says, within the receipt's bounds. */
+function warn(warnings: string[] | undefined, warning: string): void {
+	if (warnings && warnings.length < MAX_RECEIPT_WARNINGS) {
+		warnings.push(warning.slice(0, MAX_RECEIPT_WARNING_LENGTH));
+	}
+}
 
 /** One line of redacted, bounded text the lane wire accepts as a reason. */
 function backendReason(text: string): string {
@@ -856,26 +872,33 @@ export class LaneService {
 	): Promise<LaneOperationReceipt> {
 		const operation = laneOperationSchema.parse(value);
 		const base = { actionId: operation.actionId, kind: operation.kind };
+		// What a launch could not do unasked, for the receipt to say.
+		const warnings: string[] = [];
+		const warned = () => (warnings.length > 0 ? { warnings } : {});
 		try {
 			if (this.#stopped) throw new Error('Lanes are shutting down.');
 			switch (operation.kind) {
 				case 'lane.start': {
-					const outcome = await this.#startLane(operation, signal);
+					const outcome = await this.#startLane(operation, signal, {
+						warnings,
+					});
 					return laneOperationReceiptSchema.parse({
 						...base,
 						completed: true,
 						...outcome,
 						...(outcome.lane?.backend ? { backend: outcome.lane.backend } : {}),
+						...warned(),
 						state: this.getState(),
 					});
 				}
 				case 'lane.provide-device': {
-					const outcome = await this.provideDevice(operation, signal);
+					const outcome = await this.provideDevice(operation, signal, warnings);
 					return laneOperationReceiptSchema.parse({
 						...base,
 						completed: true,
 						...outcome,
 						...(outcome.lane?.backend ? { backend: outcome.lane.backend } : {}),
+						...warned(),
 						state: this.getState(),
 					});
 				}
@@ -885,12 +908,13 @@ export class LaneService {
 						operation.url,
 						operation.agent,
 						signal,
-						{ restart: operation.restart === true }
+						{ restart: operation.restart === true, warnings }
 					);
 					return laneOperationReceiptSchema.parse({
 						...base,
 						completed: true,
 						lane: this.#view(lane),
+						...warned(),
 						state: this.getState(),
 					});
 				}
@@ -964,6 +988,7 @@ export class LaneService {
 				...(cause instanceof LaneBackendError
 					? { backend: cause.summary }
 					: {}),
+				...warned(),
 			});
 		}
 	}
@@ -988,7 +1013,10 @@ export class LaneService {
 	async #startLane(
 		input: LaneStartInput,
 		signal: AbortSignal,
-		held?: LaneReservation
+		{
+			held,
+			warnings,
+		}: { held?: LaneReservation; warnings?: string[] | undefined } = {}
 	): Promise<LaneStartOutcome> {
 		// Whichever checkout contains it, the requested directory is the app
 		// directory (the checkout itself, or the Expo app inside it), so it
@@ -998,7 +1026,7 @@ export class LaneService {
 			const reservation = held ?? { appDirectory };
 			this.#reservations.add(reservation);
 			try {
-				return await this.#startReserved(input, reservation, signal);
+				return await this.#startReserved(input, reservation, signal, warnings);
 			} finally {
 				this.#reservations.delete(reservation);
 			}
@@ -1036,7 +1064,8 @@ export class LaneService {
 	async #startReserved(
 		input: LaneStartInput,
 		reservation: LaneReservation,
-		signal: AbortSignal
+		signal: AbortSignal,
+		warnings?: string[]
 	): Promise<LaneStartOutcome> {
 		const requestedPath = path.resolve(input.worktreePath);
 		const environment = this.#environments.find(
@@ -1108,7 +1137,8 @@ export class LaneService {
 				input,
 				{ environment, branch: worktree.branch },
 				reservation,
-				signal
+				signal,
+				warnings
 			);
 			return { lane: this.#view(resumed) };
 		}
@@ -1309,6 +1339,7 @@ export class LaneService {
 		if (input.launch && !record?.deferredLaunch) {
 			lane = await this.launchLane(id, undefined, input.agent, signal, {
 				restart: input.restart === true,
+				warnings,
 			});
 		}
 		return { lane: this.#view(lane) };
@@ -1571,7 +1602,8 @@ export class LaneService {
 	 */
 	async provideDevice(
 		input: Extract<LaneOperation, { kind: 'lane.provide-device' }>,
-		signal: AbortSignal
+		signal: AbortSignal,
+		warnings?: string[]
 	): Promise<LaneStartOutcome> {
 		const request = this.#deviceRequests.get(input.requestId);
 		if (!request) {
@@ -1641,7 +1673,7 @@ export class LaneService {
 					...(current.agent ? { agent: current.agent } : {}),
 				},
 				signal,
-				reservation
+				{ held: reservation, warnings }
 			);
 			if (!outcome.lane) {
 				throw new Error('The lane did not start on the chosen Simulator.');
@@ -1744,7 +1776,8 @@ export class LaneService {
 		input: Extract<LaneOperation, { kind: 'lane.start' }>,
 		worktree: { environment: LaneEnvironment; branch: string },
 		reservation: LaneReservation,
-		signal: AbortSignal
+		signal: AbortSignal,
+		warnings?: string[]
 	): Promise<Lane> {
 		this.#requireLane(existing.id);
 		// A restart terminates the app the lane started with; a lane that has
@@ -1763,7 +1796,8 @@ export class LaneService {
 				worktree,
 				reservation,
 				restart,
-				signal
+				signal,
+				warnings
 			);
 		} catch (error) {
 			throw error instanceof LaneLaunchError
@@ -1778,7 +1812,8 @@ export class LaneService {
 		{ environment, branch }: { environment: LaneEnvironment; branch: string },
 		reservation: LaneReservation,
 		restart: boolean,
-		signal: AbortSignal
+		signal: AbortSignal,
+		warnings: string[] | undefined
 	): Promise<Lane> {
 		reservation.simulatorUdid = existing.simulatorUdid;
 		reservation.worktreePath = existing.worktreePath;
@@ -1948,6 +1983,7 @@ export class LaneService {
 		if (wantsLaunch && !record?.deferredLaunch) {
 			lane = await this.launchLane(lane.id, undefined, input.agent, signal, {
 				restart: wantsRestart,
+				warnings,
 			});
 		}
 		return lane;
@@ -2030,14 +2066,21 @@ export class LaneService {
 		url: string | undefined,
 		agent: Pick<LaneAgent, 'kind' | 'sessionId'> | undefined,
 		signal: AbortSignal,
-		{ restart = false }: { restart?: boolean } = {}
+		{
+			restart = false,
+			warnings,
+		}: {
+			restart?: boolean;
+			/** Where the launch adds what it could not do unasked. */
+			warnings?: string[] | undefined;
+		} = {}
 	): Promise<Lane> {
 		const lane = this.#requireLane(laneId);
 		if (restart && !lane.bundleIdentifier) {
 			throw restartWithoutBundleIdentifier(lane.id);
 		}
 		try {
-			return await this.#launch(lane, url, agent, restart, signal);
+			return await this.#launch(lane, url, agent, restart, signal, warnings);
 		} catch (error) {
 			throw new LaneLaunchError(lane.id, error);
 		}
@@ -2048,7 +2091,8 @@ export class LaneService {
 		url: string | undefined,
 		agent: Pick<LaneAgent, 'kind' | 'sessionId'> | undefined,
 		restart: boolean,
-		signal: AbortSignal
+		signal: AbortSignal,
+		warnings: string[] | undefined
 	): Promise<Lane> {
 		const laneId = lane.id;
 		this.#assertRequiredBackendReady(lane);
@@ -2102,6 +2146,7 @@ export class LaneService {
 			await this.#terminateApp(lane, signal, {
 				asked,
 				opening: url === undefined ? 'its dev client' : 'the URL',
+				warnings,
 			});
 		}
 		// A URL in the lane's own scheme is for the lane's own app, so it opens
@@ -2214,15 +2259,24 @@ export class LaneService {
 	 * launch. The first launch's own terminate, which nobody asked for, never
 	 * fails a launch that worked before lanes restarted apps: when this
 	 * Simulator cannot terminate the app (an Xcode without app support, say),
-	 * the launch goes ahead as it did then, and the lane log says so.
+	 * the launch goes ahead as it did then, and the lane log and the receipt
+	 * (`warnings`) say so, as they do when the lane has no app to name.
 	 */
 	async #terminateApp(
 		lane: Lane,
 		signal: AbortSignal,
-		{ asked, opening }: { asked: boolean; opening: string }
+		{
+			asked,
+			opening,
+			warnings,
+		}: { asked: boolean; opening: string; warnings: string[] | undefined }
 	): Promise<void> {
 		const bundleIdentifier = lane.bundleIdentifier;
-		if (!bundleIdentifier) return;
+		if (!bundleIdentifier) {
+			if (!asked)
+				await this.#noteFirstLaunch(lane, warnings, FIRST_LAUNCH_UNNAMED);
+			return;
+		}
 		try {
 			await this.#runSimulatorAction(
 				{
@@ -2240,10 +2294,22 @@ export class LaneService {
 					`${bundleIdentifier} could not be terminated before ${opening} opened, so the launch stopped there: ${safeErrorText(error)} Metro on port ${lane.port} is still running.`
 				);
 			}
-			await this.#noteInLog(lane, [
-				`${bundleIdentifier} could not be terminated before the lane's first launch (${safeErrorText(error)}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.`,
-			]);
+			await this.#noteFirstLaunch(
+				lane,
+				warnings,
+				`${bundleIdentifier} could not be terminated before the lane's first launch (${safeErrorText(error)}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.`
+			);
 		}
+	}
+
+	/** Says, in the lane log and on the receipt, what a first launch could not do. */
+	async #noteFirstLaunch(
+		lane: Lane,
+		warnings: string[] | undefined,
+		note: string
+	): Promise<void> {
+		warn(warnings, note);
+		await this.#noteInLog(lane, [note]);
 	}
 
 	async stopLane(

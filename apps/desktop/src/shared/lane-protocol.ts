@@ -29,6 +29,10 @@ const MAX_ENVIRONMENTS = 16;
 /** How many device requests lane state lists; main never keeps more. */
 export const MAX_DEVICE_REQUESTS = 16;
 const MAX_LOG_CHARACTERS = 64 * 1024;
+/** How many warnings one lane receipt carries; main never adds more. */
+export const MAX_RECEIPT_WARNINGS = 4;
+/** The longest warning a lane receipt carries. */
+export const MAX_RECEIPT_WARNING_LENGTH = MAX_SHORT_TEXT_LENGTH;
 
 export const LANE_METRO_HEALTH_TIMEOUT_MS = 15_000;
 
@@ -417,6 +421,14 @@ export const laneOperationReceiptSchema = z.strictObject({
 	 * the settled request.
 	 */
 	deviceRequest: laneDeviceRequestSchema.optional(),
+	/**
+	 * What a `lane.start`, `lane.provide-device`, or `lane.launch` could not
+	 * do of what it does unasked: the lane's first launch terminates a copy
+	 * of the app already running, so the app starts fresh with this lane's
+	 * Metro, and it could not, or had no bundle identifier to name the app
+	 * by. The launch went ahead. The lane log says it too.
+	 */
+	warnings: z.array(shortTextSchema).max(MAX_RECEIPT_WARNINGS).optional(),
 	log: z.string().max(MAX_LOG_CHARACTERS).optional(),
 	state: laneStateSchema.optional(),
 });
