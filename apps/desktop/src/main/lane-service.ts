@@ -257,7 +257,7 @@ class LaneLaunchError extends Error {
 function restartWithoutBundleIdentifier(laneId?: string): Error {
 	return new Error(
 		laneId
-			? `A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first launch restarts the app; or run this without restart.`
+			? `A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first dev-client launch restarts the app; or run this without restart.`
 			: "A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart."
 	);
 }
@@ -271,8 +271,9 @@ export type LaneStartOutcome =
 	| { lane?: undefined; deviceRequest: LaneDeviceRequest };
 
 /**
- * What the lane's first launch says when it had no app to terminate: a lane
- * reads its bundle identifier from app.json only when it starts.
+ * What the lane's first dev-client launch says when it had no app to
+ * terminate: a lane reads its bundle identifier from app.json only when it
+ * starts.
  */
 const FIRST_LAUNCH_UNNAMED =
 	"The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from.";
@@ -2112,13 +2113,16 @@ export class LaneService {
 	 * Opens the lane's dev client, or `url`, once the lane's own Metro
 	 * answers. The app is terminated first when `restart` asks, and, for a
 	 * dev-client launch, when the held-back launch this one fulfils asked or
-	 * when this is the lane's first launch. React Native keeps one debugger
-	 * (inspector) connection per bundler host and port for as long as the
-	 * app's process lives, and retries it whatever Metro answers there later,
-	 * so a dev client another lane or a person started, only pointed here,
-	 * stays registered as a debug target on the Metro it came from. A deep
-	 * link without restart keeps the app as it is. A terminate that was asked
-	 * for and fails stops the launch; the first launch's own is best effort.
+	 * when this is the lane's first dev-client launch: a deep link opens the
+	 * app as it is, pointed wherever it was, so it neither counts as the
+	 * lane's launch nor uses up that fresh start. React Native keeps one
+	 * debugger (inspector) connection per bundler host and port for as long
+	 * as the app's process lives, and retries it whatever Metro answers there
+	 * later, so a dev client another lane or a person started, only pointed
+	 * here, stays registered as a debug target on the Metro it came from. A
+	 * deep link without restart keeps the app as it is. A terminate that was
+	 * asked for and fails stops the launch; the first launch's own is best
+	 * effort.
 	 * Past the lane lookup and the restart check, a failure is a
 	 * LaneLaunchError naming the lane.
 	 */
@@ -2200,9 +2204,10 @@ export class LaneService {
 			restart ||
 			(url === undefined &&
 				this.#backendRecords.get(laneId)?.deferredRestart === true);
-		// The lane's first launch, read as the lane is now: any launch counts,
-		// a deep link too, and one that finished during the waits above makes
-		// this one no longer the first.
+		// The lane's first dev-client launch, read as the lane is now: one that
+		// finished during the waits above makes this one no longer the first.
+		// A deep link never counts, since it never points the app at this
+		// lane's Metro, so one that came first leaves the fresh start to this.
 		if (asked || (url === undefined && checked.lastLaunchedAt === undefined)) {
 			await this.#terminateApp(lane, signal, {
 				asked,
@@ -2291,7 +2296,9 @@ export class LaneService {
 			...(current.metroPid === lane.metroPid
 				? { metro: 'ready' as const }
 				: {}),
-			lastLaunchedAt: this.#now(),
+			// When the dev client last opened against this lane's Metro, which a
+			// Metro restart then opens it against again.
+			...(url === undefined ? { lastLaunchedAt: this.#now() } : {}),
 			...(holder ? { agent: holder } : {}),
 		};
 		// Whoever launched, a launch held back for the backend has happened,

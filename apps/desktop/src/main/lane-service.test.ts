@@ -1381,9 +1381,11 @@ describe('LaneService', () => {
 		expect(launched.completed).toBe(true);
 		expect(launched.lane).toMatchObject({
 			metro: 'ready',
-			lastLaunchedAt: now,
 			agent: { kind: 'codex', sessionId: 'thread-9', lastSeenAt: now },
 		});
+		// A deep link opens the app as it is, wherever it was pointed: only a
+		// dev-client launch counts as the lane's launch.
+		expect(launched.lane).not.toHaveProperty('lastLaunchedAt');
 		const open = simulator.actions.at(-1) as Extract<
 			SimulatorAction,
 			{ kind: 'url.open' }
@@ -5904,6 +5906,39 @@ describe('LaneService', () => {
 			});
 		});
 
+		it("leaves a lane's fresh start to its first dev-client launch when a deep link comes first", async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			expect((await launch(laneId, { url: 'checkout' })).completed).toBe(true);
+			expect(kinds()).toEqual(['device.boot', 'app.list', 'url.open']);
+			// The deep link opened the app as it was, pointed wherever it was: the
+			// dev-client launch that points it at this lane's Metro is the first.
+			let mark = kinds().length;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			mark = kinds().length;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual(['app.list', 'url.open']);
+		});
+
+		it('gives a lane up the fresh start a deep link before it left', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			expect((await launch(laneId, { url: 'checkout' })).completed).toBe(true);
+			const mark = kinds().length;
+			const resumed = await start();
+			expect(resumed.lane?.id).toBe(laneId);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+		});
+
 		it('launches when the app it terminates was not running, through the Simulator service', async () => {
 			const commands: string[][] = [];
 			const provider: SimulatorHostProvider = {
@@ -6195,7 +6230,7 @@ describe('LaneService', () => {
 			]) {
 				expect(refusedAgain.completed).toBe(false);
 				expect(refusedAgain.error).toBe(
-					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first launch restarts the app; or run this without restart.`
+					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first dev-client launch restarts the app; or run this without restart.`
 				);
 				// Not a failed launch: retrying it as one would fail again.
 				expect(refusedAgain.lane).toBeUndefined();

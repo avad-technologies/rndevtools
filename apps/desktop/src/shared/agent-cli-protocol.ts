@@ -371,8 +371,9 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 			/**
 			 * For `up` and `launch`: terminate the lane's app on its Simulator
 			 * before the dev client or `url` opens, so it starts fresh with this
-			 * lane's Metro alone. A new lane does that on its first launch by
-			 * itself; a `launch` with `url` and without restart never terminates.
+			 * lane's Metro alone. A lane does that on its first dev-client launch
+			 * by itself; a `launch` with `url` and without restart never
+			 * terminates, and leaves that first launch to come.
 			 */
 			restart: z.boolean().optional(),
 			/**

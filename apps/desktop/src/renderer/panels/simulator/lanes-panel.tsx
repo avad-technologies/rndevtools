@@ -1393,7 +1393,7 @@ function LaneDetail({
 					/>
 					{lane.lastLaunchedAt ? (
 						<KeyValue
-							label="Last launch"
+							label="Dev client opened"
 							value={new Date(lane.lastLaunchedAt).toLocaleString()}
 						/>
 					) : null}
