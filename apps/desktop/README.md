@@ -58,8 +58,9 @@ Local iOS Simulator tooling on macOS:
   another harness's variables, start the desktop with
   `RNDEVTOOLS_CHILD_ENV_STRIP` set to comma-separated exact names and
   `NAME_PREFIX*` patterns, for example `EXAMPLE_AGENT_*,EXAMPLE_TOKEN` (at
-  most 64 entries and 4,096 characters). A malformed list fails lane starts
-  and native plans instead of letting through what it names.
+  most 64 entries and 4,096 characters). A malformed list fails lane starts,
+  Metro restarts and native plans instead of letting through what it names; a
+  restart fails before it stops the lane's running Metro.
 - A signed `rndevtools` local-agent CLI over a current-user `0600` Unix socket,
   including `lane --operation up|down|ls|launch|log` and agent skills
 - Local Supabase per worktree (alpha): the Supabase tab (⌘8) tracks every native

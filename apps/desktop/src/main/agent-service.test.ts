@@ -679,6 +679,7 @@ describe('AgentService holds through the lane reconcile', () => {
 	class FakeMetro implements MetroSupervisorPort {
 		readonly stopped: Array<{ pid: number; port: number }> = [];
 		isPortFree = async () => true;
+		environmentProblem = () => undefined;
 		start = async (_input: MetroLaunchInput) => 1;
 		isHealthy = async () => true;
 		/** Every seeded Metro runs until it is stopped, and a stop ends it. */

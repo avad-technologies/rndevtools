@@ -328,6 +328,34 @@ describe('Metro launch', () => {
 		expect(existsSync(path.join(root, 'lane.log'))).toBe(false);
 	});
 
+	it('strips an inherited NODE_OPTIONS that RNDEVTOOLS_CHILD_ENV_STRIP names, keeping the IPv4 order', async () => {
+		// A harness can preload its own code into every Node it starts.
+		const { metro, spawned } = supervisor({
+			PATH: '/usr/bin:/bin',
+			NODE_OPTIONS: '--require /tmp/example-hook.cjs',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'NODE_OPTIONS',
+		});
+		await launch(metro);
+		expect(spawned[0]?.options.env).toMatchObject({
+			NODE_OPTIONS: '--dns-result-order=ipv4first',
+		});
+	});
+
+	it('says, without throwing, when no Metro could start with the desktop environment', () => {
+		expect(
+			supervisor({
+				PATH: '/usr/bin:/bin',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
+			}).metro.environmentProblem()
+		).toMatch(/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name/);
+		expect(
+			supervisor({
+				PATH: '/usr/bin:/bin',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+			}).metro.environmentProblem()
+		).toBeUndefined();
+	});
+
 	it.each(['inherited', 'metroEnv', 'laneEnv'] as const)(
 		"keeps Expo's Bonjour advert off when %s turns it on",
 		async (source) => {

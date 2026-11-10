@@ -7,7 +7,10 @@ import {
 	MAX_METRO_ENV_VALUE_LENGTH,
 	METRO_ENV_NAME,
 } from '../shared/lane-protocol';
-import { childEnvironmentStrip } from './agent-harness-env';
+import {
+	childEnvironmentStrip,
+	childEnvironmentStripProblem,
+} from './agent-harness-env';
 import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
 import { runSimulatorCommand } from './simulator-command-runner';
 
@@ -57,6 +60,14 @@ export type MetroLaunchInput = {
 
 export type MetroSupervisorPort = {
 	isPortFree: (port: number) => Promise<boolean>;
+	/**
+	 * Why `start` would refuse whatever it is given, the desktop's
+	 * environment being as it is (a malformed RNDEVTOOLS_CHILD_ENV_STRIP), or
+	 * undefined when it would not. The lane service asks before it boots a new
+	 * lane's Simulator and before it stops a running Metro to replace it, so a
+	 * replacement that cannot start never leaves a lane without its Metro.
+	 */
+	environmentProblem: () => string | undefined;
 	start: (input: MetroLaunchInput) => Promise<number>;
 	/**
 	 * Whether the Metro at `pid` is serving `port`: a packager answers there
@@ -285,8 +296,8 @@ function metroEnvironment(
 		// `--localhost` binds whatever "localhost" resolves to; Node's verbatim
 		// DNS order picks [::1] on macOS while the dev client rewrites its
 		// packager host to 127.0.0.1. Force IPv4 so the app can actually reach
-		// its own Metro.
-		NODE_OPTIONS: [inherited.NODE_OPTIONS, '--dns-result-order=ipv4first']
+		// its own Metro, after whatever inherited options survived stripping.
+		NODE_OPTIONS: [base.NODE_OPTIONS, '--dns-result-order=ipv4first']
 			.filter(Boolean)
 			.join(' '),
 	};
@@ -880,6 +891,7 @@ export function createMetroSupervisor({
 } = {}): MetroSupervisorPort {
 	return {
 		isPortFree,
+		environmentProblem: () => childEnvironmentStripProblem(environment),
 		start: (input) =>
 			startMetro(input, spawnProcess, environment, toolPath, onExit),
 		isHealthy: (port, pid) => isMetroHealthy(port, pid, probe, runCommand),

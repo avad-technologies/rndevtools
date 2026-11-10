@@ -301,6 +301,8 @@ describe('native plan project script', () => {
 			'@expo/fingerprint',
 			`exports.createFingerprintAsync = async () => ({ hash: 'deadbeef', sources: [{}, {}, {}] });`
 		);
+		// Whatever list the shell running the tests exports is not this test's.
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', undefined);
 	});
 	afterEach(() => {
 		vi.unstubAllEnvs();

@@ -1164,8 +1164,11 @@ export class LaneService {
 		const slimRequest = input.slimProfileId
 			? this.#slimRequest(input.slimProfileId)
 			: undefined;
-		// Likewise a backend this lane cannot have.
+		// Likewise a backend this lane cannot have, and a desktop environment
+		// no Metro can start with.
 		const backendPolicy = this.#backendPolicy(input.backend, environment);
+		const environmentProblem = this.#metro.environmentProblem();
+		if (environmentProblem) throw new Error(environmentProblem);
 		const logPath = this.#store.logPathFor(id);
 		const startedAt = this.#now();
 		const agent = this.#agentWithTimestamp(input.agent);
@@ -2830,6 +2833,10 @@ export class LaneService {
 	): Promise<Lane> {
 		this.#assertOperationActive(signal);
 		this.#requireLane(lane.id);
+		// A replacement the desktop's environment would refuse to start must
+		// fail before the lane's running Metro is stopped, not after.
+		const environmentProblem = this.#metro.environmentProblem();
+		if (environmentProblem) throw new Error(environmentProblem);
 		const pid = lane.metroPid;
 		if (pid !== undefined && this.#metro.isProcessRunning(pid)) {
 			await this.#recordMetroStop(

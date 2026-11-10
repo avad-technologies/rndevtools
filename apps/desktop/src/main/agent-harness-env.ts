@@ -62,6 +62,49 @@ const MAX_CHILD_ENV_STRIP_ENTRIES = 64;
 const CHILD_ENV_STRIP_ENTRY = /^([A-Za-z_][A-Za-z0-9_]{0,127})(\*?)$/;
 
 /**
+ * The desktop's RNDEVTOOLS_CHILD_ENV_STRIP read as exact names and prefixes,
+ * or why it cannot be: over its bounds, or with an entry that is neither a
+ * name nor a pattern. The reason names an entry by its place between the
+ * commas, empty places counted, and never echoes it.
+ */
+function readChildEnvironmentStrip(
+	desktopEnvironment: NodeJS.ProcessEnv
+): { names: ReadonlySet<string>; prefixes: readonly string[] } | string {
+	const list = desktopEnvironment[CHILD_ENV_STRIP] ?? '';
+	if (list.length > MAX_CHILD_ENV_STRIP_LENGTH) {
+		return `${CHILD_ENV_STRIP} is longer than ${MAX_CHILD_ENV_STRIP_LENGTH} characters. Shorten it and restart RN Devtools.`;
+	}
+	const fields = list.split(',').map((field) => field.trim());
+	if (fields.filter(Boolean).length > MAX_CHILD_ENV_STRIP_ENTRIES) {
+		return `${CHILD_ENV_STRIP} lists more than ${MAX_CHILD_ENV_STRIP_ENTRIES} entries. Shorten it and restart RN Devtools.`;
+	}
+	const names = new Set<string>();
+	const prefixes: string[] = [];
+	for (const [index, entry] of fields.entries()) {
+		if (!entry) continue;
+		const match = CHILD_ENV_STRIP_ENTRY.exec(entry);
+		if (!match?.[1]) {
+			return `${CHILD_ENV_STRIP} entry ${index + 1} is not a variable name or a NAME_PREFIX* pattern. Separate entries with commas, fix it, and restart RN Devtools.`;
+		}
+		if (match[2]) prefixes.push(match[1]);
+		else names.add(match[1]);
+	}
+	return { names, prefixes };
+}
+
+/**
+ * Why no child could start with the desktop's environment as it is (a
+ * malformed RNDEVTOOLS_CHILD_ENV_STRIP), or undefined when one can. For a
+ * caller that must know before it stops something the child would replace.
+ */
+export function childEnvironmentStripProblem(
+	desktopEnvironment: NodeJS.ProcessEnv
+): string | undefined {
+	const strip = readChildEnvironmentStrip(desktopEnvironment);
+	return typeof strip === 'string' ? strip : undefined;
+}
+
+/**
  * Whether a lane's Metro or the native plan's Node must not inherit the
  * desktop's variable `name`: an agent harness's, or one the desktop's
  * RNDEVTOOLS_CHILD_ENV_STRIP names. Read from the desktop's environment before
@@ -72,33 +115,9 @@ const CHILD_ENV_STRIP_ENTRY = /^([A-Za-z_][A-Za-z0-9_]{0,127})(\*?)$/;
 export function childEnvironmentStrip(
 	desktopEnvironment: NodeJS.ProcessEnv
 ): (name: string) => boolean {
-	const list = desktopEnvironment[CHILD_ENV_STRIP] ?? '';
-	if (list.length > MAX_CHILD_ENV_STRIP_LENGTH) {
-		throw new Error(
-			`${CHILD_ENV_STRIP} is longer than ${MAX_CHILD_ENV_STRIP_LENGTH} characters. Shorten it and restart RN Devtools.`
-		);
-	}
-	const entries = list
-		.split(',')
-		.map((entry) => entry.trim())
-		.filter(Boolean);
-	if (entries.length > MAX_CHILD_ENV_STRIP_ENTRIES) {
-		throw new Error(
-			`${CHILD_ENV_STRIP} lists more than ${MAX_CHILD_ENV_STRIP_ENTRIES} entries. Shorten it and restart RN Devtools.`
-		);
-	}
-	const names = new Set<string>();
-	const prefixes: string[] = [];
-	for (const [index, entry] of entries.entries()) {
-		const match = CHILD_ENV_STRIP_ENTRY.exec(entry);
-		if (!match?.[1]) {
-			throw new Error(
-				`${CHILD_ENV_STRIP} entry ${index + 1} is not a variable name or a NAME_PREFIX* pattern. Separate entries with commas, fix it, and restart RN Devtools.`
-			);
-		}
-		if (match[2]) prefixes.push(match[1]);
-		else names.add(match[1]);
-	}
+	const strip = readChildEnvironmentStrip(desktopEnvironment);
+	if (typeof strip === 'string') throw new Error(strip);
+	const { names, prefixes } = strip;
 	return (name) =>
 		isAgentHarnessVariable(name) ||
 		names.has(name) ||

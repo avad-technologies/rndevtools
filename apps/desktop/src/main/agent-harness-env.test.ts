@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	AGENT_SESSION_ENV_NAMES,
 	childEnvironmentStrip,
+	childEnvironmentStripProblem,
 	isAgentHarnessVariable,
 } from './agent-harness-env';
 
@@ -114,6 +115,21 @@ describe('childEnvironmentStrip', () => {
 		expect(message).not.toContain('XXXX');
 	});
 
+	it.each([
+		['EXAMPLE_FIRST,,EXAMPLE TOKEN', 3],
+		[' ,EXAMPLE TOKEN', 2],
+		['EXAMPLE_FIRST, , ,EXAMPLE_*_TOKEN,EXAMPLE_LAST', 4],
+	])(
+		'counts the entry in %j by its place between the commas, empty ones included',
+		(list, position) => {
+			expect(() =>
+				childEnvironmentStrip({ RNDEVTOOLS_CHILD_ENV_STRIP: list })
+			).toThrow(
+				new RegExp(`^RNDEVTOOLS_CHILD_ENV_STRIP entry ${position} is not `)
+			);
+		}
+	);
+
 	it('refuses a list longer than its bounds', () => {
 		const entries = Array.from(
 			{ length: 65 },
@@ -132,5 +148,32 @@ describe('childEnvironmentStrip', () => {
 				RNDEVTOOLS_CHILD_ENV_STRIP: `EXAMPLE_TOKEN,${' '.repeat(4_096)}`,
 			})
 		).toThrow(/^RNDEVTOOLS_CHILD_ENV_STRIP is longer than 4096 characters\./);
+	});
+});
+
+describe('childEnvironmentStripProblem', () => {
+	it('says why a list cannot be used, as a start would fail with, without throwing', () => {
+		for (const list of [
+			'EXAMPLE_FIRST,EXAMPLE TOKEN',
+			Array.from({ length: 65 }, (_, index) => `EXAMPLE_${index}`).join(','),
+			`EXAMPLE_TOKEN,${' '.repeat(4_096)}`,
+		]) {
+			const environment = { RNDEVTOOLS_CHILD_ENV_STRIP: list };
+			const problem = childEnvironmentStripProblem(environment);
+			expect(problem).toMatch(/^RNDEVTOOLS_CHILD_ENV_STRIP /);
+			expect(() => childEnvironmentStrip(environment)).toThrow(
+				problem as string
+			);
+		}
+	});
+
+	it('finds nothing wrong with a list that can be used, or none', () => {
+		for (const environment of [
+			{},
+			{ RNDEVTOOLS_CHILD_ENV_STRIP: '' },
+			{ RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE_TOKEN' },
+		]) {
+			expect(childEnvironmentStripProblem(environment)).toBeUndefined();
+		}
 	});
 });

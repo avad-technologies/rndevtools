@@ -344,9 +344,16 @@ class FakeMetro implements MetroSupervisorPort {
 	readonly deadPids = new Set<number>();
 	nextPid = 1_000;
 	logs = new Map<string, string>();
+	/** Why no Metro can start, as a malformed RNDEVTOOLS_CHILD_ENV_STRIP says. */
+	environmentIssue: string | undefined;
 
 	isPortFree = async (port: number) => !this.busyPorts.has(port);
-	start = async (input: MetroLaunchInput) => this.launch(input);
+	environmentProblem = () => this.environmentIssue;
+	/** Refuses as the real supervisor does when the environment has a problem. */
+	start = async (input: MetroLaunchInput) => {
+		if (this.environmentIssue) throw new Error(this.environmentIssue);
+		return this.launch(input);
+	};
 	/** Records a Metro launch and binds its port unless a live process holds it. */
 	launch(input: MetroLaunchInput, pid?: number): number {
 		let id = pid;
@@ -3235,6 +3242,52 @@ describe('LaneService', () => {
 				launch: false,
 			});
 			expect(metro.started[0]).not.toHaveProperty('laneEnv');
+		});
+
+		const MALFORMED_STRIP =
+			'RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name or a NAME_PREFIX* pattern. Separate entries with commas, fix it, and restart RN Devtools.';
+
+		it('refuses a new lane before its Simulator boots when no Metro could start with the desktop environment', async () => {
+			metro.environmentIssue = MALFORMED_STRIP;
+			const receipt = await service.runOperation({
+				actionId: 'op-malformed-strip',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(receipt).toMatchObject({
+				completed: false,
+				error: MALFORMED_STRIP,
+			});
+			expect(simulator.actions).toEqual([]);
+			expect(metro.started).toEqual([]);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('keeps the running Metro when the desktop environment would refuse its replacement', async () => {
+			const started = await service.runOperation({
+				actionId: 'op-respawn-strip',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			// A desktop started with a malformed list adopts the Metros that
+			// survived it; a restart must not stop one it cannot replace.
+			metro.environmentIssue = MALFORMED_STRIP;
+			await expect(service.restartMetro(laneId, 'operator')).rejects.toThrow(
+				MALFORMED_STRIP
+			);
+			expect(metro.stopped).toEqual([]);
+			expect(metro.started).toHaveLength(1);
+			expect(metro.isProcessRunning(1_001)).toBe(true);
+			expect(service.getState().lanes).toMatchObject([
+				{ id: laneId, metroPid: 1_001 },
+			]);
 		});
 	});
 
