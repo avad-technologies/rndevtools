@@ -5481,9 +5481,8 @@ describe('LaneService', () => {
 
 		it('reports plainly when the build has no slimming at all', async () => {
 			const bare = new LaneService({
-				store: new LaneStore(
-					await mkdtemp(path.join(os.tmpdir(), 'lane-bare-'))
-				),
+				// Inside the suite's root, which every test's cleanup removes.
+				store: new LaneStore(await mkdtemp(path.join(root, 'lane-bare-'))),
 				simulator,
 				metro,
 				worktrees,
