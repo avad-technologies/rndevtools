@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -610,11 +611,13 @@ func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	if _, err := CheckAgents(options); err != nil {
+	// The next preview prunes them.
+	next, err := PlanAgentFix(options, f.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	files := healthHistoryFiles(t, options)
-	if files[stale.ID+".json"] || files[filepath.Base(leftover)] || !files[fresh.ID+".json"] {
+	if files[stale.ID+".json"] || files[filepath.Base(leftover)] || !files[fresh.ID+".json"] || !files[next.ID+".json"] {
 		t.Fatalf("expired previews must go and fresh ones stay: %v", files)
 	}
 	// Once a repair is undone, its copy of the original file is not needed.
@@ -639,6 +642,64 @@ func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T)
 		if bytes.Contains(raw, []byte("sensitive-fixture")) {
 			t.Fatalf("%s still holds the original configuration", name)
 		}
+	}
+}
+
+func TestAgentHealthChecksOnlyReadWhilePreviewsRepairsAndUndosPrune(t *testing.T) {
+	// The check is read-only wherever it runs: the desktop's view, doctor,
+	// and before and after setup, --dry-run included. Only a preview, a
+	// repair, or an undo prunes what the history no longer needs.
+	options := healthFixture(t)
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	finding := healthFinding(t, options, "codex", "plugin-controller")
+	routing := healthFinding(t, options, "codex", "routing")
+	old := time.Now().Add(-10 * time.Minute)
+	expiredPreview := func(finding HealthFinding) string {
+		t.Helper()
+		plan, err := PlanAgentFix(options, finding.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(healthStateDir(options), plan.ID+".json"), old, old); err != nil {
+			t.Fatal(err)
+		}
+		return plan.ID + ".json"
+	}
+	stale := expiredPreview(finding)
+	leftover := filepath.Join(healthStateDir(options), ".rndevtools-setup-123456")
+	healthPut(t, leftover, "")
+	if err := os.Chtimes(leftover, old, old); err != nil {
+		t.Fatal(err)
+	}
+	before := healthHistoryFiles(t, options)
+	for range 2 {
+		if _, err := CheckAgents(options); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := healthHistoryFiles(t, options); !maps.Equal(after, before) {
+		t.Fatalf("the check changed the history: %v, was %v", after, before)
+	}
+	fresh, err := PlanAgentFix(options, finding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files := healthHistoryFiles(t, options); files[stale] || files[filepath.Base(leftover)] || !files[fresh.ID+".json"] {
+		t.Fatalf("a preview must prune what expired and keep itself: %v", files)
+	}
+	stale = expiredPreview(routing)
+	if _, err := ApplyAgentFix(options, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	if files := healthHistoryFiles(t, options); files[stale] || !files[fresh.ID+".summary.json"] {
+		t.Fatalf("a repair must prune what expired and keep itself: %v", files)
+	}
+	stale = expiredPreview(routing)
+	if _, err := UndoAgentFix(options, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	if files := healthHistoryFiles(t, options); files[stale] || files[fresh.ID+".json"] {
+		t.Fatalf("an undo must prune what expired and its own record: %v", files)
 	}
 }
 

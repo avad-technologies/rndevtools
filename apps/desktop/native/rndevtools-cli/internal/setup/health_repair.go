@@ -404,7 +404,8 @@ func healthStateDir(options HealthOptions) string {
 const (
 	// healthPlanLifetime is how long a preview can be applied. A preview not
 	// applied by then, because the user cancelled it or never confirmed, is
-	// deleted at the next check, with its copy of the configuration.
+	// deleted with its copy of the configuration by the next preview, repair,
+	// or undo.
 	healthPlanLifetime = 5 * time.Minute
 	// healthReceiptLimit is how many repairs a scope keeps for undo, newest
 	// first: as many as the report lists and the desktop shows.
@@ -449,29 +450,6 @@ func healthHistory(options HealthOptions) (files map[string]time.Time, complete 
 func healthOnDisk(options HealthOptions, name string) bool {
 	_, err := os.Lstat(filepath.Join(healthStateDir(options), name))
 	return !errors.Is(err, fs.ErrNotExist)
-}
-
-// healthPruneExpired deletes what an expired preview left: its record, which
-// holds a copy of the whole configuration file, and the temporary file of a
-// write that was interrupted. A record with a summary is a repair, kept for
-// undo; a record without one is a preview, or an apply that stopped before it
-// changed the configuration.
-func healthPruneExpired(options HealthOptions) {
-	files, complete := healthHistory(options)
-	if !complete {
-		return
-	}
-	expired := time.Now().Add(-healthPlanLifetime)
-	for name, modified := range files {
-		if !modified.Before(expired) {
-			continue
-		}
-		id, isRecord := strings.CutSuffix(name, ".json")
-		preview := isRecord && healthID.MatchString(id) && !healthOnDisk(options, id+".summary.json")
-		if preview || strings.HasPrefix(name, ".rndevtools-setup-") {
-			_ = os.Remove(filepath.Join(healthStateDir(options), name))
-		}
-	}
 }
 
 // healthSummary is a repair's summary as healthSaveReceipt writes it: its
@@ -528,14 +506,32 @@ func healthReceipts(options HealthOptions) []HealthReceipt {
 	return result
 }
 
-// healthPruneReceipts deletes the repairs that undo cannot reach: those an
-// earlier build kept after undoing them, in any scope, the scope's repairs
-// past the newest healthReceiptLimit, which the report no longer lists, and
-// summaries left without their record.
-func healthPruneReceipts(options HealthOptions) {
+// healthPrune deletes what the repair history no longer needs. That is what
+// an expired preview left (its record, which holds a copy of the whole
+// configuration file, and the temporary file of a write that was
+// interrupted), and the repairs that undo cannot reach: those an earlier
+// build kept after undoing them, in any scope, the scope's repairs past the
+// newest healthReceiptLimit, which the report no longer lists, and summaries
+// left without their record. A record with a summary is a repair, kept for
+// undo; a record without one is a preview, or an apply that stopped before it
+// changed the configuration. Only a preview, a repair, and an undo prune:
+// the check itself, which the desktop, doctor, and setup (--dry-run too) run,
+// only reads.
+func healthPrune(options HealthOptions) {
 	files, complete := healthHistory(options)
 	if !complete {
 		return
+	}
+	expired := time.Now().Add(-healthPlanLifetime)
+	for name, modified := range files {
+		if !modified.Before(expired) {
+			continue
+		}
+		id, isRecord := strings.CutSuffix(name, ".json")
+		preview := isRecord && healthID.MatchString(id) && !healthOnDisk(options, id+".summary.json")
+		if preview || strings.HasPrefix(name, ".rndevtools-setup-") {
+			_ = os.Remove(filepath.Join(healthStateDir(options), name))
+		}
 	}
 	summaries := healthSummaries(options, files)
 	for _, stored := range summaries {
@@ -663,6 +659,7 @@ func PlanAgentFix(options HealthOptions, findingID string) (HealthPlan, error) {
 		}
 		j.Fingerprint = report.Fingerprint
 		j.Plan = HealthPlan{ID: id, Client: finding.Client, Title: finding.FixLabel, Scope: finding.Scope, Source: finding.Source, Target: healthLinkTarget(options, finding.file, j.Target), Summary: finding.Detail + " The change is reversible. Reload the affected client after applying it.", ExpiresAt: time.Now().Add(healthPlanLifetime).UnixMilli()}
+		healthPrune(options)
 		if err = healthSave(options, id, ".json", j); err != nil {
 			return HealthPlan{}, err
 		}
@@ -762,7 +759,7 @@ func ApplyAgentFix(options HealthOptions, id string) (HealthReport, error) {
 		if err = healthSaveReceipt(options, j); err != nil {
 			return err
 		}
-		healthPruneReceipts(options)
+		healthPrune(options)
 		return nil
 	})
 	if err != nil {
@@ -795,6 +792,7 @@ func UndoAgentFix(options HealthOptions, id string) (HealthReport, error) {
 		if bytes.Equal(current, j.Before) && present == j.Present {
 			// Undone already: the record is no longer needed.
 			healthForget(options, id)
+			healthPrune(options)
 			return nil
 		}
 		if bytes.Equal(current, j.After) {
@@ -821,6 +819,7 @@ func UndoAgentFix(options HealthOptions, id string) (HealthReport, error) {
 		// An undone repair cannot be undone again, so its copy of the original
 		// configuration goes with it.
 		healthForget(options, id)
+		healthPrune(options)
 		return nil
 	})
 	if err != nil {

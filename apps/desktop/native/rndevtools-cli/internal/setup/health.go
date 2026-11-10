@@ -382,7 +382,7 @@ func CheckAgents(options HealthOptions) (HealthReport, error) {
 		fingerprints.WriteString(file + "\x00" + s.files[file] + "\n")
 	}
 	s.report.Fingerprint = healthHash([]byte(fingerprints.String()))
-	healthPruneExpired(options)
+	// Read-only, like the rest of the check: previews, repairs and undos prune.
 	s.report.Repairs = healthReceipts(options)
 	return s.report, nil
 }
