@@ -497,6 +497,28 @@ inspector connection to every Metro it was pointed at for as long as it runs,
 so without a restart an app re-pointed to a new port stays listed as a debug
 target on whatever Metro later takes the old port.
 
+A `lane --operation up` or `launch` result may carry `warnings`, at most 4
+strings of at most 4 KiB, each saying what the lane's first dev-client launch
+could not do of what it does unasked: terminate a copy of the app already
+running, or name the app at all when `app.json` declares no
+`ios.bundleIdentifier`. The launch went ahead, and the lane's log says the
+same. (A Simulator job, wherever one is returned, may carry `warnings` of its
+own: at most 8 redacted strings, each a best-effort step the job went on
+without.) A device request (`deviceRequest` in a `lane --operation up`
+result, `deviceRequests` in `ls`) carries `restart` when the parked start
+asked for one.
+
+A `lane --operation up` or `launch` that the desktop stops at its own
+deadline for the command, 230 s, fails with the error code `timed_out`
+(exit 6), not `cancelled` or `lane_failed`: the desktop's lane receipt marks
+it `timedOut`, and the CLI gets the code, never the receipt. As with those
+two, when the operation had stored its lane, the message names the lane and
+the `recovery` gives the command that opens it again. The CLI waits 240 s for
+these commands, so with its default deadline the desktop's answer arrives
+first; a `--request-timeout-ms` under 230 s ends the wait with
+`request_timeout` (exit 4) instead, and the desktop, seeing the CLI hang up,
+stops the operation as a cancel.
+
 A lane never builds the app. When `up` reports the dev client missing,
 `native --operation plan --worktree <app directory> --udid <UDID>` answers
 `install:` (`native --operation install` puts a cached build on the
