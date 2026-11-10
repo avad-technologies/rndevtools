@@ -41,6 +41,11 @@ a private local socket.
   checkout (the checkout root for a single-app repository). Install its
   dependencies and declare `expo.scheme` in `app.json`. Lanes read
   the scheme to deep-link the dev client; they never evaluate `app.config.js`.
+  A lane reads it when it starts and keeps what it read: one started without
+  a scheme opens its dev client only through
+  `rndevtools lane --operation launch --lane-id <laneId> --url <full launch URL>`
+  (`lane --operation up` takes no URL), and a scheme declared later counts
+  only for a new lane. The error's `recovery` gives both commands.
 - The Expo development client is **already installed** on the Simulator. Lanes
   never trigger a native build. If `rndevtools apps --udid <UDID>` does not list
   the app, follow `rndevtools native --operation plan` (below): reserve a lane

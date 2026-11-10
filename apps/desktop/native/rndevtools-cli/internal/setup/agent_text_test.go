@@ -208,6 +208,9 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 		"the result's `warnings`",
 		"without `--restart` never terminates the app",
 		"leaves that first restart to the dev-client launch after it",
+		// A lane keeps the scheme it started with, and up takes no URL.
+		"`rndevtools lane --operation launch --lane-id <laneId> --url <full launch URL>`",
+		"`lane --operation up` takes no URL",
 		"Terminating an app that is not running counts as success",
 		// The device choice stays with RN Devtools unless the user named one.
 		"Leave `--udid` out unless the user named a device",
