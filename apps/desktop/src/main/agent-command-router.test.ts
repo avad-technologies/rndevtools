@@ -2147,9 +2147,10 @@ describe('agent command router', () => {
 				await vi.advanceTimersByTimeAsync(4_000);
 				expect(settled.done).toBe(false);
 				lanes.setMetro('ready');
-				await vi.advanceTimersByTimeAsync(1_000);
-				await pending;
+				// The next read of the lane state, one poll later, sees it.
+				await vi.advanceTimersByTimeAsync(500);
 				expect(settled.done).toBe(true);
+				await pending;
 				const recommendation = String(
 					(settled.value as Record<string, unknown>).recommendation
 				);
@@ -2159,14 +2160,33 @@ describe('agent command router', () => {
 				);
 			});
 
+			it('still gives the build command to one that turns ready after 12 s', async () => {
+				// The lane service marks a lane ready on a reconcile, every 5 s,
+				// and one that finds its Metro still loading leaves the lane
+				// starting until the next.
+				const lanes = buildLanes(undefined, 'starting');
+				const { settled, pending } = planFor(lanes);
+				await vi.advanceTimersByTimeAsync(12_000);
+				expect(settled.done).toBe(false);
+				lanes.setMetro('ready');
+				await vi.advanceTimersByTimeAsync(500);
+				expect(settled.done).toBe(true);
+				await pending;
+				expect(
+					String((settled.value as Record<string, unknown>).recommendation)
+				).toContain(`expo run:ios --device ${UDID} --port 8107 --no-bundler`);
+			});
+
 			it('holds the build command back from one that never turns ready', async () => {
 				// A Metro the lane service could not prove is the lane's own (an
 				// adoption that failed, a stop to retry, a recycled PID) stays
 				// starting while another packager may answer on the port.
 				const { settled, pending } = planFor(buildLanes(undefined, 'starting'));
-				await vi.advanceTimersByTimeAsync(14_000);
+				// Nothing answers before the full 15 s, and the answer comes then.
+				await vi.advanceTimersByTimeAsync(14_999);
 				expect(settled.done).toBe(false);
-				await vi.advanceTimersByTimeAsync(1_000);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(settled.done).toBe(true);
 				await pending;
 				const recommendation = String(
 					(settled.value as Record<string, unknown>).recommendation
@@ -2183,6 +2203,7 @@ describe('agent command router', () => {
 				await vi.advanceTimersByTimeAsync(2_000);
 				lanes.setMetro('stopped');
 				await vi.advanceTimersByTimeAsync(500);
+				expect(settled.done).toBe(true);
 				await pending;
 				const recommendation = String(
 					(settled.value as Record<string, unknown>).recommendation
@@ -2198,7 +2219,10 @@ describe('agent command router', () => {
 						operation: 'install',
 					}
 				);
-				await vi.advanceTimersByTimeAsync(15_000);
+				await vi.advanceTimersByTimeAsync(14_999);
+				expect(settled.done).toBe(false);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(settled.done).toBe(true);
 				await pending;
 				expect(settled.error).toMatchObject({
 					code: 'cache_miss',

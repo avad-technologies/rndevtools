@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import {
 	type AgentCliCommand,
 	type AgentCliTarget,
@@ -460,10 +459,23 @@ function abortError(): AgentCliError {
 	});
 }
 
-/** Resolves after `ms`, or rejects with {@link abortError} once `signal` aborts. */
+/**
+ * Resolves after `ms`, or rejects with {@link abortError} once `signal` aborts.
+ * It sleeps on the global timer, as this router's other deadlines do, so fake
+ * timers in tests drive its waits and pin how long each one lasts.
+ */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
-	return sleep(ms, undefined, { signal }).catch(() => {
-		throw abortError();
+	if (signal.aborted) return Promise.reject(abortError());
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(abortError());
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		signal.addEventListener('abort', onAbort, { once: true });
 	});
 }
 
