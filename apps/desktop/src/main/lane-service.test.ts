@@ -950,6 +950,102 @@ describe('LaneService', () => {
 		}
 	);
 
+	describe('a Metro no lane keeps that outlives its SIGTERM', () => {
+		let signals: Array<{ pid: number; force: boolean }>;
+		let advance: NodeJS.Timeout | undefined;
+
+		beforeEach(() => {
+			signals = [];
+			// The cleanup waits on the injected clock; move it past every deadline.
+			advance = setInterval(() => {
+				now += 1_000;
+			}, 5);
+		});
+
+		afterEach(() => {
+			clearInterval(advance);
+		});
+
+		/** A start whose Metro spawn returns only once the test releases it. */
+		function startHeld(signal: AbortSignal) {
+			const spawning = deferred<void>();
+			const release = deferred<void>();
+			metro.start = async (input) => {
+				const pid = metro.launch(input);
+				spawning.resolve();
+				await release.promise;
+				return pid;
+			};
+			const starting = service.runOperation(
+				{
+					actionId: 'op-stubborn-spawn',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				},
+				signal
+			);
+			return { spawning: spawning.promise, release: release.resolve, starting };
+		}
+
+		/** A Metro that ignores SIGTERM, and SIGKILL too unless `killable`. */
+		function stubbornMetro({ killable }: { killable: boolean }) {
+			metro.stop = async (pid, port, _directory, options) => {
+				signals.push({ pid, force: options?.force === true });
+				if (!options?.force || !killable) return;
+				metro.deadPids.add(pid);
+				if (metro.listeners.get(port) === pid) metro.listeners.delete(port);
+			};
+		}
+
+		it.each(['cancel', 'shutdown'] as const)(
+			'is killed once proven again when its spawn finishes after %s',
+			async (operation) => {
+				stubbornMetro({ killable: true });
+				const controller = new AbortController();
+				const held = startHeld(controller.signal);
+				await held.spawning;
+				let stopping: Promise<void> | undefined;
+				if (operation === 'cancel') controller.abort();
+				else stopping = service.stop();
+				held.release(undefined);
+				// Quitting waits for the cleanup to finish the Metro off.
+				await stopping;
+				const result = await held.starting;
+				expect(result.completed).toBe(false);
+				expect(signals).toEqual([
+					{ pid: 1_001, force: false },
+					{ pid: 1_001, force: true },
+				]);
+				expect(metro.isProcessRunning(1_001)).toBe(false);
+				expect(service.getState().lanes).toEqual([]);
+			}
+		);
+
+		it('keeps a recovery lease for one that outlives SIGKILL too', async () => {
+			stubbornMetro({ killable: false });
+			const controller = new AbortController();
+			const held = startHeld(controller.signal);
+			await held.spawning;
+			controller.abort();
+			held.release(undefined);
+			const result = await held.starting;
+			expect(result.completed).toBe(false);
+			expect(result.error).toBe(
+				'Lane operation cancelled. failed for Metro 1001 on port 8100: It did not exit after SIGTERM and SIGKILL. The lane was retained so cleanup can be retried.'
+			);
+			expect(signals).toEqual([
+				{ pid: 1_001, force: false },
+				{ pid: 1_001, force: true },
+			]);
+			expect(service.getState().lanes).toMatchObject([
+				{ metroPid: 1_001, metro: 'starting', port: 8_100 },
+			]);
+		});
+	});
+
 	it('keeps stopping the lanes until a Metro spawned meanwhile has been cleaned up', async () => {
 		const spawning = deferred<void>();
 		const release = deferred<void>();

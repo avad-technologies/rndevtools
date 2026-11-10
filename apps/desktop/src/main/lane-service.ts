@@ -107,9 +107,11 @@ const METRO_STOP_GRACE_MS = 5_000;
 const METRO_KILL_GRACE_MS = 2_000;
 /**
  * How long stopping the lanes, as the app quits, waits for a Metro spawn or
- * the cleanup of a Metro no lane keeps.
+ * the cleanup of a Metro no lane keeps: that cleanup's SIGTERM grace and
+ * SIGKILL wait, with time left for its two ownership probes.
  */
-const METRO_SHUTDOWN_GRACE_MS = 5_000;
+const METRO_SHUTDOWN_GRACE_MS =
+	METRO_STOP_GRACE_MS + METRO_KILL_GRACE_MS + 3_000;
 const MAX_BACKEND_REASON_LENGTH = 1_024;
 
 export type LaneSimulatorPort = {
@@ -1330,27 +1332,28 @@ export class LaneService {
 		if (pid === undefined) return;
 		this.#unverifyMetro(lane.id, pid);
 		await this.#recordMetroStop(lane, reason);
+		// The wait and the proven SIGKILL a lane stop uses: a Metro no lane
+		// keeps that outlived its SIGTERM would hold its port with nothing left
+		// to stop it.
+		let failure: unknown;
 		try {
-			await this.#metro.stop(pid, lane.port, laneAppDirectory(lane));
+			if (await this.#stopMetroUntilGone(lane, pid)) return;
+			failure = new Error('It did not exit after SIGTERM and SIGKILL.');
 		} catch (error) {
-			if (
-				error instanceof NotLaneMetroError ||
-				!this.#metro.isProcessRunning(pid)
-			)
-				return;
-			const message = `${reason} failed for Metro ${pid} on port ${lane.port}: ${safeErrorText(error)} The lane was retained so cleanup can be retried.`;
-			this.#metroIdentityErrors.set(lane.id, { pid, message });
-			try {
-				await this.#store.upsert({ ...lane, metro: 'starting' });
-			} catch (persistError) {
-				throw new Error(
-					`${message} Its recovery lease could not be saved: ${safeErrorText(persistError)}`,
-					{ cause: error }
-				);
-			}
-			this.#touch();
-			throw new Error(message, { cause: error });
+			failure = error;
 		}
+		const message = `${reason} failed for Metro ${pid} on port ${lane.port}: ${safeErrorText(failure)} The lane was retained so cleanup can be retried.`;
+		this.#metroIdentityErrors.set(lane.id, { pid, message });
+		try {
+			await this.#store.upsert({ ...lane, metro: 'starting' });
+		} catch (persistError) {
+			throw new Error(
+				`${message} Its recovery lease could not be saved: ${safeErrorText(persistError)}`,
+				{ cause: failure }
+			);
+		}
+		this.#touch();
+		throw new Error(message, { cause: failure });
 	}
 
 	/**
@@ -2204,8 +2207,11 @@ export class LaneService {
 	async #stopLaneNow(lane: Lane, reason: string): Promise<void> {
 		const laneId = lane.id;
 		await this.#recordMetroStop(lane, reason);
-		if (lane.metroPid !== undefined) {
-			await this.#stopMetroUntilGone(lane, lane.metroPid);
+		const pid = lane.metroPid;
+		if (pid !== undefined && !(await this.#stopMetroUntilGone(lane, pid))) {
+			throw new Error(
+				`Metro ${pid} on port ${lane.port} did not exit after SIGTERM and SIGKILL. The lane was kept so it can be stopped again.`
+			);
 		}
 		await this.#store.remove(laneId);
 		this.#verifiedMetros.delete(laneId);
@@ -2220,10 +2226,11 @@ export class LaneService {
 	 * Stops a lane's Metro and waits for it to exit, so a stopped lane never
 	 * leaves a Metro that no lane knows of. One that outlives its SIGTERM by
 	 * METRO_STOP_GRACE_MS is proven to be the lane's Metro again and killed.
-	 * Throws, keeping the lane and so its lease, when the PID cannot be proven
-	 * to be the lane's Metro or the Metro outlives SIGKILL too.
+	 * True once it is gone, false when it outlived SIGKILL too. Throws when
+	 * the PID cannot be proven to be the lane's Metro; either way the caller
+	 * keeps the lane, and so its lease, for a later stop.
 	 */
-	async #stopMetroUntilGone(lane: Lane, pid: number): Promise<void> {
+	async #stopMetroUntilGone(lane: Lane, pid: number): Promise<boolean> {
 		for (const force of [false, true]) {
 			try {
 				await this.#metro.stop(
@@ -2244,7 +2251,7 @@ export class LaneService {
 					error instanceof NotLaneMetroError ||
 					!this.#metro.isProcessRunning(pid)
 				)
-					return;
+					return true;
 				throw error;
 			}
 			if (
@@ -2253,12 +2260,10 @@ export class LaneService {
 					force ? METRO_KILL_GRACE_MS : METRO_STOP_GRACE_MS
 				)
 			) {
-				return;
+				return true;
 			}
 		}
-		throw new Error(
-			`Metro ${pid} on port ${lane.port} did not exit after SIGTERM and SIGKILL. The lane was kept so it can be stopped again.`
-		);
+		return false;
 	}
 
 	/**
