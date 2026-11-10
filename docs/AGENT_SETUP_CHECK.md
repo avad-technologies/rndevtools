@@ -53,7 +53,8 @@ They are kept only while undo can use them. A preview that is not applied
 within its five minutes, because it was cancelled or never confirmed, is
 deleted with its copy of the file at the next check. Undoing a repair deletes
 its record. Each scope keeps its 32 most recent repairs for undo, listed newest
-first, and applying another repair deletes the records past that.
+first, and applying another repair deletes the records past that, along with
+any record an earlier build kept for a repair it had undone.
 
 Reload the affected client after a change. In Codex, review new hooks with
 `/hooks`. **Test RN Devtools connection** performs MCP initialize, tools/list,

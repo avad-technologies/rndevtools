@@ -642,6 +642,59 @@ func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T)
 	}
 }
 
+func TestAgentHealthDeletesTheUndoneRepairsEarlierBuildsKept(t *testing.T) {
+	// Builds before undo deleted a repair's record marked it undone instead,
+	// and kept it, with its copies of the configuration, until 32 newer
+	// repairs of its scope pushed it out. Undo cannot use one again, so
+	// pruning deletes it in any scope, and it no longer takes the place of a
+	// repair that undo can still reach.
+	options := healthFixture(t)
+	other := options
+	other.Project = filepath.Join(options.Home, "code", "example-app")
+	undone := func(options HealthOptions, id string, appliedAt int64) {
+		t.Helper()
+		j := healthJournal{Home: options.Home, Project: options.Project, Executable: options.Executable,
+			Plan:    HealthPlan{ID: id, Client: "codex", Title: "Disable plugin in Codex"},
+			Receipt: HealthReceipt{ID: id, Client: "codex", Title: "Disable plugin in Codex", Scope: "All Codex projects", AppliedAt: appliedAt, Status: "undone"},
+			Before:  []byte("[mcp_servers.cloud.env]\nTOKEN = 'sensitive-fixture'\n"), Format: "toml"}
+		if err := healthSaveReceipt(options, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied := fmt.Sprintf("check-%032x", 1)
+	healthStoredRepair(t, options, applied, 1_000)
+	gone := []string{}
+	for i := 2; i <= 40; i++ {
+		id := fmt.Sprintf("check-%032x", i)
+		undone(options, id, int64(1_000+i))
+		gone = append(gone, id)
+	}
+	elsewhere := fmt.Sprintf("check-%032x", 99)
+	undone(other, elsewhere, 5_000)
+	gone = append(gone, elsewhere)
+	if report, _ := CheckAgents(options); len(report.Repairs) != 1 || report.Repairs[0].ID != applied {
+		t.Fatalf("the report lists only the repair undo can reach: %+v", report.Repairs)
+	}
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	plan := healthRepair(t, options, "codex", "plugin-controller")
+	files := healthHistoryFiles(t, options)
+	for _, id := range gone {
+		if files[id+".json"] || files[id+".summary.json"] {
+			t.Fatalf("the undone repair %s kept its record: %v", id, files)
+		}
+	}
+	for _, id := range []string{applied, plan.ID} {
+		if !files[id+".json"] || !files[id+".summary.json"] {
+			t.Fatalf("undone repairs pushed out %s, which undo can reach: %v", id, files)
+		}
+	}
+	for name := range files {
+		if raw, _ := os.ReadFile(filepath.Join(healthStateDir(options), name)); bytes.Contains(raw, []byte("sensitive-fixture")) {
+			t.Fatalf("%s still holds a copy of the configuration", name)
+		}
+	}
+}
+
 func TestAgentHealthPrunesNothingFromAHistoryItCannotListWhole(t *testing.T) {
 	// One listing reads at most healthHistoryEntries files, in no particular
 	// order. Past that, a repair's summary can be left out of it while it is

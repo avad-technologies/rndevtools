@@ -474,21 +474,38 @@ func healthPruneExpired(options HealthOptions) {
 	}
 }
 
-// healthScopeReceipts are the repairs of options' scope among files that undo
-// can still reach (a summary with its record), newest first.
-func healthScopeReceipts(options HealthOptions, files map[string]time.Time) []HealthReceipt {
-	result := []HealthReceipt{}
+// healthSummary is a repair's summary as healthSaveReceipt writes it: its
+// scope and its receipt.
+type healthSummary struct {
+	Project string        `json:"project"`
+	Receipt HealthReceipt `json:"receipt"`
+}
+
+// healthSummaries are the summaries among files whose record is on disk, of
+// every scope.
+func healthSummaries(options HealthOptions, files map[string]time.Time) []healthSummary {
+	result := []healthSummary{}
 	for name := range files {
 		id, isSummary := strings.CutSuffix(name, ".summary.json")
 		if !isSummary || !healthID.MatchString(id) || !healthOnDisk(options, id+".json") {
 			continue
 		}
 		data, _, err := healthRead(filepath.Join(healthStateDir(options), name))
-		var stored struct {
-			Project string        `json:"project"`
-			Receipt HealthReceipt `json:"receipt"`
+		var stored healthSummary
+		if err == nil && len(data) < healthSummaryLimit && json.Unmarshal(data, &stored) == nil && stored.Receipt.ID == id {
+			result = append(result, stored)
 		}
-		if err == nil && len(data) < healthSummaryLimit && json.Unmarshal(data, &stored) == nil && stored.Project == options.Project && stored.Receipt.ID == id {
+	}
+	return result
+}
+
+// healthScopeReceipts are the repairs of options' scope among summaries that
+// undo can still reach, newest first: an undone repair cannot be undone
+// again.
+func healthScopeReceipts(options HealthOptions, summaries []healthSummary) []HealthReceipt {
+	result := []HealthReceipt{}
+	for _, stored := range summaries {
+		if stored.Project == options.Project && stored.Receipt.Status != "undone" {
 			result = append(result, stored.Receipt)
 		}
 	}
@@ -504,22 +521,31 @@ func healthScopeReceipts(options HealthOptions, files map[string]time.Time) []He
 // healthReceipts are the scope's newest repairs, at most healthReceiptLimit.
 func healthReceipts(options HealthOptions) []HealthReceipt {
 	files, _ := healthHistory(options)
-	result := healthScopeReceipts(options, files)
+	result := healthScopeReceipts(options, healthSummaries(options, files))
 	if len(result) > healthReceiptLimit {
 		result = result[:healthReceiptLimit]
 	}
 	return result
 }
 
-// healthPruneReceipts deletes the scope's repairs past the newest
-// healthReceiptLimit, which the report no longer lists, and summaries left
-// without their record.
+// healthPruneReceipts deletes the repairs that undo cannot reach: those an
+// earlier build kept after undoing them, in any scope, the scope's repairs
+// past the newest healthReceiptLimit, which the report no longer lists, and
+// summaries left without their record.
 func healthPruneReceipts(options HealthOptions) {
 	files, complete := healthHistory(options)
 	if !complete {
 		return
 	}
-	receipts := healthScopeReceipts(options, files)
+	summaries := healthSummaries(options, files)
+	for _, stored := range summaries {
+		// Builds before undo deleted a repair's record marked it undone and
+		// kept it, with its copies of the configuration.
+		if stored.Receipt.Status == "undone" {
+			healthForget(options, stored.Receipt.ID)
+		}
+	}
+	receipts := healthScopeReceipts(options, summaries)
 	for index := healthReceiptLimit; index < len(receipts); index++ {
 		healthForget(options, receipts[index].ID)
 	}
