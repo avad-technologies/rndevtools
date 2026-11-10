@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { realpathSync } from 'node:fs';
 import {
+	chmod,
 	mkdir,
 	mkdtemp,
 	readdir,
@@ -2531,6 +2532,68 @@ describe('LaneService', () => {
 		} finally {
 			vi.useRealTimers();
 			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('retries saving lane health the disk refused until a pass saves it', async () => {
+		await service.stop();
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		try {
+			store = new LaneStore(root);
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-unsaved-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(started.lane?.metro).toBe('starting');
+			// From here the lanes directory takes no new file, so no write lands.
+			await chmod(root, 0o500);
+			try {
+				vi.advanceTimersByTime(5_000);
+				await vi.waitFor(() =>
+					expect(service.getState().error).toMatch(
+						/^Lane status could not be refreshed: EACCES/
+					)
+				);
+				// Memory says ready now, lanes.json still says starting: the next
+				// pass has no new status to write, but the old one is still unsaved.
+				const unsaved = await service.runOperation({
+					actionId: 'op-unsaved-refresh',
+					kind: 'lane.refresh',
+				});
+				expect(unsaved.completed).toBe(false);
+				expect(unsaved.error).toMatch(/^EACCES/);
+				expect(service.getState().error).toMatch(
+					/^Lane status could not be refreshed: EACCES/
+				);
+			} finally {
+				await chmod(root, 0o700);
+			}
+			const saved = await service.runOperation({
+				actionId: 'op-saved-refresh',
+				kind: 'lane.refresh',
+			});
+			expect(saved.completed).toBe(true);
+			expect(service.getState().error).toBeUndefined();
+			const reopened = new LaneStore(root);
+			await reopened.start();
+			expect(reopened.lanes()).toMatchObject([
+				{ id: started.lane?.id, metro: 'ready' },
+			]);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 

@@ -918,6 +918,11 @@ export class LaneService {
 				}
 				case 'lane.refresh': {
 					await this.#reconcile();
+					// A pass that saved everything settles what a timed one reported.
+					if (this.#reconcileError !== undefined) {
+						this.#reconcileError = undefined;
+						this.#touch();
+					}
 					await this.#refreshTopology(true);
 					await this.#refreshDirty(true);
 					return laneOperationReceiptSchema.parse({
@@ -2516,6 +2521,11 @@ export class LaneService {
 				changed = true;
 			}
 		}
+		if (this.#stopped) return;
+		// A status this pass or an earlier one could not save is held in
+		// memory only. Write it again, and fail the pass, so that its error
+		// stays reported, until the disk takes it.
+		await this.#trackMaintenanceWrite(this.#store.flush());
 		if (this.#stopped) return;
 		// Only stopLane removes lanes and it forgets their backends; this is the
 		// backstop for anything that slipped past it.
