@@ -260,7 +260,11 @@ It declines a Bash line when any of these holds:
    `node_modules/.bin` path), has its arguments read the way Expo CLI 57 reads
    them: its default command is `start`, so an `expo` with no operand, only
    options, or a project directory starts Metro (`npx expo`,
-   `npx expo --port 8082 start`), and `run:ios` (or `run ios`) starts one
+   `npx expo --port 8082`, `npx expo ./app`). Expo hands `start` every word
+   it got when the first is no subcommand, so in `npx expo --port 8082 start`
+   the `start` is the project directory: the hook declines it too, though
+   Expo then stops at `Invalid project root` unless a `./start` directory
+   exists. `run:ios` (or `run ios`) starts one
    unless `--no-bundler` is given, and even then when `--configuration Debug`
    is passed. `--help`, `--version`, a build-only `--device generic`, the
    other subcommands, and the names Expo retired start none. An `expo` word

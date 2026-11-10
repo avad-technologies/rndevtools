@@ -49,7 +49,11 @@ func expoProgramArguments(segment shellSegment) (arguments []string, ok bool) {
 // as -vh), or answers a retired name. Its own globals are taken out; any
 // other option stays where it is, among the operands, so that the first of
 // those decides: a subcommand, else start, with all of them as its
-// arguments. That is why `expo --port 8082 start` starts Metro too.
+// arguments. That is why `expo --port 8082` starts Metro too, and why
+// `expo --port 8082 start` runs start with `start` for its project
+// directory: Expo starts Metro there when ./start exists and otherwise exits
+// at "Invalid project root" (build/src/utils/args.js), so declining it errs
+// on the side of blocking.
 func expoCommand(arguments []string) (command string, rest []string, runs bool) {
 	operands := make([]string, 0, len(arguments))
 	for index, argument := range arguments {
