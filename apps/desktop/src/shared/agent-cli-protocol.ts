@@ -296,7 +296,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 			if (value.operation === 'install' && value.udid === undefined) {
 				context.addIssue({
 					code: 'custom',
-					message: 'native install requires udid.',
+					message: 'The install operation requires udid.',
 				});
 			}
 		}),
@@ -404,7 +404,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 			) {
 				context.addIssue({
 					code: 'custom',
-					message: 'Only lane up and launch take restart.',
+					message: 'Only the up and launch operations take restart.',
 				});
 				return;
 			}
@@ -416,7 +416,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 				context.addIssue({
 					code: 'custom',
 					message:
-						'restart terminates the app for the launch that follows it, so lane up cannot take restart with launch false.',
+						'restart terminates the app for the launch that follows it, so the up operation cannot take restart with launch false.',
 				});
 				return;
 			}
@@ -524,7 +524,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 				context.addIssue({
 					code: 'custom',
 					message:
-						'waitMs is for supabase up, seed for reset, services, tail, and since for log, and note for destroy and reset.',
+						'waitMs is for up, seed for reset, services, tail, and since for log, and note for destroy and reset.',
 				});
 			}
 		}),

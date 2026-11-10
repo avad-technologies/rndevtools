@@ -3130,7 +3130,7 @@ describe('LaneService', () => {
 			});
 			expect(result.completed).toBe(false);
 			expect(result.error).toBe(
-				`Metro isn't running for lane ${started.lane?.id}. Run lane up to start it again.`
+				`Metro isn't running for lane ${started.lane?.id}. Run \`rndevtools lane --operation up --worktree <app directory>\` to start it again.`
 			);
 			expect(verify).toHaveBeenCalledWith(
 				started.lane?.metroPid,
@@ -5738,7 +5738,7 @@ describe('LaneService', () => {
 			const laneId = receipt.lane?.id as string;
 			expect(laneId).toBeDefined();
 			expect(receipt.error).toBe(
-				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`, which lane up cannot take.`
+				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`; the up operation takes no URL.`
 			);
 			// A full launch URL opens it.
 			const opened = await service.runOperation({
@@ -6091,7 +6091,7 @@ describe('LaneService', () => {
 				expect(metro.notes).toEqual([
 					{
 						logPath: started.lane?.logPath,
-						note: `com.example.app could not be terminated before the lane's first launch (${how === 'failed' ? 'xcrun failed with exit code 1.' : 'This Xcode installation does not support apps.'}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.`,
+						note: `com.example.app could not be terminated before the lane's first launch (${how === 'failed' ? 'xcrun failed with exit code 1.' : 'This Xcode installation does not support apps.'}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run \`rndevtools lane --operation launch --lane-id ${laneId} --restart\` to start it fresh.`,
 					},
 				]);
 			}
@@ -6104,7 +6104,7 @@ describe('LaneService', () => {
 			const receipt = await launch(laneId);
 			expect(receipt.completed).toBe(true);
 			expect(receipt.warnings).toEqual([
-				"com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.",
+				`com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run \`rndevtools lane --operation launch --lane-id ${laneId} --restart\` to start it fresh.`,
 			]);
 			// Only the first launch restarts unasked; a later one has nothing to say.
 			const later = await launch(laneId);
@@ -6258,7 +6258,7 @@ describe('LaneService', () => {
 			]) {
 				expect(refusedAgain.completed).toBe(false);
 				expect(refusedAgain.error).toBe(
-					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first dev-client launch restarts the app; or run this without restart.`
+					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${laneId}\` and \`rndevtools lane --operation up --worktree <app directory>\`: a new lane's first dev-client launch restarts the app. Or run this without restart.`
 				);
 				// Not a failed launch: retrying it as one would fail again.
 				expect(refusedAgain.lane).toBeUndefined();

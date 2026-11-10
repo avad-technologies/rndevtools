@@ -250,6 +250,12 @@ class LaneLaunchError extends Error {
 }
 
 /**
+ * The lane up an agent runs to bring a lane back, Metro, backend and all, as
+ * the CLI parses it: an operation is always its --operation flag.
+ */
+const LANE_UP = '`rndevtools lane --operation up --worktree <app directory>`';
+
+/**
  * A restart terminates the app by its bundle identifier, which a lane reads
  * from the worktree's app.json only when it starts; without it nothing names
  * the app. A lane that started without one keeps having none.
@@ -257,7 +263,7 @@ class LaneLaunchError extends Error {
 function restartWithoutBundleIdentifier(laneId?: string): Error {
 	return new Error(
 		laneId
-			? `A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then run lane down and lane up for a new lane, whose first dev-client launch restarts the app; or run this without restart.`
+			? `A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${laneId}\` and ${LANE_UP}: a new lane's first dev-client launch restarts the app. Or run this without restart.`
 			: "A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart."
 	);
 }
@@ -777,7 +783,7 @@ export class LaneService {
 			? {
 					...failedBackend(
 						record.policy,
-						'Current backend health could not be read. Run lane up to recover this lane.'
+						`Current backend health could not be read. Run ${LANE_UP} to recover this lane.`
 					),
 					...(record.summary.stackId
 						? { stackId: record.summary.stackId }
@@ -805,13 +811,12 @@ export class LaneService {
 					? failedBackend(
 							'required',
 							record.note ??
-								'Metro has not applied the current backend values. Run lane up to recover this lane.'
+								`Metro has not applied the current backend values. Run ${LANE_UP} to recover this lane.`
 						)
 					: (record?.summary ??
 							backendSummary('required', 'failed', {
 								reason: 'failed',
-								reasonText:
-									'Run lane up to recover this lane before launching.',
+								reasonText: `Run ${LANE_UP} to recover this lane before launching.`,
 							}))
 			);
 		}
@@ -1590,7 +1595,7 @@ export class LaneService {
 		}
 		if (!this.#makeDeviceRequestRoom()) {
 			throw new Error(
-				`${MAX_DEVICE_REQUESTS} lane starts are already waiting on the user for a Simulator, so this one was not added. ${resolved.message} Ask the user to settle or dismiss the waiting requests in RN Devtools, then run lane up again.`
+				`${MAX_DEVICE_REQUESTS} lane starts are already waiting on the user for a Simulator, so this one was not added. ${resolved.message} Ask the user to settle or dismiss the waiting requests in RN Devtools, then run ${LANE_UP} again.`
 			);
 		}
 		const now = this.#now();
@@ -2177,8 +2182,8 @@ export class LaneService {
 			}
 			throw new Error(
 				metro === 'exited'
-					? `Metro for ${lane.branch} exited before it became ready. Read the lane log for the bundler error.`
-					: `Metro on port ${lane.port} did not become ready within ${LANE_METRO_HEALTH_TIMEOUT_MS / 1_000}s. Read the lane log for the bundler error.`
+					? `Metro for ${lane.branch} exited before it became ready. Read the lane's log for the bundler error.`
+					: `Metro on port ${lane.port} did not become ready within ${LANE_METRO_HEALTH_TIMEOUT_MS / 1_000}s. Read the lane's log for the bundler error.`
 			);
 		}
 		const target =
@@ -2191,7 +2196,7 @@ export class LaneService {
 			// A lane reads its scheme only when it starts, so declaring one now
 			// gives this lane none: only a launch with a URL of its own opens it.
 			throw new Error(
-				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`, which lane up cannot take.`
+				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`; the up operation takes no URL.`
 			);
 		}
 		// Opening a scheme the Simulator has no app for fails with an opaque
@@ -2367,7 +2372,7 @@ export class LaneService {
 			await this.#noteFirstLaunch(
 				lane,
 				warnings,
-				`${bundleIdentifier} could not be terminated before the lane's first launch (${safeErrorText(error)}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.`
+				`${bundleIdentifier} could not be terminated before the lane's first launch (${safeErrorText(error)}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run \`rndevtools lane --operation launch --lane-id ${lane.id} --restart\` to start it fresh.`
 			);
 		}
 	}
@@ -2533,7 +2538,7 @@ export class LaneService {
 		const lane = this.#requireLane(laneId);
 		if (!this.#isMetroRunning(lane)) {
 			throw new Error(
-				`Metro isn't running for lane ${laneId}. Run lane up to start it again.`
+				`Metro isn't running for lane ${laneId}. Run ${LANE_UP} to start it again.`
 			);
 		}
 		const environment = this.#environmentFor(lane);
@@ -2869,7 +2874,7 @@ export class LaneService {
 			this.#assertOperationActive(signal);
 			if (this.#requireLane(lane.id).metroPid === undefined) {
 				throw new Error(
-					`Metro isn't running for lane ${lane.id}. Run lane up to start it again.`
+					`Metro isn't running for lane ${lane.id}. Run ${LANE_UP} to start it again.`
 				);
 			}
 		}
@@ -3232,8 +3237,7 @@ export class LaneService {
 					record.metro = 'unchanged';
 				} else {
 					record.metro = 'needs-restart';
-					record.note =
-						"The restored Metro's backend values changed or could not be verified. Run lane up to apply the current backend.";
+					record.note = `The restored Metro's backend values changed or could not be verified. Run ${LANE_UP} to apply the current backend.`;
 				}
 			}
 			this.#touch();
@@ -3617,8 +3621,7 @@ export class LaneService {
 	): Promise<void> {
 		if (!this.#isMetroRunning(lane)) {
 			record.metro = 'needs-restart';
-			record.note =
-				'Metro for this lane is not running. Run lane up to start it with the backend.';
+			record.note = `Metro for this lane is not running. Run ${LANE_UP} to start it with the backend.`;
 			return;
 		}
 		if (
@@ -3787,7 +3790,7 @@ export class LaneService {
 			return;
 		}
 		throw new Error(
-			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call native plan for this worktree and Simulator first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${lane.id} --restart\`: the build opens the app against port 8081, and the restart reopens it with this lane's Metro. Metro on port ${lane.port} is still running.`
+			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call \`rndevtools native --operation plan --worktree <app directory> --udid ${lane.simulatorUdid}\` first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${lane.id} --restart\`: the build opens the app against port 8081, and the restart reopens it with this lane's Metro. Metro on port ${lane.port} is still running.`
 		);
 	}
 

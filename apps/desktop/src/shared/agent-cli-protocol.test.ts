@@ -516,7 +516,9 @@ describe('agent CLI protocol', () => {
 			{ operation: 'log', laneId, restart: false },
 		]) {
 			expect(lane(fields).success).toBe(false);
-			expect(messages(fields)).toMatch(/Only lane up and launch take restart/);
+			expect(messages(fields)).toMatch(
+				/Only the up and launch operations take restart/
+			);
 		}
 		expect(
 			messages({

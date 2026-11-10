@@ -2245,7 +2245,7 @@ describe('agent command router', () => {
 					(settled.value as Record<string, unknown>).recommendation
 				);
 				expect(recommendation).toBe(
-					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
+					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native with operation plan again.`
 				);
 				expect(vi.getTimerCount()).toBe(0);
 			});
@@ -2400,7 +2400,7 @@ describe('agent command router', () => {
 				const recommendation = String(result.recommendation);
 				expect(recommendation).toMatch(verb);
 				expect(recommendation).toMatch(
-					/ installed is left out: this Simulator is shut down, and its apps can be listed only while it is booted \(lane up boots it\)\.$/
+					/ installed is left out: this Simulator is shut down, and its apps can be listed only while it is booted \(`rndevtools lane --operation up` boots it\)\.$/
 				);
 				// A Simulator that is not booted has nothing to list.
 				expect(actions).toHaveLength(0);
@@ -4184,7 +4184,7 @@ describe('agent command router', () => {
 		it('hands lane up and launch what their launch could not do unasked', async () => {
 			const { dependencies } = fixture();
 			const warning =
-				"com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run lane launch with restart to start it fresh.";
+				"com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run `rndevtools lane --operation launch --lane-id lane-11111111-2222-4333-8444-555555555555 --restart` to start it fresh.";
 			const { lanes } = lanesAnswering({
 				completed: true,
 				lane,
@@ -4223,9 +4223,9 @@ describe('agent command router', () => {
 		}
 
 		const timedOut =
-			'Metro on port 8100 did not become ready within 15s. Read the lane log for the bundler error.';
+			"Metro on port 8100 did not become ready within 15s. Read the lane's log for the bundler error.";
 		const exited =
-			'Metro for feature exited before it became ready. Read the lane log for the bundler error.';
+			"Metro for feature exited before it became ready. Read the lane's log for the bundler error.";
 		const upCommand = {
 			kind: 'lane',
 			operation: 'up',
@@ -4297,7 +4297,7 @@ describe('agent command router', () => {
 			);
 			expect(dead.message).toBe(`Lane ${lane.id} did not launch: ${exited}`);
 			expect(dead.recovery).toBe(
-				`Metro for lane ${lane.id} is not running, and lane launch does not start it. Once the cause is fixed, run \`${upAgain}\` to start Metro again and open the dev client. ${log}`
+				`Metro for lane ${lane.id} is not running, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain}\` to start Metro again and open the dev client. ${log}`
 			);
 			// lane up opens the dev client and restarts the app, so only the
 			// deep link is left for a lane launch after it.
@@ -4413,10 +4413,11 @@ describe('agent command router', () => {
 				reason: 'failed',
 				appEnvNames: [],
 				warnings: [],
-				reasonText: 'Run lane up to recover this lane before launching.',
+				reasonText:
+					'Run `rndevtools lane --operation up --worktree <app directory>` to recover this lane before launching.',
 			};
 			const error =
-				'This lane requires its local backend, which is failed (failed). Run lane up to recover this lane before launching.';
+				'This lane requires its local backend, which is failed (failed). Run `rndevtools lane --operation up --worktree <app directory>` to recover this lane before launching.';
 			const up = await failure(
 				{ completed: false, error, lane, backend },
 				upCommand
@@ -4432,7 +4433,7 @@ describe('agent command router', () => {
 			);
 			expect(launch.message).toBe(`Lane ${lane.id} did not launch: ${error}`);
 			expect(launch.recovery).toBe(
-				`Lane ${lane.id} requires its local backend, and lane launch does not start it. Once the cause is fixed, run \`${upAgain}\` to start the backend and open the dev client. ${log}`
+				`Lane ${lane.id} requires its local backend, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain}\` to start the backend and open the dev client. ${log}`
 			);
 		});
 
@@ -4456,7 +4457,7 @@ describe('agent command router', () => {
 
 		it('sends a lane with no URL scheme to a launch with a full URL, which lane up cannot take', async () => {
 			const { scheme: _scheme, ...bare } = lane;
-			const error = `Lane ${lane.id} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`${launchAgain} --url <full launch URL>\`, which lane up cannot take.`;
+			const error = `Lane ${lane.id} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`${launchAgain} --url <full launch URL>\`; the up operation takes no URL.`;
 			const url =
 				"'<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'";
 			const recovery = `Lane ${lane.id} has no URL scheme for its dev client: the worktree's app.json gave none when the lane started, and a lane keeps what it started with. Only a launch with a full URL opens it: \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers. Or declare a scheme in app.json and replace the lane: \`rndevtools lane --operation down --lane-id ${lane.id}\`, then \`${upAgain}\`. ${log}`;

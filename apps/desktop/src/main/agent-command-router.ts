@@ -1273,8 +1273,8 @@ function laneRetryRecovery(
 		const then =
 			asked.url !== undefined ? `, then \`${launch}\` with the same --url` : '';
 		return backendFailed
-			? `Lane ${lane.id} requires its local backend, and lane launch does not start it. ${run} \`${up}\` to start the backend and open the dev client${then}. ${log}`
-			: `Metro for lane ${lane.id} is not running, and lane launch does not start it. ${run} \`${up}\` to start Metro again and open the dev client${then}. ${log}`;
+			? `Lane ${lane.id} requires its local backend, and the launch operation does not start it. ${run} \`${up}\` to start the backend and open the dev client${then}. ${log}`
+			: `Metro for lane ${lane.id} is not running, and the launch operation does not start it. ${run} \`${up}\` to start Metro again and open the dev client${then}. ${log}`;
 	}
 	return `The lane keeps its Simulator and its Metro on port ${lane.port}. ${run} \`${launch}${restart}\`${asked.url !== undefined ? ' with the same --url' : ''} to open it again. ${log}`;
 }
@@ -1689,7 +1689,7 @@ function laneUpResult(receipt: LaneOperationReceipt, asked: LaneLaunchAsk) {
 				: failure,
 			retryable: true,
 			recovery:
-				'Call supabase --operation up for this worktree to see why its stack cannot start, or run lane up with backend auto to start the lane without it.',
+				'Call supabase --operation up for this worktree to see why its stack cannot start, or run `rndevtools lane --operation up --worktree <app directory> --backend auto` to start the lane without it.',
 		});
 	}
 	const result = laneReceiptResult(receipt, asked);
@@ -1928,7 +1928,7 @@ function createRoutes({
 					const bundle = plan.bundleIdentifier;
 					if (command.operation === 'plan' && bundle) {
 						if (target.state !== 'booted') {
-							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (lane up boots it).`;
+							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (\`rndevtools lane --operation up\` boots it).`;
 						} else {
 							const listing = (await runSimulatorAction(
 								simulator,
@@ -1988,8 +1988,8 @@ function createRoutes({
 					}
 					return {
 						first: lane
-							? `Metro for lane ${lane.id} on port ${lane.port} is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
-							: 'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.',
+							? `Metro for lane ${lane.id} on port ${lane.port} is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native with operation plan again.`
+							: 'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native with operation plan again.',
 					};
 				};
 				if (command.operation === 'plan') {
@@ -2016,7 +2016,7 @@ function createRoutes({
 							: advice,
 					};
 				}
-				if (!target) required('native install requires udid.');
+				if (!target) required('The install operation requires udid.');
 				// Installing can replace the dev client a lane runs, so only the
 				// device's holder may.
 				assertDeviceAccess(agents, target.udid, context.agent);
@@ -2573,7 +2573,7 @@ function createRoutes({
 					case 'up': {
 						const worktreePath =
 							command.worktreePath ??
-							required('lane up requires worktreePath.');
+							required('The up operation requires worktreePath.');
 						// A device another agent holds is refused before anything boots:
 						// the named one or, without a udid, the device of the app's
 						// existing lane, which the lane service resumes. With neither,

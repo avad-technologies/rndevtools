@@ -387,7 +387,7 @@ export class FailureService {
 						severity: 'error',
 						title: 'Metro is no longer running',
 						detail:
-							'The stored Metro PID is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane log and nearby diagnostic reports.',
+							"The stored Metro PID is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane's log and nearby diagnostic reports.",
 						source: 'Lane health check',
 					}) || changed;
 			}
@@ -449,7 +449,7 @@ export class FailureService {
 			severity: 'error',
 			title: 'Metro is no longer running',
 			detail:
-				'The stored Metro PID now names another process, so the lane forgot it: its own Metro is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane log and nearby diagnostic reports.',
+				"The stored Metro PID now names another process, so the lane forgot it: its own Metro is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane's log and nearby diagnostic reports.",
 			source: 'Lane health check',
 		});
 	}

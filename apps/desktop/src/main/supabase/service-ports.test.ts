@@ -329,7 +329,9 @@ describe('cached lane backend health', () => {
 			);
 			expect(projected.apiUrl).toBeUndefined();
 			expect(projected.appEnvNames).toEqual([]);
-			expect(projected.reasonText).toContain('Run lane up');
+			expect(projected.reasonText).toContain(
+				'Run `rndevtools lane --operation up --worktree <app directory>`'
+			);
 			// A running stack alone cannot prove this Metro received its new values.
 			expect(describeSupabaseLaneBackend(projected, state)).toEqual(projected);
 		}
