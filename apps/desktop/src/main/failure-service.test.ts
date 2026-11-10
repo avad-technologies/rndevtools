@@ -127,6 +127,22 @@ describe('persistent failure monitoring', () => {
 			checkedAt: now,
 		});
 	});
+	it('starts its scans once however many windows ask, and never once stopped', async () => {
+		// Each window the desktop opens asks once it is shown.
+		const service = make();
+		await service.start();
+		const scan = vi.spyOn(service, 'scan');
+		service.startScanning();
+		service.startScanning();
+		expect(scan).toHaveBeenCalledOnce();
+		await service.stop();
+		const stopped = make();
+		await stopped.start();
+		await stopped.stop();
+		const never = vi.spyOn(stopped, 'scan');
+		stopped.startScanning();
+		expect(never).not.toHaveBeenCalled();
+	});
 	it('does not read an unchanged report again on later scans', async () => {
 		const file = path.join(root, 'reports/ExampleApp.ips');
 		// Whole seconds, so setting the time again reproduces it exactly.

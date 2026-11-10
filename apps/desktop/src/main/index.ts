@@ -1802,14 +1802,22 @@ if (!app.requestSingleInstanceLock()) {
 			await laneService.start();
 			await agentCliService.start();
 			if (shutdownStarted) return;
-			createWindow();
-			// The first diagnostic report scan parses every recent report, so it
-			// runs in the background once the window is open, never before it.
-			failureService.startScanning();
+			// The first diagnostic report scan reads and parses every recent
+			// report on this thread, so it starts once a window is on screen
+			// (createWindow shows each on ready-to-show), never before: the
+			// window's first paint does not wait for it. A window opened after
+			// one that closed before it showed asks again; only the first ask
+			// starts the scans.
+			const openWindow = () => {
+				createWindow().once('ready-to-show', () =>
+					failureService?.startScanning()
+				);
+			};
+			openWindow();
 
 			app.on('activate', () => {
 				if (!shutdownStarted && BrowserWindow.getAllWindows().length === 0) {
-					createWindow();
+					openWindow();
 				}
 			});
 		})
