@@ -570,8 +570,14 @@ export class LaneService {
 		this.#lifecycle.abort();
 		if (this.#reconcileTimer) clearInterval(this.#reconcileTimer);
 		// Probes can finish on their own. Wait only for maintenance that has
-		// already started a write or an expired hold's release.
-		await Promise.allSettled(this.#maintenanceWrites);
+		// already started a write or an expired hold's release, and for every
+		// lane stop under way: release --all answers before a slow Metro has
+		// exited, and its stop must still finish that Metro off and drop the
+		// lane. Each stop is bounded by its exit waits.
+		await Promise.allSettled([
+			...this.#maintenanceWrites,
+			...this.#stoppingLanes.values(),
+		]);
 		// A Metro spawning now has no lane to keep it and is cleaned up once
 		// its spawn returns; give that cleanup time to signal it.
 		await this.#drainMetroWork(this.#now() + METRO_SHUTDOWN_GRACE_MS);

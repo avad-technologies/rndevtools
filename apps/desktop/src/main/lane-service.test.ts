@@ -1876,6 +1876,29 @@ describe('LaneService', () => {
 			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([laneId]);
 		});
 
+		it('is finished off before quit returns when a stop nobody awaits is under way', async () => {
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			// As release --all leaves a stop that outlasts its budget: running,
+			// with nobody waiting for its receipt.
+			const pending = stop();
+			await vi.waitFor(() => expect(signals).toHaveLength(1));
+			await service.stop();
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(false);
+			expect((await pending).completed).toBe(true);
+			const reopened = new LaneStore(root);
+			await reopened.start();
+			expect(reopened.lanes()).toEqual([]);
+		});
+
 		it('keeps the lane when it outlives SIGKILL too, so a later stop can finish it', async () => {
 			const original = metro.stop;
 			metro.stop = async (target, _port, _directory, options) => {
