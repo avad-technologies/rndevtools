@@ -231,6 +231,58 @@ describe('persistent failure monitoring', () => {
 			}),
 		]);
 	});
+	it('remembers a Metro RN Devtools asked to stop after newer events push the stop out of the history', async () => {
+		let service = make();
+		const missing = () =>
+			service
+				.getState()
+				.records.filter(
+					(record) => record.title === 'Metro is no longer running'
+				);
+		await service.start();
+		service.observeLanes([lane]);
+		await service.laneIntent(lane, 'Required backend failed to attach');
+		await service.metroExited({
+			pid: 1234,
+			port: 8100,
+			startedAt: now,
+			code: null,
+			signal: 'SIGTERM',
+		});
+		const stopped: Lane = { ...lane, metro: 'stopped' };
+		service.observeLanes([stopped]);
+		now += 61_000;
+		// Two hundred newer events fill the history, and neither record of
+		// the stop stays in it.
+		service.observeSimulator({
+			jobs: Array.from({ length: 200 }, (_, index) => ({
+				id: `job-${index}`,
+				kind: 'app.install',
+				status: 'failed',
+				message: 'Install failed.',
+				createdAt: now,
+				startedAt: now,
+				finishedAt: now + index + 1,
+			})),
+		} as unknown as SimulatorState);
+		expect(
+			service.getState().records.some((record) => record.metroPid === 1234)
+		).toBe(false);
+		now += 10_000;
+		service.observeLanes([stopped]);
+		expect(missing()).toEqual([]);
+		await service.stop();
+		service = make();
+		await service.start();
+		service.observeLanes([stopped]);
+		expect(missing()).toEqual([]);
+		// The lane's next Metro was never asked to stop, so its loss counts.
+		service.observeLanes([{ ...stopped, metroPid: 1235 }]);
+		expect(missing()).toEqual([
+			expect.objectContaining({ laneId: lane.id, metroPid: 1235 }),
+		]);
+	});
+
 	it('keeps a bounded redacted Metro log with an unexpected exit', async () => {
 		const service = make();
 		await service.start();

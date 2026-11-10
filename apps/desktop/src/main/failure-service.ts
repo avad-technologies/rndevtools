@@ -32,6 +32,13 @@ const contextSchema = z.strictObject({
 	endedAt: z.number().finite().nonnegative().optional(),
 	metroPid: z.number().int().positive().optional(),
 	port: z.number().int().positive(),
+	/**
+	 * When RN Devtools asked this context's Metro to stop. It is kept with
+	 * the lane rather than in the capped history, so a lane listed as stopped
+	 * for days still has its stop on record, and it ends with the context:
+	 * once the lane is gone or runs another Metro.
+	 */
+	stopRequestedAt: z.number().finite().nonnegative().optional(),
 });
 type LaneContext = z.infer<typeof contextSchema>;
 const storedSchema = z.strictObject({
@@ -43,6 +50,12 @@ type Handoff = (
 	record: FailureRecord,
 	request: Extract<FailureRequest, { operation: 'handoff' }>
 ) => Promise<{ message?: string; cancelled?: boolean }>;
+
+/** A context once its lane is gone or runs another Metro; no stop is pending. */
+function ended(context: LaneContext, at: number): LaneContext {
+	const { stopRequestedAt: _stopRequestedAt, ...rest } = context;
+	return { ...rest, endedAt: at };
+}
 
 /** Local, bounded history. A diagnostic is evidence, never an automatic repair command. */
 export class FailureService {
@@ -155,7 +168,20 @@ export class FailureService {
 		});
 	}
 
-	#remember(lane: LaneContext): void {
+	/**
+	 * Records the lane as it runs now, ending the context of the Metro it ran
+	 * before. A stop request already on record for this very Metro stays;
+	 * `stopRequestedAt` records a new one.
+	 */
+	#remember(lane: LaneContext, stopRequestedAt?: number): void {
+		const same = (value: LaneContext) =>
+			value.id === lane.id &&
+			value.metroPid === lane.metroPid &&
+			value.startedAt === lane.startedAt;
+		const requestedAt =
+			lane.metroPid === undefined
+				? undefined
+				: (stopRequestedAt ?? this.#contexts.find(same)?.stopRequestedAt);
 		const context = contextSchema.parse({
 			id: lane.id,
 			simulatorUdid: lane.simulatorUdid,
@@ -163,22 +189,29 @@ export class FailureService {
 			startedAt: lane.startedAt,
 			metroPid: lane.metroPid,
 			port: lane.port,
+			...(requestedAt !== undefined ? { stopRequestedAt: requestedAt } : {}),
 		});
 		this.#contexts = [
 			context,
 			...this.#contexts
-				.filter(
-					(value) =>
-						value.id !== lane.id ||
-						value.metroPid !== lane.metroPid ||
-						value.startedAt !== lane.startedAt
-				)
+				.filter((value) => !same(value))
 				.map((value) =>
 					value.id === lane.id && value.endedAt === undefined
-						? { ...value, endedAt: context.startedAt ?? this.#now() }
+						? ended(value, context.startedAt ?? this.#now())
 						: value
 				),
 		].slice(0, 64);
+	}
+
+	/** Whether RN Devtools asked the Metro the lane lists to stop. */
+	#stopRequested(lane: Pick<Lane, 'id' | 'metroPid'>): boolean {
+		return this.#contexts.some(
+			(value) =>
+				value.id === lane.id &&
+				value.metroPid === lane.metroPid &&
+				value.endedAt === undefined &&
+				value.stopRequestedAt !== undefined
+		);
 	}
 
 	#context(lane: LaneContext | undefined): Partial<FailureRecord> {
@@ -262,7 +295,7 @@ export class FailureService {
 	}
 
 	async laneIntent(lane: Lane, reason: string): Promise<void> {
-		this.#remember(lane);
+		this.#remember(lane, this.#now());
 		if (lane.metroPid)
 			this.#expected.set(lane.metroPid, { reason, at: this.#now() });
 		this.#add({
@@ -330,14 +363,17 @@ export class FailureService {
 				lane.metro === 'stopped' &&
 				lane.metroPid &&
 				!this.#expected.has(lane.metroPid) &&
+				// RN Devtools asked this Metro to stop. The lane can keep it listed
+				// as stopped long after the intent window, as a required lane whose
+				// backend failed to attach does, and across desktop restarts. The
+				// request is kept with the lane's context, which newer events
+				// cannot push out of the capped history.
+				!this.#stopRequested(lane) &&
 				!this.#records.some(
 					(record) =>
 						record.metroPid === lane.metroPid &&
 						(record.kind === 'metro-exit' ||
-							// RN Devtools asked this Metro to stop. The lane can keep it
-							// listed as stopped long after the intent window, as a
-							// required lane whose backend failed to attach does, and
-							// across desktop restarts; the stop is already on record.
+							// A history saved before stops were kept with the context.
 							(record.kind === 'lane-lifecycle' && record.laneId === lane.id))
 				)
 			) {
@@ -362,7 +398,7 @@ export class FailureService {
 			)
 				return context;
 			changed = true;
-			return { ...context, endedAt: this.#now() };
+			return ended(context, this.#now());
 		});
 		this.#records = this.#records.map((record) => {
 			if (
