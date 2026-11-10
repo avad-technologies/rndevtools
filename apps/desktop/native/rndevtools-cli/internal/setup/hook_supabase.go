@@ -767,6 +767,8 @@ func shellJoin(words []string) string {
 	return strings.Join(quoted, " ")
 }
 
+// shellQuote quotes a word the agent wrote, keeping the expansions it wrote.
+// A filesystem path is pathWord's.
 func shellQuote(word string) string {
 	switch {
 	case word != "" && safeShellWord.MatchString(word):
@@ -776,6 +778,30 @@ func shellQuote(word string) string {
 		return `"` + word + `"`
 	}
 	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+}
+
+// literalShellWord is a word every shell reads as it is: no character of it
+// expands, globs, or starts a tilde, history, or zsh = expansion, wherever it
+// stands.
+var literalShellWord = regexp.MustCompile(`^[A-Za-z0-9_./@%+=:,-]+$`)
+
+// pathWord is a filesystem path as one word of a command the agent may run:
+// bare when nothing in it needs quoting, and otherwise in single quotes,
+// which each single quote of the path closes, escaped, and opens again, so
+// that nothing in it expands. In a path, a `$` is a character of a
+// directory's name, which the checkout controls, and in double quotes the
+// shell would run the `$(…)` it spells.
+// ok is false for a path that displayPath would strip or cut (one with a
+// backtick, a control or format character, or longer than its bound): a
+// command naming what is left would name another directory.
+func pathWord(path string) (word string, ok bool) {
+	if path == "" || displayPath(path) != path {
+		return "", false
+	}
+	if literalShellWord.MatchString(path) {
+		return path, true
+	}
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'", true
 }
 
 // MARK: - Rules

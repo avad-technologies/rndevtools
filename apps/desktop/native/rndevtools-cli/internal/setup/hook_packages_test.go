@@ -215,6 +215,42 @@ func TestReasonsQuoteOnlyTheRepositoryTextThatShows(t *testing.T) {
 	}
 }
 
+func TestPackageReasonsQuoteTheAppDirectoryAsItIs(t *testing.T) {
+	// The steered commands name the package's directory, whose name the
+	// checkout controls, and the agent runs them in its own shell: a `$(…)`
+	// or `$NAME` in a directory's name is part of the name, never a command
+	// to run or a variable to expand.
+	base := t.TempDir()
+	for _, row := range []struct{ name, want string }{
+		{"x$(touch pwned)", "'" + base + "/x$(touch pwned)'"},
+		{"My$App", "'" + base + "/My$App'"},
+		{"it's", "'" + base + `/it'\''s'`},
+		{"two words", "'" + base + "/two words'"},
+		{"plain-app", base + "/plain-app"},
+	} {
+		directory := filepath.Join(base, row.name)
+		write(t, filepath.Join(directory, "package.json"), `{"scripts":{"start":"expo start","ios":"expo run:ios"}}`)
+		for _, command := range []string{"npm start", "npm run ios"} {
+			decision := judgeIn(directory, command)
+			named := strings.Count(decision.Reason, "--worktree "+row.want+" ") + strings.Count(decision.Reason, "--worktree "+row.want+"`")
+			if !decision.Block || named == 0 || named != strings.Count(decision.Reason, "--worktree ") {
+				t.Errorf("%q in %q: every --worktree must name the directory as %s: %+v", command, row.name, row.want, decision)
+			}
+		}
+	}
+	// A path the reason could only quote stripped or cut (a backtick, a
+	// control character, past the display bound) would name another
+	// directory, so the commands keep the placeholder.
+	for _, name := range []string{"x`touch pwned`", "tab\there", strings.Repeat("d", 120) + "/" + strings.Repeat("e", 120)} {
+		directory := filepath.Join(base, name)
+		write(t, filepath.Join(directory, "package.json"), `{"scripts":{"start":"expo start"}}`)
+		decision := judgeIn(directory, "npm start")
+		if !decision.Block || !strings.Contains(decision.Reason, "`rndevtools lane --operation up --worktree <app directory>`") {
+			t.Errorf("npm start in %q: the reason must keep the placeholder: %+v", name, decision)
+		}
+	}
+}
+
 func TestParsePackageScriptReadsTheManagersOwnWords(t *testing.T) {
 	for _, row := range []struct {
 		command   string

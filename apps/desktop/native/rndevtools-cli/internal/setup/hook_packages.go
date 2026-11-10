@@ -291,8 +291,13 @@ func (rules *packageRules) judgeSegment(line shellLine, index int, directory str
 	if !decision.Block {
 		return HookDecision{}
 	}
-	// The script's reason names the app's directory, which is the package's.
-	reason := strings.ReplaceAll(decision.Reason, appDirectory, shellQuote(displayPath(manifest.directory)))
+	// The script's reason names the app's directory, which is the package's,
+	// as a word the shell reads as it is; one it cannot quote whole stays the
+	// placeholder.
+	reason := decision.Reason
+	if word, ok := pathWord(manifest.directory); ok {
+		reason = strings.ReplaceAll(reason, appDirectory, word)
+	}
 	return blocked(fmt.Sprintf("`%s` runs the `%s` script of %s: `%s`. %s",
 		invocation.command, displayText(invocation.name, 64), displayPath(manifest.path), displayText(script, 160), reason))
 }
