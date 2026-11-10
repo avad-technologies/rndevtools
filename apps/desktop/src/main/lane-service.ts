@@ -2188,9 +2188,12 @@ export class LaneService {
 			lastLaunchedAt: this.#now(),
 			...(holder ? { agent: holder } : {}),
 		};
-		// Whoever launched, a launch held back for the backend has happened.
+		// Whoever launched, a launch held back for the backend has happened,
+		// unless it was held back with a restart this launch did not do: a
+		// deep link without restart never terminates the app, so that launch
+		// stays held back, its restart with it, for the dev client to open.
 		const record = this.#backendRecords.get(laneId);
-		if (record) {
+		if (record && (asked || !record.deferredRestart)) {
 			record.deferredLaunch = false;
 			record.deferredRestart = false;
 		}

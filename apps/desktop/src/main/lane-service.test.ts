@@ -4704,6 +4704,58 @@ describe('LaneService', () => {
 			]);
 		});
 
+		it('keeps a held-back restart through a deep link that does not restart, for the launch it goes with', async () => {
+			const started = await up({ backend: 'off' });
+			const laneId = started.lane?.id as string;
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const resumed = await up({ backend: 'auto', restart: true });
+			expect(resumed.backend).toMatchObject({ launch: 'deferred' });
+			expect(kinds()).toHaveLength(4);
+
+			// A deep link without restart never terminates the app, so it does
+			// not do the restart that was asked for, and leaves it held back.
+			const linked = await lanes.runOperation({
+				actionId: 'op-held-link',
+				kind: 'lane.launch',
+				laneId,
+				url: 'checkout',
+			});
+			expect(linked.completed).toBe(true);
+			expect(kinds().slice(4)).toEqual(['app.list', 'url.open']);
+			expect(linked.lane?.backend).toMatchObject({ launch: 'deferred' });
+
+			// The held-back launch then opens the dev client, restarting the app.
+			await lanes.launchDeferred(laneId);
+			expect(kinds().slice(6)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
+
+			// A deep link that restarts does that restart: it leaves nothing held.
+			backends.answers.push(starting(new Promise(() => undefined)));
+			await up({ backend: 'auto', restart: true });
+			expect(lanes.getState().lanes[0]?.backend).toMatchObject({
+				launch: 'deferred',
+			});
+			const restarted = await lanes.runOperation({
+				actionId: 'op-held-link-restart',
+				kind: 'lane.launch',
+				laneId,
+				url: 'checkout',
+				restart: true,
+			});
+			expect(restarted.completed).toBe(true);
+			expect(kinds().slice(9)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(restarted.lane?.backend).not.toHaveProperty('launch');
+		});
+
 		it('drops a restart once a lane up hands it to a launch, even one that fails, so a later relaunch keeps the app', async () => {
 			const started = await up({ backend: 'off' });
 			const laneId = started.lane?.id as string;
