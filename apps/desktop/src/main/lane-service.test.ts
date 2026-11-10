@@ -5518,9 +5518,12 @@ describe('LaneService', () => {
 			});
 			expect(receipt.completed).toBe(false);
 			expect(receipt.error).toMatch(/com\.example\.app is not installed/);
-			expect(receipt.error).toMatch(
-				new RegExp(`expo run:ios --device ${UDID} --port 8100 --no-bundler`)
+			// Expo CLI refuses --port with --no-bundler, so the build names no
+			// port and the restart afterwards points the app at this lane.
+			expect(receipt.error).toContain(
+				`run \`npx expo run:ios --device ${UDID} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${receipt.lane?.id} --restart\`: the build opens the app against port 8081, and the restart reopens it with this lane's Metro.`
 			);
+			expect(receipt.error).not.toMatch(/`npx expo run:ios[^`]*--port/);
 			expect(receipt.error).toMatch(/Metro on port 8100 is still running/);
 			expect(simulator.actions.map((action) => action.kind)).toEqual([
 				'device.boot',

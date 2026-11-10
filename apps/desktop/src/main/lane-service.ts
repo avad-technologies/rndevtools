@@ -3725,7 +3725,7 @@ export class LaneService {
 			return;
 		}
 		throw new Error(
-			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call native plan for this worktree and Simulator first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --port ${lane.port} --no-bundler\` from the worktree, then run lane launch again. Metro on port ${lane.port} is still running.`
+			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call native plan for this worktree and Simulator first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${lane.id} --restart\`: the build opens the app against port 8081, and the restart reopens it with this lane's Metro. Metro on port ${lane.port} is still running.`
 		);
 	}
 

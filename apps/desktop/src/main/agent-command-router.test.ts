@@ -1997,7 +1997,7 @@ describe('agent command router', () => {
 				context
 			)) as Record<string, unknown>;
 			expect(String(result.recommendation)).toMatch(
-				/expo run:ios --configuration Release --device .* --port 8107 --no-bundler/
+				/expo run:ios --configuration Release --device \S+ --no-bundler`/
 			);
 		});
 
@@ -2026,11 +2026,63 @@ describe('agent command router', () => {
 					context
 				)) as Record<string, unknown>;
 				expect(result.recommendation).toContain(
-					`expo run:ios --device ${UDID} --port 8107 --no-bundler`
+					`\`npx expo run:ios --device ${UDID} --no-bundler\``
+				);
+				expect(result.recommendation).toContain(
+					`lane ${BUILD_LANE_ID}'s Metro on port 8107`
 				);
 				expect(result.recommendation).not.toContain('--configuration Debug');
 			}
 		);
+
+		it('gives a build command Expo CLI accepts, then the restart that points the app at the lane', async () => {
+			// @expo/cli 57 refuses --port with --no-bundler (BAD_ARGS from
+			// build/src/run/resolveBundlerProps.js) before it builds anything, and
+			// with --no-bundler it opens the app it installed against port 8081.
+			// So the build names no port, and a lane launch with restart reopens
+			// the app with the lane's own Metro.
+			const restart = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID} --restart\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler, and the restart reopens it with lane ${BUILD_LANE_ID}'s Metro on port 8107`;
+			const build = `npx expo run:ios --device ${UDID} --no-bundler`;
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const route = (cache: 'miss' | 'no-provider') =>
+				createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(),
+					nativePlan: plan(cache),
+				});
+			const native = {
+				kind: 'native',
+				configuration: 'Debug',
+				worktreePath: '/Users/dev/app',
+				udid: UDID,
+			} as const;
+			const miss = (await route('miss')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(miss.recommendation).toBe(
+				`build: no cached binary for this fingerprint; run \`${build}\` once (the build cache will store it for every other worktree), ${restart}.`
+			);
+			const uncached = (await route('no-provider')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(uncached.recommendation).toBe(
+				`build: this project declares no buildCacheProvider, so every worktree builds; run \`${build}\`, ${restart}.`
+			);
+			await expect(
+				route('miss')({ ...native, operation: 'install' }, context)
+			).rejects.toMatchObject({
+				code: 'cache_miss',
+				recovery: `Run \`${build}\`, ${restart}.`,
+			});
+			// The command itself never names a port.
+			for (const text of [miss.recommendation, uncached.recommendation]) {
+				expect(text).not.toMatch(/`npx expo run:ios[^`]*--port/);
+			}
+		});
 
 		it('does not borrow a sibling app lane port in a monorepo', async () => {
 			const { dependencies } = fixture();
@@ -2056,7 +2108,7 @@ describe('agent command router', () => {
 		});
 
 		it.each([
-			['ready', `expo run:ios --device ${UDID} --port 8107 --no-bundler`],
+			['ready', `expo run:ios --device ${UDID} --no-bundler`],
 			// A stopped lane has given its port up; lane up claims it again.
 			['stopped', 'Call lane with operation up'],
 		] as const)(
@@ -2156,7 +2208,7 @@ describe('agent command router', () => {
 				);
 				expect(recommendation).toMatch(/^build: /);
 				expect(recommendation).toContain(
-					`expo run:ios --device ${UDID} --port 8107 --no-bundler`
+					`expo run:ios --device ${UDID} --no-bundler`
 				);
 			});
 
@@ -2174,7 +2226,7 @@ describe('agent command router', () => {
 				await pending;
 				expect(
 					String((settled.value as Record<string, unknown>).recommendation)
-				).toContain(`expo run:ios --device ${UDID} --port 8107 --no-bundler`);
+				).toContain(`expo run:ios --device ${UDID} --no-bundler`);
 			});
 
 			it('holds the build command back from one that never turns ready', async () => {
@@ -2192,7 +2244,7 @@ describe('agent command router', () => {
 					(settled.value as Record<string, unknown>).recommendation
 				);
 				expect(recommendation).toBe(
-					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, and a build would open the app against whatever answers on that port. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
+					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
 				);
 				expect(vi.getTimerCount()).toBe(0);
 			});

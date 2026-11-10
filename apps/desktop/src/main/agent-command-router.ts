@@ -480,11 +480,12 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * The worktree's lane a native build would run against (on `udid`, when the
- * command names one) as it is once its Metro is ready or, while that Metro
- * is starting, as it is when BUILD_LANE_READY_WAIT_MS runs out. Undefined
- * when there is no such lane or its Metro stopped. Only a ready lane may be
- * built against: the lane service marks a lane ready only once the Metro
+ * The worktree's lane a native build is for (on `udid`, when the command
+ * names one) as it is once its Metro is ready or, while that Metro is
+ * starting, as it is when BUILD_LANE_READY_WAIT_MS runs out. Undefined when
+ * there is no such lane or its Metro stopped. Only a ready lane gets the
+ * build command, since the restart that follows the build opens the app with
+ * the lane's Metro: the lane service marks a lane ready only once the Metro
  * answering on its port is proven to be the lane's own, and a starting lane
  * may hold one it could not prove (an adoption that failed, a stop it must
  * retry) while another worktree's packager answers there. A lane whose
@@ -1946,13 +1947,16 @@ function createRoutes({
 					plan.configuration === 'Debug'
 						? ''
 						: ` --configuration ${plan.configuration}`;
-				// Even --no-bundler opens the dev client, so a build runs against a
-				// lane's port, and only once its Metro is ready: Expo then never
-				// opens this app against another project's 8081, nor against a
-				// packager answering on a lane's port that the lane service has not
-				// proven is the lane's own. A lane still starting is waited for.
+				// Expo CLI refuses --port with --no-bundler (BAD_ARGS from
+				// build/src/run/resolveBundlerProps.js in @expo/cli 57, before it
+				// builds anything), and even --no-bundler opens the app it
+				// installed, against port 8081. So the build names no port, and a
+				// lane launch with restart then reopens the app with the lane's own
+				// Metro. Both are given only once that Metro is ready, which the
+				// lane service marks once it proves the Metro answering on the
+				// port is the lane's own. A lane still starting is waited for.
 				const buildStep = async (): Promise<
-					{ command: string } | { first: string }
+					{ command: string; afterward: string } | { first: string }
 				> => {
 					const lane = await awaitBuildLane(
 						lanes,
@@ -1962,12 +1966,13 @@ function createRoutes({
 					);
 					if (lane?.metro === 'ready') {
 						return {
-							command: `npx expo run:ios${configurationFlag} --device ${lane.simulatorUdid} --port ${lane.port} --no-bundler`,
+							command: `npx expo run:ios${configurationFlag} --device ${lane.simulatorUdid} --no-bundler`,
+							afterward: `then \`rndevtools lane --operation launch --lane-id ${lane.id} --restart\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler, and the restart reopens it with lane ${lane.id}'s Metro on port ${lane.port}`,
 						};
 					}
 					return {
 						first: lane
-							? `Metro for lane ${lane.id} on port ${lane.port} is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, and a build would open the app against whatever answers on that port. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
+							? `Metro for lane ${lane.id} on port ${lane.port} is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native plan again.`
 							: 'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.',
 					};
 				};
@@ -1983,8 +1988,8 @@ function createRoutes({
 							'first' in step
 								? `build: ${step.first}`
 								: plan.cache === 'miss'
-									? `build: no cached binary for this fingerprint; run \`${step.command}\` once (the build cache will store it for every other worktree).`
-									: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${step.command}\`.`;
+									? `build: no cached binary for this fingerprint; run \`${step.command}\` once (the build cache will store it for every other worktree), ${step.afterward}.`
+									: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${step.command}\`, ${step.afterward}.`;
 					}
 					return {
 						...plan,
@@ -2007,7 +2012,10 @@ function createRoutes({
 						code: 'cache_miss',
 						message: `No cached binary for fingerprint ${plan.fingerprintHash}; build it first.`,
 						retryable: false,
-						recovery: 'first' in step ? step.first : step.command,
+						recovery:
+							'first' in step
+								? step.first
+								: `Run \`${step.command}\`, ${step.afterward}.`,
 					});
 				}
 				const job = ensureComplete(
