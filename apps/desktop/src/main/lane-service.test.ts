@@ -2154,6 +2154,58 @@ describe('LaneService', () => {
 			expect(reopened.lanes()).toEqual([]);
 		});
 
+		it('names no lane for a launch a stop cuts short while that stop waits for Metro to exit', async () => {
+			const started = await startLane();
+			const laneId = started.lane?.id as string;
+			const pid = started.lane?.metroPid as number;
+			// The launch waits for its Metro to answer, which it does not yet.
+			const health = vi.spyOn(metro, 'isHealthy').mockResolvedValue(false);
+			// A Metro slow to exit: the stop keeps the lane until it is gone.
+			const signals: boolean[] = [];
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push(options?.force === true);
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			let advance: NodeJS.Timeout | undefined;
+			try {
+				const launching = service.runOperation({
+					actionId: 'op-launch-cut',
+					kind: 'lane.launch',
+					laneId,
+				});
+				await vi.waitFor(() => expect(health).toHaveBeenCalled());
+				const stopping = service.runOperation({
+					actionId: 'op-stop-slow',
+					kind: 'lane.stop',
+					laneId,
+				});
+				await vi.waitFor(() => expect(signals).toEqual([false]));
+				const launched = await launching;
+				// The lane is its stop's and about to go: no retry on it can work,
+				// so the receipt names no lane for one.
+				expect(launched).toMatchObject({
+					completed: false,
+					error: `Lane ${laneId} is stopping.`,
+				});
+				expect(launched).not.toHaveProperty('lane');
+				expect(service.getState().lanes.map((lane) => lane.id)).toEqual([
+					laneId,
+				]);
+				advance = setInterval(() => {
+					now += 1_000;
+				}, 5);
+				expect((await stopping).completed).toBe(true);
+				expect(signals).toEqual([false, true]);
+				expect(metro.isProcessRunning(pid)).toBe(false);
+				expect(service.getState().lanes).toEqual([]);
+			} finally {
+				clearInterval(advance);
+				health.mockRestore();
+			}
+		});
+
 		it('names the lane it stored when a lane up is cancelled during its launch, and says it was cancelled', async () => {
 			metro.healthyPorts.add(8_100);
 			const held = holdUrlOpen();
