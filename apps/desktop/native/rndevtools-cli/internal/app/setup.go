@@ -37,7 +37,9 @@ for Simulators instead of raw simctl:
     once with /hooks
   * with --project, also installs the skills into that repository and adds an
     "iOS Simulators" block to its AGENTS.md, plus a "Local Supabase"
-    paragraph when the project has supabase/config.toml
+    paragraph when the project has supabase/config.toml, and for Claude Code,
+    which reads CLAUDE.md, a CLAUDE.md that imports it (@AGENTS.md) when the
+    project has none
 
 Everything is idempotent and additive; unknown configuration is preserved.
 Finishes with the doctor check so a mis-registered path shows up now.

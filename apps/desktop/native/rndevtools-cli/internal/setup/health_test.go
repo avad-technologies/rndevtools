@@ -1012,16 +1012,22 @@ func TestAgentHealthAcceptsGuidanceSetupInstalledInTheProject(t *testing.T) {
 		return found
 	}
 	found := rules(options)
-	for _, rule := range []string{"codex routing", "codex skill-rndevtools-lanes", "codex skill-rndevtools-supabase", "claude skill-rndevtools-lanes", "claude skill-rndevtools-supabase"} {
+	// Claude Code reads CLAUDE.md, which setup wrote to import AGENTS.md.
+	for _, rule := range []string{"codex routing", "claude routing", "codex skill-rndevtools-lanes", "codex skill-rndevtools-supabase", "claude skill-rndevtools-lanes", "claude skill-rndevtools-supabase"} {
 		if found[rule] {
 			t.Errorf("reported %s although setup installed it in the project: %v", rule, found)
 		}
 	}
-	// Claude Code reads CLAUDE.md, so AGENTS.md alone does not route it.
-	if !found["claude routing"] {
+	// A CLAUDE.md of the project's own that does not import AGENTS.md does
+	// not route Claude, and setup leaves it alone.
+	healthPut(t, filepath.Join(options.Project, "CLAUDE.md"), "# Example app\n")
+	if _, err := Apply(Options{Home: options.Home, Executable: options.Executable, Project: options.Project, Agents: []Agent{AgentClaude}, SkipLink: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !rules(options)["claude routing"] {
 		t.Fatalf("Claude reads CLAUDE.md, not AGENTS.md: %v", found)
 	}
-	healthPut(t, filepath.Join(options.Project, "CLAUDE.md"), "@AGENTS.md\n")
+	healthPut(t, filepath.Join(options.Project, "CLAUDE.md"), "# Example app\n\n@AGENTS.md\n")
 	if rules(options)["claude routing"] {
 		t.Fatal("a CLAUDE.md that imports the project's AGENTS.md routes Claude")
 	}

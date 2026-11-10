@@ -320,6 +320,78 @@ func TestProjectModeInstallsSkillAndAgentsBlock(t *testing.T) {
 	}
 }
 
+func TestProjectModeRoutesClaudeCodeToTheAgentsBlock(t *testing.T) {
+	// Claude Code reads a project's CLAUDE.md, not its AGENTS.md. A project
+	// without one gets a CLAUDE.md that only imports AGENTS.md; a CLAUDE.md
+	// the project has stays as it is, its block (if it carries one) kept
+	// current, and setup says what to add when it neither imports AGENTS.md
+	// nor carries the block.
+	home := t.TempDir()
+	run := func(project string, write bool, agents ...Agent) Change {
+		t.Helper()
+		options := Options{Home: home, Executable: "/x/rndevtools", Project: project, Agents: agents, SkipLink: true, SkipHook: true}
+		report, err := Plan(options)
+		if write {
+			report, err = Apply(options)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range report.Changes {
+			if change.Path == filepath.Join(project, "CLAUDE.md") {
+				return change
+			}
+		}
+		return Change{}
+	}
+	fresh := filepath.Join(home, "fresh")
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claude := filepath.Join(fresh, "CLAUDE.md")
+	if change := run(fresh, false, AgentClaude); change.Action != "create" || exists(claude) {
+		t.Fatalf("a plan lists the import and writes nothing: %+v", change)
+	}
+	if change := run(fresh, true, AgentCodex); change.Action != "" || exists(claude) {
+		t.Fatalf("without Claude Code there is no CLAUDE.md to write: %+v", change)
+	}
+	if change := run(fresh, true, AgentClaude, AgentCodex); change.Action != "create" || string(mustRead(t, claude)) != "@AGENTS.md\n" {
+		t.Fatalf("a project without CLAUDE.md gets one importing AGENTS.md: %+v", change)
+	}
+	if change := run(fresh, true, AgentClaude); change.Action != "unchanged" {
+		t.Fatalf("a rerun leaves the import alone: %+v", change)
+	}
+	// A CLAUDE.md setup cannot read fails nothing else.
+	unreadable := filepath.Join(home, "unreadable")
+	if err := os.MkdirAll(filepath.Join(unreadable, "CLAUDE.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if change := run(unreadable, true, AgentClaude); change.Action != "skip" || !strings.Contains(change.Detail, "@AGENTS.md") || !exists(filepath.Join(unreadable, "AGENTS.md")) {
+		t.Fatalf("an unreadable CLAUDE.md is skipped: %+v", change)
+	}
+	for name, row := range map[string]struct{ content, action, detail string }{
+		"an import":          {"# Example app\n\n@./AGENTS.md\n", "unchanged", ""},
+		"no import":          {"# Example app\n\nOur own rules.\n", "skip", "@AGENTS.md"},
+		"a block of its own": {"# Example app\n\n<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n", "update", ""},
+	} {
+		project := filepath.Join(home, strings.ReplaceAll(name, " ", "-"))
+		file := filepath.Join(project, "CLAUDE.md")
+		write(t, file, row.content)
+		change := run(project, true, AgentClaude)
+		if change.Action != row.action || !strings.Contains(change.Detail, row.detail) {
+			t.Errorf("%s: %+v, want %s", name, change, row.action)
+		}
+		got := string(mustRead(t, file))
+		if row.action == "update" {
+			if !strings.HasPrefix(got, "# Example app\n\n") || !strings.Contains(got, AgentsBlock(project)) || strings.Contains(got, "old\n") {
+				t.Errorf("%s: the block must be replaced in place:\n%s", name, got)
+			}
+		} else if got != row.content {
+			t.Errorf("%s: CLAUDE.md was rewritten:\n%s", name, got)
+		}
+	}
+}
+
 func TestEveryEmbeddedSkillIsInstalled(t *testing.T) {
 	names := skillNames()
 	if len(names) != 2 || names[0] != "rndevtools-lanes" || names[1] != "rndevtools-supabase" {

@@ -63,7 +63,8 @@ type Options struct {
 	// without Cursor), plus Claude and Codex always.
 	Agents []Agent
 	// Project, when set, receives .agents/skills, .claude/skills, and an
-	// AGENTS.md block instead of the user-level locations.
+	// AGENTS.md block instead of the user-level locations, and, for Claude
+	// Code, a CLAUDE.md that imports AGENTS.md when it has none.
 	Project string
 	// SkipLink leaves PATH alone.
 	SkipLink bool
@@ -182,6 +183,11 @@ func run(options Options, write bool) (Report, error) {
 	if options.Project != "" {
 		if err := record(installAgentsBlock(options.Project, write)); err != nil {
 			return report, err
+		}
+		if slices.Contains(agents, AgentClaude) {
+			if err := record(installClaudeImport(options.Project, write)); err != nil {
+				return report, err
+			}
 		}
 	}
 	return report, nil
@@ -725,9 +731,58 @@ func agentsBlockSpan(content string) (start int, end int, found bool, ok bool) {
 }
 
 func installAgentsBlock(project string, write bool) (Change, error) {
-	path := filepath.Join(project, "AGENTS.md")
+	return installBlock(filepath.Join(project, "AGENTS.md"), AgentsBlock(project), write)
+}
+
+// installClaudeImport routes Claude Code to the AGENTS.md block, since it
+// reads a project's CLAUDE.md and not its AGENTS.md. A project without a
+// CLAUDE.md gets one that only imports AGENTS.md (@AGENTS.md). A CLAUDE.md the
+// project has is its own: it is left as it is when it imports AGENTS.md, or
+// is AGENTS.md through a link; a block it carries between the rndevtools
+// markers is kept current as AGENTS.md's is; otherwise the change says what
+// to add rather than editing it.
+func installClaudeImport(project string, write bool) (Change, error) {
+	path := filepath.Join(project, "CLAUDE.md")
 	change := Change{Path: path}
-	block := AgentsBlock(project)
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		change.Action = "create"
+		change.Detail = "import AGENTS.md (@AGENTS.md), so Claude Code reads its RN Devtools block"
+		return commit(change, path, []byte("@AGENTS.md\n"), 0o644, write)
+	case err != nil:
+		// The rest of setup does not depend on it, so it does not fail.
+		change.Action = "skip"
+		change.Detail = "CLAUDE.md cannot be read; make it a file with a line `@AGENTS.md`, then rerun setup"
+		return change, nil
+	}
+	claude, claudeErr := os.Stat(path)
+	agents, agentsErr := os.Stat(filepath.Join(project, "AGENTS.md"))
+	if claudeErr == nil && agentsErr == nil && os.SameFile(claude, agents) {
+		change.Action = "unchanged"
+		change.Detail = "CLAUDE.md is AGENTS.md through a link"
+		return change, nil
+	}
+	if importsAgentsFile(raw) {
+		change.Action = "unchanged"
+		change.Detail = "CLAUDE.md already imports AGENTS.md"
+		return change, nil
+	}
+	if _, _, found, paired := agentsBlockSpan(string(raw)); found || !paired {
+		// Marker lines: a block to keep current, or markers installBlock
+		// reports as not pairing up.
+		return installBlock(path, AgentsBlock(project), write)
+	}
+	change.Action = "skip"
+	change.Detail = "Claude Code reads CLAUDE.md, which neither imports AGENTS.md nor carries the RN Devtools block; add a line `@AGENTS.md` to it, then rerun setup"
+	return change, nil
+}
+
+// installBlock puts block, the text setup owns between the rndevtools
+// markers, into the file at path: in place of the block it has, or after its
+// text.
+func installBlock(path string, block string, write bool) (Change, error) {
+	change := Change{Path: path}
 	raw, err := os.ReadFile(path)
 	var content string
 	switch {
@@ -741,7 +796,7 @@ func installAgentsBlock(project string, write bool) (Change, error) {
 	}
 	if strings.Contains(content, block) {
 		change.Action = "unchanged"
-		change.Detail = "AGENTS.md block already current"
+		change.Detail = filepath.Base(path) + " block already current"
 		return change, nil
 	}
 	start, end, found, ok := agentsBlockSpan(content)
