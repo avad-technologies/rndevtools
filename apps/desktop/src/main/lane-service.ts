@@ -358,13 +358,29 @@ function hasScheme(url: string, scheme: string): boolean {
 	}
 }
 
+/** Why a lane operation stopped once its caller's signal aborted. */
+const OPERATION_CANCELLED = 'Lane operation cancelled.';
+/** Why it stopped when that signal said its deadline passed. */
+const OPERATION_TIMED_OUT = 'Lane operation timed out.';
+
+/**
+ * Whether `signal` aborted because its deadline passed: with a TimeoutError,
+ * as AbortSignal.timeout() and the agent socket's own budget abort.
+ */
+function timedOut(signal: AbortSignal): boolean {
+	return (
+		signal.aborted &&
+		(signal.reason as { name?: unknown } | undefined)?.name === 'TimeoutError'
+	);
+}
+
 /** Resolves once `promise` settles either way; rejects if `signal` aborts first. */
 function whenSettled(
 	promise: Promise<unknown>,
 	signal: AbortSignal
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const onAbort = () => reject(new Error('Lane operation cancelled.'));
+		const onAbort = () => reject(new Error(OPERATION_CANCELLED));
 		if (signal.aborted) {
 			onAbort();
 			return;
@@ -387,7 +403,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return wait(ms, undefined, {
 		signal: signal?.aborted ? undefined : signal,
 	}).catch(() => {
-		throw new Error('Lane operation cancelled.');
+		throw new Error(OPERATION_CANCELLED);
 	});
 }
 
@@ -979,11 +995,20 @@ export class LaneService {
 					? this.#store.get(launch.laneId)
 					: undefined;
 			const cause = launch ? launch.cause : error;
+			// A signal aborted at its deadline stopped this, not a cancel: the
+			// agent socket's own budget, which every wait here hears as a cancel.
+			const deadline = timedOut(signal);
+			const text = safeErrorText(error);
 			return laneOperationReceiptSchema.parse({
 				...base,
 				completed: false,
-				...(signal.aborted ? { cancelled: true } : {}),
-				error: safeErrorText(error),
+				...(deadline
+					? { timedOut: true }
+					: signal.aborted
+						? { cancelled: true }
+						: {}),
+				error:
+					deadline && text === OPERATION_CANCELLED ? OPERATION_TIMED_OUT : text,
 				...(lane ? { lane: this.#view(lane) } : {}),
 				...(cause instanceof LaneBackendError
 					? { backend: cause.summary }
@@ -2044,7 +2069,7 @@ export class LaneService {
 
 	#assertOperationActive(signal: AbortSignal): void {
 		if (this.#stopped) throw new Error('Lanes are shutting down.');
-		if (signal.aborted) throw new Error('Lane operation cancelled.');
+		if (signal.aborted) throw new Error(OPERATION_CANCELLED);
 	}
 
 	/**
@@ -2184,7 +2209,7 @@ export class LaneService {
 				) {
 					throw error;
 				}
-				if (signal.aborted) throw new Error('Lane operation cancelled.');
+				if (signal.aborted) throw new Error(OPERATION_CANCELLED);
 				await sleep(DEV_CLIENT_OPEN_RETRY_DELAY_MS, signal);
 				const current = this.#store.get(laneId);
 				if (
@@ -3656,7 +3681,7 @@ export class LaneService {
 		}
 		const job = await waitForJob(this.#simulator, receipt.jobId, signal, {
 			cancel: true,
-			abortError: () => new Error('Lane operation cancelled.'),
+			abortError: () => new Error(OPERATION_CANCELLED),
 		});
 		if (job.status !== 'complete') throw new Error(job.message);
 		return job;
@@ -3777,7 +3802,7 @@ export class LaneService {
 				}
 				const job = await waitForJob(slimming, receipt.jobId, signal, {
 					cancel: true,
-					abortError: () => new Error('Lane operation cancelled.'),
+					abortError: () => new Error(OPERATION_CANCELLED),
 				});
 				return {
 					profileId,

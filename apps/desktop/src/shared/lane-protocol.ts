@@ -397,6 +397,13 @@ export const laneOperationReceiptSchema = z.strictObject({
 	 * aborted, or the user closed the repository dialog.
 	 */
 	cancelled: z.boolean().optional(),
+	/**
+	 * The operation stopped because its caller's deadline passed: its signal
+	 * aborted with a TimeoutError, as the agent socket's does once a command
+	 * outlasts the most it gives it (230 s for lane up and launch). Never
+	 * set together with `cancelled`.
+	 */
+	timedOut: z.boolean().optional(),
 	error: shortTextSchema.optional(),
 	/**
 	 * The lane the operation produced or acted on. A `lane.start`,

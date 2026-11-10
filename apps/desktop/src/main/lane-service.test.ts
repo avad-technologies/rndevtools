@@ -2239,6 +2239,37 @@ describe('LaneService', () => {
 			});
 		});
 
+		it('says a lane up its caller stopped at a deadline timed out, not that it was cancelled', async () => {
+			metro.healthyPorts.add(8_100);
+			const held = holdUrlOpen();
+			const controller = new AbortController();
+			const starting = service.runOperation(
+				{
+					actionId: 'op-deadline-up',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: true,
+				},
+				controller.signal
+			);
+			await held.opening;
+			// What the agent socket aborts with once its own budget runs out.
+			controller.abort(
+				new DOMException('The agent request timed out.', 'TimeoutError')
+			);
+			const receipt = await starting;
+			expect(receipt).toMatchObject({
+				completed: false,
+				timedOut: true,
+				error: 'Lane operation timed out.',
+				lane: { id: service.getState().lanes[0]?.id },
+			});
+			expect(receipt).not.toHaveProperty('cancelled');
+			held.release();
+		});
+
 		it('keeps the Metro that replaced the checked one while the dev client opened', async () => {
 			const started = await startLane();
 			const laneId = started.lane?.id as string;

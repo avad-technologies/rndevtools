@@ -4318,6 +4318,39 @@ describe('agent command router', () => {
 			expect(early.recovery).toBeUndefined();
 		});
 
+		it('reports a launch the desktop stopped at its deadline as timed out, still naming the lane', async () => {
+			const timed = await failure(
+				{
+					completed: false,
+					timedOut: true,
+					error: 'Lane operation timed out.',
+					lane,
+				},
+				upCommand
+			);
+			expect(timed).toMatchObject({
+				code: 'timed_out',
+				retryable: true,
+				message: `Lane ${lane.id} did not launch: Lane operation timed out.`,
+			});
+			expect(timed.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Run \`${upAgain}\` to launch it again; it starts Metro again first if Metro exited. ${log}`
+			);
+			// One that timed out before any lane was stored is a plain timeout.
+			const early = await failure(
+				{
+					completed: false,
+					timedOut: true,
+					error: 'Lane operation timed out.',
+				},
+				upCommand
+			);
+			expect(early).toMatchObject({
+				code: 'timed_out',
+				message: 'Lane operation timed out.',
+			});
+		});
+
 		it('names the lane whose required backend stopped its launch, and sends lane launch to lane up', async () => {
 			const backend: NonNullable<LaneOperationReceipt['backend']> = {
 				policy: 'required',

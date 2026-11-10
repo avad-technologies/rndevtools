@@ -1227,7 +1227,14 @@ function shellWord(value: string): string {
 function laneRetryRecovery(
 	lane: LaneView,
 	asked: LaneLaunchAsk,
-	{ cancelled, backendFailed }: { cancelled: boolean; backendFailed: boolean }
+	{
+		interrupted,
+		backendFailed,
+	}: {
+		/** Cancelled or stopped at a deadline: nothing failed to fix first. */
+		interrupted: boolean;
+		backendFailed: boolean;
+	}
 ): string {
 	const restart = asked.restart ? ' --restart' : '';
 	const environment =
@@ -1239,7 +1246,7 @@ function laneRetryRecovery(
 	const up = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}${opens ? restart : ' --launch=false'}`;
 	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}`;
 	const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
-	const run = cancelled ? 'Run' : 'Once the cause is fixed, run';
+	const run = interrupted ? 'Run' : 'Once the cause is fixed, run';
 	if (asked.operation === 'up') {
 		return `The lane keeps its Simulator and port ${lane.port}. ${run} \`${up}\` to ${opens ? 'launch' : 'start'} it again; it starts Metro again first if Metro exited. ${log}`;
 	}
@@ -1268,7 +1275,13 @@ function laneReceiptResult(
 	asked?: LaneLaunchAsk
 ) {
 	if (!receipt.completed) {
-		const code = receipt.cancelled ? 'cancelled' : 'lane_failed';
+		// A launch the desktop stopped at its own deadline did not fail by itself
+		// and was not cancelled by anyone.
+		const code = receipt.cancelled
+			? 'cancelled'
+			: receipt.timedOut
+				? 'timed_out'
+				: 'lane_failed';
 		const error = receipt.error ?? 'The lane operation did not complete.';
 		const lane = receipt.lane;
 		if (!asked || !lane) {
@@ -1279,7 +1292,7 @@ function laneReceiptResult(
 			message: `Lane ${lane.id} did not ${laneVerb(asked)}: ${error}`,
 			retryable: true,
 			recovery: laneRetryRecovery(lane, asked, {
-				cancelled: receipt.cancelled === true,
+				interrupted: receipt.cancelled === true || receipt.timedOut === true,
 				backendFailed: receipt.backend?.policy === 'required',
 			}),
 		});
@@ -1645,6 +1658,7 @@ function laneUpResult(receipt: LaneOperationReceipt, asked: LaneLaunchAsk) {
 	if (
 		!receipt.completed &&
 		!receipt.cancelled &&
+		!receipt.timedOut &&
 		backend?.policy === 'required'
 	) {
 		const failure =
