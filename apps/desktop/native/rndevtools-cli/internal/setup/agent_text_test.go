@@ -66,6 +66,33 @@ func TestAgentsBlockGivesTheLaneCommandsAsTheCLIParsesThem(t *testing.T) {
 	}
 }
 
+func TestTheLanesSkillGivesTheBuildAsNativePlanDoes(t *testing.T) {
+	// native plan's build is two steps once the lane's Metro is ready: an
+	// expo run:ios that names no port, since Expo CLI refuses --port with
+	// --no-bundler and opens the app against 8081, then a lane launch with
+	// restart that reopens it with the lane's Metro.
+	content, err := skillFiles.ReadFile("skills/rndevtools-lanes/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := strings.Join(strings.Fields(string(content)), " ")
+	for _, phrase := range []string{
+		"`npx expo run:ios --device <UDID> --no-bundler`",
+		"Expo CLI refuses `--port` with `--no-bundler`",
+		"`rndevtools lane --operation launch --lane-id <laneId> --restart`",
+		"only once the lane's Metro is ready",
+	} {
+		if !strings.Contains(flat, phrase) {
+			t.Errorf("the lanes skill lacks %q", phrase)
+		}
+	}
+	for _, stale := range []string{"lane port", "--port <", "keep its --port", "keep the exact"} {
+		if strings.Contains(flat, stale) {
+			t.Errorf("the lanes skill still says %q", stale)
+		}
+	}
+}
+
 func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 	content, err := skillFiles.ReadFile("skills/rndevtools-lanes/SKILL.md")
 	if err != nil {

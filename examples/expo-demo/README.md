@@ -130,13 +130,15 @@ rndevtools native --operation plan --worktree "$app_b" --udid "$udid_b"
 ```
 
 Follow each recommendation. Install a cache hit with
-`native --operation install`. For a cache miss, run the supplied Expo build
-command with the lane's assigned `--port` and `--no-bundler`. Launch each app
-through its lane after its dev client is installed.
+`native --operation install`. For a cache miss, run the build each plan gives
+once its lane's Metro is ready, `npx expo run:ios --device <udid> --no-bundler`,
+as given: it names no port, because Expo CLI refuses `--port` with
+`--no-bundler`, and it opens the app against port 8081. Then restart each app
+through its lane, so it runs with that lane's Metro.
 
 ```sh
-rndevtools lane --operation launch --worktree "$app_a"
-rndevtools lane --operation launch --worktree "$app_b"
+rndevtools lane --operation launch --worktree "$app_a" --restart
+rndevtools lane --operation launch --worktree "$app_b" --restart
 ```
 
 Tap **Refresh database** in each app and verify the label, local API URL and

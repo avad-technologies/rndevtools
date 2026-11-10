@@ -146,6 +146,10 @@ func TestHookBlocksExpoRunIOSThatStartsItsOwnMetro(t *testing.T) {
 			"`rndevtools native --operation plan --worktree <app directory> --udid <UDID>`",
 			"`rndevtools native --operation install --worktree <app directory> --udid <UDID>`",
 			"`rndevtools lane --operation up --worktree <app directory> --launch=false`",
+			// The build native plan gives names no port: Expo CLI refuses
+			// --port with --no-bundler, and the restart re-points the app.
+			"`npx expo run:ios --device <UDID> --no-bundler`",
+			"add no `--port`: Expo CLI refuses it with `--no-bundler`",
 			"`rndevtools lane --operation launch --worktree <app directory> --restart`",
 		} {
 			if !decision.Block || !strings.Contains(decision.Reason, want) {
@@ -157,8 +161,9 @@ func TestHookBlocksExpoRunIOSThatStartsItsOwnMetro(t *testing.T) {
 		// Builds that start no Metro, as native plan recommends them.
 		"npx expo run:ios --device " + udid + " --no-bundler",
 		"npx expo run:ios --configuration Release --device " + udid + " --no-bundler",
-		"npx expo run:ios --device " + udid + " --port 8101 --no-bundler",
 		"npx expo run:ios --no-bundler",
+		// Expo CLI refuses --port with --no-bundler before it starts anything.
+		"npx expo run:ios --device " + udid + " --port 8101 --no-bundler",
 		"npx expo run:ios --no-bundler --configuration Debug --configuration Release",
 		// Expo compares the configuration with Debug exactly.
 		"npx expo run:ios --no-bundler --configuration debug",

@@ -801,6 +801,27 @@ func TestClaimIsDescribedAsTheHoldTheDesktopEnforces(t *testing.T) {
 	t.Fatal("no claim tool is listed")
 }
 
+func TestNativeToolGivesTheBuildWithoutAPort(t *testing.T) {
+	// Expo CLI refuses --port with --no-bundler, so the build native plan
+	// gives names no port, and a lane launch with restart then reopens the
+	// app with the lane's Metro.
+	for _, tool := range Tools() {
+		if tool.Name != "native" {
+			continue
+		}
+		for _, phrase := range []string{"names no port", "Expo CLI refuses --port with --no-bundler", "lane with operation launch, the lane-id, and restart"} {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Fatalf("native description lacks %q: %s", phrase, tool.Description)
+			}
+		}
+		if strings.Contains(tool.Description, "keep its --port") {
+			t.Fatalf("native description still tells agents to keep a port: %s", tool.Description)
+		}
+		return
+	}
+	t.Fatal("no native tool is listed")
+}
+
 func TestNativeToolSaysAPlanMayWaitForAStartingLane(t *testing.T) {
 	// A plan that is due to advise a build, and an install's cache_miss
 	// answer, wait up to 15 s for the worktree's lane to turn ready while

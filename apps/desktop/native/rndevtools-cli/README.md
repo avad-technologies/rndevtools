@@ -470,6 +470,18 @@ inspector connection to every Metro it was pointed at for as long as it runs,
 so without a restart an app re-pointed to a new port stays listed as a debug
 target on whatever Metro later takes the old port.
 
+A lane never builds the app. When `up` reports the dev client missing,
+`native --operation plan --worktree <app directory> --udid <UDID>` answers
+`install:` (`native --operation install` puts a cached build on the
+Simulator) or `build:`. For a build it gives two commands, and only once the
+lane's Metro is ready (reserve the lane with `up --launch=false` first):
+`npx expo run:ios --device <UDID> --no-bundler`, with
+`--configuration Release` when the plan was asked for Release, and then
+`rndevtools lane --operation launch --lane-id <laneId> --restart`. The build
+names no port, because Expo CLI refuses `--port` with `--no-bundler`, and it
+opens the app it installs against port 8081; the restart reopens the app with
+the lane's Metro.
+
 `lane --operation up --backend auto|off|required` decides the worktree's local
 Supabase. `auto`, the default for the `development` environment, starts the
 worktree's own stack when RN Devtools manages its Supabase project and hands

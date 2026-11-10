@@ -83,13 +83,15 @@ rndevtools native --operation plan --worktree /absolute/lane-a/app --udid DEVICE
 ```
 
 Follow `recommendation`: install a cache hit with `native --operation install`,
-or start the requested lane with `launch=false` and run the supplied
-`expo run:ios … --port LANE_PORT --no-bundler` command once for a cache miss.
-The port matters: Expo still opens the app with `--no-bundler`. A matching
-bundle ID only proves that an app is installed, not that its native fingerprint
-is current. An explicit cached install refreshes that binary.
-RN Devtools owns Metro. Then run `lane --operation launch --restart` for the
-lane, so the app the build opened starts fresh with the lane's Metro alone.
+or, for a cache miss, start the requested lane with `launch=false` and run the
+two commands the plan gives once the lane's Metro is ready. The build,
+`npx expo run:ios --device DEVICE_UDID --no-bundler`, runs once and names no
+port: Expo CLI refuses `--port` with `--no-bundler`, and it opens the app it
+installs against port 8081. Then
+`rndevtools lane --operation launch --lane-id LANE_ID --restart` starts the app
+fresh with the lane's Metro alone. A matching bundle ID only proves that an
+app is installed, not that its native fingerprint is current. An explicit
+cached install refreshes that binary. RN Devtools owns Metro.
 
 Check all of the following before calling the Mac qualified:
 

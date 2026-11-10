@@ -182,7 +182,9 @@ var toolMeta = map[protocol.Command]meta{
 			"its recommendation (install: / cached: / build:); it builds nothing and takes about two seconds, or up to 15 s longer when a build " +
 			"is due and the worktree's lane is still starting. Call it when lane up reports the dev " +
 			"client is missing, and before running expo run:ios yourself. operation \"install\" puts a cached " +
-			"build on the Simulator (udid), refreshing an older copy of the same bundle. Reserve a lane first when asked, and keep its --port in the build command: --no-bundler still opens the app. worktree is the absolute app directory; configuration Debug (default) " +
+			"build on the Simulator (udid), refreshing an older copy of the same bundle. Reserve a lane first when asked (lane up with launch=false). " +
+			"The build command names no port, because Expo CLI refuses --port with --no-bundler, and the build opens the app against port 8081: " +
+			"after it, call lane with operation launch, the lane-id, and restart, so the app starts with the lane's Metro. worktree is the absolute app directory; configuration Debug (default) " +
 			"or Release. A first native build takes 5-15 minutes; tell the user it is running rather than waiting " +
 			"silently, and do not restart it. If the user asked you not to build, report the command instead.",
 		readOnly: false,

@@ -223,12 +223,13 @@ on. `installed` only means the bundle exists, not that its native fingerprint
 matches, and it is left out when the Simulator is not booted or listing its apps
 fails; the recommendation then ends by saying why. An explicit cached install
 refreshes that binary. A build opens the app as soon as it installs it, even
-with `--no-bundler`, so restart the app on the lane afterward:
+with `--no-bundler`, against port 8081, so restart the app on the lane
+afterward:
 
 | `recommendation` starts with | Do |
 | --- | --- |
 | `install:` | `rndevtools native --operation install --worktree "$PWD" --udid <UDID>` puts the cached binary on the Simulator in seconds. |
-| `build:` | If requested, start the lane with `--launch=false` and call `rndevtools native --operation plan` again. Then run the quoted build command once, keeping `--no-bundler` and never adding `--configuration Debug` (Debug is already the default, and naming it starts Metro even with `--no-bundler`), and finish with `rndevtools lane --operation launch --worktree "$PWD" --restart`. The build cache stores the result for every other worktree with the same fingerprint. A first native build compiles CocoaPods and React Native and commonly takes 5–15 minutes; tell the user it is running rather than waiting silently, and do not restart it. If the user asked you not to build, report the exact command instead. |
+| `build:` | The plan quotes the build only once the lane's Metro is ready. If it asks for a lane, start one with `rndevtools lane --operation up --worktree "$PWD" --launch=false`; if it says the lane's Metro is not ready, read `lane --operation ls` and `lane --operation log`; then call `rndevtools native --operation plan` again. Run the quoted build once, exactly as quoted: `npx expo run:ios --device <UDID> --no-bundler`, with `--configuration Release` only when that was asked for. Add no `--port`: Expo CLI refuses `--port` with `--no-bundler`. Never add `--configuration Debug` (Debug is already the default, and naming it starts Metro even with `--no-bundler`). Finish with the quoted `rndevtools lane --operation launch --lane-id <laneId> --restart`, which reopens the app with the lane's Metro. The build cache stores the result for every other worktree with the same fingerprint. A first native build compiles CocoaPods and React Native and commonly takes 5–15 minutes; tell the user it is running rather than waiting silently, and do not restart it. If the user asked you not to build, report the exact command instead. |
 
 A JavaScript-only branch reports the same `fingerprintHash` as the branch it
 came from, so it is a cache hit, never a build. Then:
