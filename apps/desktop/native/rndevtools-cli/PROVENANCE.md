@@ -140,7 +140,33 @@ recovery message instead of misreading it, and an older CLI never sends it.
   desktop's agent CLI schema accept and reject the same requests
   (`command_test.go`, `agent-cli-protocol.test.ts`).
 
+The desktop's answers gained these, each optional or new in the same way. The
+CLI passes a result and an error's code through as they come, so none of them
+needs a CLI change, and an older CLI shows them unread:
+
+- `warnings` on a `lane` `up` or `launch` result: at most 4 strings of at most
+  4 KiB, each saying what the lane's first launch could not do of what it does
+  unasked: terminate a copy of the app already running, or name the app at
+  all when the worktree's app.json declares no bundle identifier. The launch
+  went ahead, and the lane log says the same.
+- `restart` on a device request (`deviceRequest` in a `lane` `up` result and
+  `deviceRequests` in `lane` `ls`): the parked start asked for a restart,
+  kept for when it runs.
+- `warnings` on a Simulator job, wherever a job is returned (`jobs`, and the
+  results that carry one): at most 8 redacted strings of at most 4 KiB, each
+  saying what a best-effort step of the job could not do, such as approving a
+  URL scheme for its app before the URL opens. The job went on without it.
+- The error code `timed_out`: a `lane` `up` or `launch` that the desktop
+  stopped at its own deadline for the command (230 s by default) fails with
+  it rather than `cancelled` or `lane_failed`. As with those, when the operation had
+  stored its lane, the message names the lane and the recovery gives the
+  command that opens it again.
+
 The PreToolUse hook also reads `steering.json` v1, which the desktop writes
 into the agent socket directory; it is a local file contract between the
 desktop and this CLI, not part of `rndevtools/1`, and the hook ignores any
-file that is not exactly that shape.
+file that is not exactly that shape. So is the JSON `agent-check` prints for
+the desktop's agent setup check, whose strict schema reads it: its previews
+gained an optional `target`, the file a repair writes when a link at its
+source points elsewhere, so this CLI and the desktop that bundles it ship
+together.
