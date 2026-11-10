@@ -45,6 +45,18 @@ Local iOS Simulator tooling on macOS:
   worktree, Simulator, or port; Metro health, agent attribution, and the Metro
   log are visible on the fleet wall and in the Lanes panel
 
+  A lane's first dev-client launch, whether the Lanes panel or an agent starts
+  the lane, terminates a running copy of the lane's app on its Simulator
+  first, so the app starts fresh with the lane's Metro instead of staying
+  registered as a debug target on the Metro another lane or a person pointed
+  it at. That copy loses its in-memory state. The lane names the app by the
+  `ios.bundleIdentifier` the worktree's static `app.json` declared when the
+  lane started; without one, or when the Simulator cannot terminate the app,
+  the launch goes ahead without the restart and says so in the lane's log and
+  in the receipt's `warnings`. A deep link terminates nothing unless it is
+  asked to restart, and leaves that first restart to the dev-client launch
+  after it. Later launches restart the app only when asked to.
+
   A lane's Metro and the native build plan inherit the desktop's environment
   without the variables of an agent session the desktop may have been started
   from: `AI_AGENT`, `CLAUDECODE`, `DEBUG_CLAUDE_AGENT_SDK`,
