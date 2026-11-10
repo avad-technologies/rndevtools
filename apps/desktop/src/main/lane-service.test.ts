@@ -3435,6 +3435,94 @@ describe('LaneService', () => {
 			).resolves.toBeUndefined();
 		});
 
+		describe('a launch that re-checked a Metro since replaced', () => {
+			let laneId: string;
+			/** Lets the launch's ownership probe of the first Metro answer. */
+			let answer: () => void;
+			let refuseReplacement: boolean;
+			let launching: Promise<LaneOperationReceipt>;
+
+			beforeEach(async () => {
+				metro.healthyPorts.add(8_100);
+				const started = await service.runOperation({
+					actionId: 'op-replaced-start',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+				laneId = started.lane?.id as string;
+				expect(started.lane?.metroPid).toBe(1_001);
+				const probing = deferred<void>();
+				const answered = deferred<void>();
+				answer = () => answered.resolve();
+				refuseReplacement = false;
+				const verify = metro.verifyOwnership;
+				metro.verifyOwnership = async (pid, port, directory) => {
+					if (pid === 1_001) {
+						probing.resolve();
+						await answered.promise;
+					}
+					if (pid === 1_002 && refuseReplacement) {
+						throw new Error('lsof timed out.');
+					}
+					return verify(pid, port, directory);
+				};
+				// The launch reads the lane with the first Metro and probes it.
+				launching = service.runOperation({
+					actionId: 'op-replaced-launch',
+					kind: 'lane.launch',
+					laneId,
+				});
+				await probing.promise;
+				// Meanwhile the operator restarts Metro: the first one is stopped and
+				// the lane gets a second, which this desktop spawned and so trusts.
+				await service.restartMetro(laneId, 'operator');
+				expect(service.getState().lanes[0]?.metroPid).toBe(1_002);
+			});
+
+			it('keeps the proof of the Metro that replaced the one it probed', async () => {
+				answer();
+				const launched = await launching;
+				expect(launched.completed).toBe(false);
+				expect(launched.error).toBe(
+					'The lane changed before its dev-client launch.'
+				);
+				// The probe of the first, stopped Metro proved nothing about the
+				// second: it is still the lane's own, ready and restartable.
+				await service.runOperation({
+					actionId: 'op-replaced-refresh',
+					kind: 'lane.refresh',
+				});
+				expect(service.getState().lanes[0]).toMatchObject({
+					metroPid: 1_002,
+					metro: 'ready',
+				});
+				await expect(
+					service.restartMetro(laneId, 'operator')
+				).resolves.toBeUndefined();
+			});
+
+			it('keeps the refusal of the Metro that replaced the one it probed', async () => {
+				// A second launch cannot prove the new Metro is the lane's own.
+				refuseReplacement = true;
+				const refused = await service.runOperation({
+					actionId: 'op-replaced-refused',
+					kind: 'lane.launch',
+					laneId,
+				});
+				expect(refused.completed).toBe(false);
+				const refusal = `Cannot adopt Metro for lane ${laneId}: lsof timed out. Lane up will retry ownership verification.`;
+				expect(service.getState().error).toBe(refusal);
+				// The first launch's answer, about the stopped Metro, clears nothing
+				// that concerns the new one.
+				answer();
+				expect((await launching).completed).toBe(false);
+				expect(service.getState().error).toBe(refusal);
+			});
+		});
+
 		it("keeps a lane's Metro verified while a launch re-checks its identity", async () => {
 			healthyMetro();
 			const started = await service.runOperation({
