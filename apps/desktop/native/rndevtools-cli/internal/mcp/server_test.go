@@ -800,3 +800,22 @@ func TestClaimIsDescribedAsTheHoldTheDesktopEnforces(t *testing.T) {
 	}
 	t.Fatal("no claim tool is listed")
 }
+
+func TestNativeToolSaysAPlanMayWaitForAStartingLane(t *testing.T) {
+	// A plan that is due to advise a build, and an install's cache_miss
+	// answer, wait up to 15 s for the worktree's lane to turn ready while
+	// its Metro is still starting, as it is right after lane up with launch
+	// false. Agents told only "about two seconds" may give up on that wait.
+	for _, tool := range Tools() {
+		if tool.Name != "native" {
+			continue
+		}
+		for _, phrase := range []string{"builds nothing and takes about two seconds", "up to 15 s longer", "lane is still starting"} {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Fatalf("native description lacks %q: %s", phrase, tool.Description)
+			}
+		}
+		return
+	}
+	t.Fatal("no native tool is listed")
+}
