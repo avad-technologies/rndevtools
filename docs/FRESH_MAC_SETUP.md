@@ -100,8 +100,9 @@ Check all of the following before calling the Mac qualified:
 - A record written through app A appears in A and is absent from B, and vice
   versa. Separate local stacks use shared default signing keys unless per-stack
   keys are enabled; data isolation alone does not prove JWT signing isolation.
-- Relaunch each app, repeat `rndevtools lane --operation up`, and restart the desktop. The same lanes
-  should recover with their own Metro and backend. Observe jobs until terminal.
+- Relaunch each app, repeat both `rndevtools lane --operation up --worktree …`
+  commands above, and restart the desktop. The same lanes should recover with
+  their own Metro and backend. Observe jobs until terminal.
 - Restore and reapply SimSlim on a test device, then check app input, captures,
   and database access again. Retain the restore checkpoint.
 - An unrelated agent is refused access to a device held by another session.

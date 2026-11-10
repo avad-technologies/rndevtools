@@ -116,8 +116,8 @@ a private local socket.
   devices that are free or yours (`device_held` otherwise), and only on
   runtime/profile combinations SimSlim has verified or the user approved once;
   the error names which gate refused. Applying reboots the device, so prefer
-  `lane --operation up --slim <profileId>` for the device a lane is about to
-  use.
+  `rndevtools lane --operation up --worktree "$PWD" --slim <profileId>` for
+  the device a lane is about to use.
 
 ## Recover a Simulator you already hold
 
@@ -235,7 +235,7 @@ afterward:
 | `recommendation` starts with | Do |
 | --- | --- |
 | `install:` | `rndevtools native --operation install --worktree "$PWD" --udid <UDID>` puts the cached binary on the Simulator in seconds. |
-| `build:` | The plan quotes the build only once the lane's Metro is ready. If it asks for a lane, start one with `rndevtools lane --operation up --worktree "$PWD" --launch=false`; if it says the lane's Metro is not ready, read `lane --operation ls` and `lane --operation log`; then call `rndevtools native --operation plan` again. Run the quoted build once, exactly as quoted: `npx expo run:ios --device <UDID> --no-bundler`, with `--configuration Release` only when that was asked for. Add no `--port`: Expo CLI refuses `--port` with `--no-bundler`. Never add `--configuration Debug` (Debug is already the default, and naming it starts Metro even with `--no-bundler`). Finish with the quoted `rndevtools lane --operation launch --lane-id <laneId> --restart`, which reopens the app with the lane's Metro. The build cache stores the result for every other worktree with the same fingerprint. A first native build compiles CocoaPods and React Native and commonly takes 5–15 minutes; tell the user it is running rather than waiting silently, and do not restart it. If the user asked you not to build, report the exact command instead. |
+| `build:` | The plan quotes the build only once the lane's Metro is ready. If it asks for a lane, start one with `rndevtools lane --operation up --worktree "$PWD" --launch=false`; if it says the lane's Metro is not ready, read `rndevtools lane --operation ls` and `rndevtools lane --operation log --worktree "$PWD"`; then call `rndevtools native --operation plan --worktree "$PWD" --udid <UDID>` again. Run the quoted build once, exactly as quoted: `npx expo run:ios --device <UDID> --no-bundler`, with `--configuration Release` only when that was asked for. Add no `--port`: Expo CLI refuses `--port` with `--no-bundler`. Never add `--configuration Debug` (Debug is already the default, and naming it starts Metro even with `--no-bundler`). Finish with the quoted `rndevtools lane --operation launch --lane-id <laneId> --restart`, which reopens the app with the lane's Metro. The build cache stores the result for every other worktree with the same fingerprint. A first native build compiles CocoaPods and React Native and commonly takes 5–15 minutes; tell the user it is running rather than waiting silently, and do not restart it. If the user asked you not to build, report the exact command instead. |
 
 A JavaScript-only branch reports the same `fingerprintHash` as the branch it
 came from, so it is a cache hit, never a build. Then:
@@ -280,8 +280,8 @@ pointed at for as long as it runs, so an app re-pointed to a new port stays
 listed as a debug target on whatever Metro later takes the old port.
 Terminating an app that is not running counts as success, and device holds
 apply as they do to any `up` or `launch`.
-`rndevtools lane --operation launch --url <path>` without `--restart` never
-terminates the app: a deep link keeps its state.
+`rndevtools lane --operation launch --worktree "$PWD" --url <path>` without
+`--restart` never terminates the app: a deep link keeps its state.
 
 ## Drive the app that is running in the lane
 

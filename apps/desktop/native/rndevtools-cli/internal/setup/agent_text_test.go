@@ -119,6 +119,28 @@ func TestAgentTextsAgreeOnTheSimctlCommandsAndTheUDIDCaveat(t *testing.T) {
 	}
 }
 
+// laneCommand is a lane command a text writes out, up to the end of its code
+// span, its line, or a shell comment.
+var laneCommand = regexp.MustCompile("(?:rndevtools )?lane --operation (?:up|launch|down|log)\\b([^`\\n#]*)")
+
+func TestTheSkillsGiveEveryLaneCommandTheLaneItActsOn(t *testing.T) {
+	// up takes --worktree, and launch, down, and log exactly one of
+	// --lane-id or --worktree: a command written out with its flags but
+	// without its lane is refused as written.
+	for _, name := range skillNames() {
+		content, err := skillFiles.ReadFile("skills/" + name + "/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range laneCommand.FindAllStringSubmatch(string(content), -1) {
+			flags := match[1]
+			if strings.Contains(flags, "--") && !strings.Contains(flags, "--lane-id") && !strings.Contains(flags, "--worktree") {
+				t.Errorf("the %s skill writes %q without the lane it acts on", name, strings.TrimSpace(match[0]))
+			}
+		}
+	}
+}
+
 func TestAgentsBlockGivesTheLaneCommandsAsTheCLIParsesThem(t *testing.T) {
 	flat := strings.Join(strings.Fields(AgentsBlock("")), " ")
 	for _, phrase := range []string{
