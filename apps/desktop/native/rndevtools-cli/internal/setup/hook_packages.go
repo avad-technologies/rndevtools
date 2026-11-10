@@ -291,15 +291,8 @@ func (rules *packageRules) judgeSegment(line shellLine, index int, directory str
 	if !decision.Block {
 		return HookDecision{}
 	}
-	// The script's reason names the app's directory, which is the package's,
-	// as a word the shell reads as it is; one it cannot quote whole stays the
-	// placeholder.
-	reason := decision.Reason
-	if word, ok := pathWord(manifest.directory); ok {
-		reason = strings.ReplaceAll(reason, appDirectory, word)
-	}
 	return blocked(fmt.Sprintf("`%s` runs the `%s` script of %s: `%s`. %s",
-		invocation.command, displayText(invocation.name, 64), displayPath(manifest.path), displayText(script, 160), reason))
+		invocation.command, displayText(invocation.name, 64), displayPath(manifest.path), displayText(script, 160), decision.Reason))
 }
 
 // follow judges a script as a line of its own, from directory: one the line
@@ -314,10 +307,83 @@ func (rules *packageRules) follow(line shellLine, script handedScript, directory
 	parsed := line.parseScript(script.text)
 	if packaged {
 		if decision := judgeSimulatorRules(parsed, rules.nesting, &rules.simulator); decision.Block {
-			return decision
+			return rules.placeAppDirectory(decision, parsed, directory)
 		}
 	}
 	return rules.judge(parsed, directory)
+}
+
+// placeAppDirectory names, in the commands of a reason the Simulator rules
+// gave for a package script, the directory the steered command runs in:
+// that of the script's first command, in the order they run from
+// directory (the package's), that the rules decline for the same reason. A
+// script `cd apps/mobile && expo run:ios` runs Expo in apps/mobile. The
+// directory is a word the shell reads as it is (see pathWord); the
+// placeholder stays when the hook cannot tell where that command runs (cd
+// "$APP"), or cannot quote the path whole.
+func (rules *packageRules) placeAppDirectory(decision HookDecision, script shellLine, directory string) HookDecision {
+	found, runs := steeredDirectory(script, directory, rules.homeDirectory, decision.Reason, rules.nesting, &scriptLedger{})
+	if !found || runs == "" {
+		return decision
+	}
+	if word, ok := pathWord(runs); ok {
+		decision.Reason = strings.ReplaceAll(decision.Reason, appDirectory, word)
+	}
+	return decision
+}
+
+// steeredDirectory finds the first command of line, in the order the
+// commands run from cwd, that the Simulator rules decline with reason, and
+// the directory it runs in. It looks into the scripts a command hands on
+// before the command's own text and words, since the text rule also matches
+// a script quoted in them, and each of those scripts runs where its command
+// does. found is false when no command is declined so, and directory is ""
+// when the command found runs where the hook cannot tell, or the line could
+// not be read to its end. It follows scripts as far as the rules do, nesting
+// deep and up to the ledger's bound.
+func steeredDirectory(line shellLine, cwd string, home func() string, reason string, nesting int, ledger *scriptLedger) (found bool, directory string) {
+	if line.partial && textDecision(line.source).Reason == reason {
+		return true, ""
+	}
+	var excused *bool
+	declines := func(segment shellSegment) bool {
+		if textDecision(segment.text).Reason == reason {
+			if excused == nil {
+				textual := textOnly(line)
+				excused = &textual
+			}
+			if !*excused {
+				return true
+			}
+		}
+		_, words := segment.commandWords()
+		if len(words) == 0 {
+			return false
+		}
+		switch program := baseName(words[0]); {
+		case program == "rndevtools", shellPrograms[program], program == "eval":
+			return false
+		}
+		return evaluateWords(segment, words).Reason == reason
+	}
+	walkDirectories(line, cwd, home, func(index int, here string) HookDecision {
+		if nesting < maxNestedScripts && !ledger.exhausted() {
+			for _, script := range handedScripts(line, index) {
+				if !ledger.follow(script, "", nesting) {
+					continue
+				}
+				if found, directory = steeredDirectory(line.parseScript(script.text), here, home, reason, nesting+1, ledger); found {
+					return HookDecision{Block: true}
+				}
+			}
+		}
+		if declines(line.segments[index]) {
+			found, directory = true, here
+			return HookDecision{Block: true}
+		}
+		return HookDecision{}
+	})
+	return found, directory
 }
 
 // packageManifest is a package.json the rules read: where it is, and its

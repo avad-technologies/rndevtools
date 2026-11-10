@@ -258,6 +258,54 @@ func TestPackageReasonsQuoteTheAppDirectoryAsItIs(t *testing.T) {
 	}
 }
 
+func TestPackageReasonsNameTheDirectoryTheScriptRunsExpoIn(t *testing.T) {
+	// A monorepo's root package.json often changes to the app's directory
+	// before it runs Expo. The steered commands are for that app, so they
+	// name the directory Expo runs in, not the root, which has no app.json.
+	root := t.TempDir()
+	mobile := filepath.Join(root, "apps", "mobile")
+	write(t, filepath.Join(mobile, "app.json"), "{}")
+	write(t, filepath.Join(root, "package.json"), `{"scripts":{`+
+		`"ios":"cd apps/mobile && expo run:ios",`+
+		`"start":"cd apps/mobile && npx expo start --port 8082",`+
+		`"group":"(cd apps/mobile; expo start)",`+
+		`"both":"concurrently \"cd apps/mobile && expo start\" \"tsc --watch\"",`+
+		`"shell":"sh -c 'cd apps/mobile && expo run:ios'",`+
+		`"pushd":"pushd apps/mobile && expo start",`+
+		`"after":"cd apps/mobile && echo ready; expo start",`+
+		`"here":"expo start",`+
+		`"subshell":"(cd apps/mobile) && expo start",`+
+		`"unknown":"cd \"$APP\" && expo start",`+
+		`"popd":"pushd apps/mobile && popd && expo start"`+
+		`}}`)
+	for script, want := range map[string]string{
+		"ios": mobile, "start": mobile, "group": mobile, "both": mobile, "shell": mobile, "pushd": mobile, "after": mobile,
+		// Expo runs where the script starts, or where the hook cannot tell.
+		"here": root, "subshell": root, "unknown": appDirectory, "popd": appDirectory,
+	} {
+		decision := judgeIn(root, "npm run "+script)
+		named := strings.Count(decision.Reason, "--worktree "+want+" ") + strings.Count(decision.Reason, "--worktree "+want+"`")
+		if !decision.Block || named == 0 || named != strings.Count(decision.Reason, "--worktree ") {
+			t.Errorf("npm run %s: every --worktree must name %s: %+v", script, want, decision)
+		}
+	}
+	// Placing the command walks the script once more, so a long one that is
+	// declined at its end still answers within the hook's time.
+	long := t.TempDir()
+	write(t, filepath.Join(long, "package.json"), `{"scripts":{"start":"`+strings.Repeat("cd d; ", 40_000)+`expo start"}}`)
+	budget := 5 * time.Second
+	if raceDetector {
+		budget = 30 * time.Second
+	}
+	started := time.Now()
+	if decision := judgeIn(long, "npm start"); !decision.Block || !strings.Contains(decision.Reason, "--worktree "+appDirectory+"`") {
+		t.Errorf("a start script past 4,096 bytes of cd runs Expo where the hook cannot tell: %.200s", decision.Reason)
+	}
+	if elapsed := time.Since(started); elapsed > budget {
+		t.Errorf("a long declined script took %s", elapsed)
+	}
+}
+
 func TestParsePackageScriptReadsTheManagersOwnWords(t *testing.T) {
 	for _, row := range []struct {
 		command   string
