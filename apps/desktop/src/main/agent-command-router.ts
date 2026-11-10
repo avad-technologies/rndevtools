@@ -487,7 +487,8 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
  * built against: the lane service marks a lane ready only once the Metro
  * answering on its port is proven to be the lane's own, and a starting lane
  * may hold one it could not prove (an adoption that failed, a stop it must
- * retry, a recycled PID) while another worktree's packager answers there.
+ * retry) while another worktree's packager answers there. A lane whose
+ * recorded PID now names some other process reads stopped instead.
  */
 async function awaitBuildLane(
 	lanes: LanePort | undefined,
