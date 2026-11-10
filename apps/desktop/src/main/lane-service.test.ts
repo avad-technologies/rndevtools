@@ -5374,6 +5374,96 @@ describe('LaneService', () => {
 			expect(ids).toContain(replaced.deviceRequest?.id);
 		});
 
+		describe('a start no Simulator can help', () => {
+			beforeEach(async () => {
+				// Both devices hold lanes for other apps, so a start that names
+				// none would wait on the user for one.
+				await up({ simulatorUdid: UDID });
+				await service.runOperation({
+					actionId: 'op-other-app',
+					kind: 'lane.start',
+					worktreePath: OTHER_WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+			});
+
+			function third(extra: Record<string, unknown> = {}) {
+				return service.runOperation({
+					actionId: `op-third-${Math.random().toString(16).slice(2)}`,
+					kind: 'lane.start',
+					worktreePath: THIRD_WORKTREE,
+					environment: 'development',
+					launch: false,
+					...extra,
+				});
+			}
+
+			it.each([
+				['RNDEVTOOLS_CHILD_ENV_STRIP is malformed', {}, MALFORMED_STRIP],
+				[
+					'a restart cannot name the app',
+					{ launch: true, restart: true },
+					"A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart.",
+				],
+				[
+					'the SimSlim profile is unknown',
+					{ slimProfileId: 'rndevtools-unknown' },
+					'Unknown SimSlim profile "rndevtools-unknown". Known profiles: rndevtools-development.',
+				],
+			] as const)(
+				'fails rather than parks a device request when %s',
+				async (_, extra, error) => {
+					if (error === MALFORMED_STRIP)
+						metro.environmentIssue = MALFORMED_STRIP;
+					if ('restart' in extra) worktrees.identity = { scheme: 'exampleapp' };
+					const receipt = await third(extra);
+					expect(receipt.completed).toBe(false);
+					expect(receipt.error).toBe(error);
+					expect(receipt).not.toHaveProperty('deviceRequest');
+					expect(service.getState().deviceRequests).toEqual([]);
+				}
+			);
+
+			it.each([
+				['RNDEVTOOLS_CHILD_ENV_STRIP is malformed now', MALFORMED_STRIP],
+				[
+					'the app.json lost the bundle identifier a restart needs',
+					"A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart.",
+				],
+			] as const)(
+				'settles no request with a clone when %s, and clones nothing',
+				async (_, error) => {
+					const parked = await third({ launch: true, restart: true });
+					const requestId = parked.deviceRequest?.id as string;
+					expect(requestId).toBeDefined();
+					if (error === MALFORMED_STRIP)
+						metro.environmentIssue = MALFORMED_STRIP;
+					else worktrees.identity = { scheme: 'exampleapp' };
+					for (const attempt of [1, 2]) {
+						const cloned = await service.runOperation({
+							actionId: `op-clone-${attempt}`,
+							kind: 'lane.provide-device',
+							requestId,
+							decision: 'clone',
+							simulatorUdid: OTHER_UDID,
+						});
+						expect(cloned.completed).toBe(false);
+						expect(cloned.error).toBe(error);
+					}
+					expect(simulator.actions.map((action) => action.kind)).not.toContain(
+						'device.clone'
+					);
+					expect(service.getState().deviceRequests[0]).toMatchObject({
+						id: requestId,
+						status: 'pending',
+						message: error,
+					});
+				}
+			);
+		});
+
 		it('keeps a request pending with the reason when the chosen start fails', async () => {
 			await up({ simulatorUdid: UDID });
 			await service.runOperation({

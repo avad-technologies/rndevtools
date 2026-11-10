@@ -64,6 +64,7 @@ import {
 import type { LaneStore } from './lane-store';
 import {
 	type DiscoveredWorktree,
+	type WorktreeExpoIdentity,
 	type WorktreeInspectorPort,
 	worktreeInspector,
 } from './lane-worktree';
@@ -1094,12 +1095,7 @@ export class LaneService {
 		warnings?: string[]
 	): Promise<LaneStartOutcome> {
 		const requestedPath = path.resolve(input.worktreePath);
-		const environment = this.#environments.find(
-			(candidate) => candidate.id === input.environment
-		);
-		if (!environment) {
-			throw new Error(`Unknown lane environment "${input.environment}".`);
-		}
+		const environment = this.#laneEnvironment(input.environment);
 
 		// The agent passes wherever it is working. Resolve the checkout that
 		// contains it: that is the lane's worktree, and the requested directory
@@ -1169,6 +1165,13 @@ export class LaneService {
 			return { lane: this.#view(resumed) };
 		}
 		await this.#store.addRepository(repositoryRoot);
+		// What no Simulator can change fails the start before one is picked,
+		// so a start that cannot work never waits on the user for a device.
+		const { identity, slimRequest, backendPolicy } = await this.#checkNewLane(
+			input,
+			appPath ?? worktreePath,
+			environment
+		);
 
 		// From the inventory to the reservation there is no await: the device
 		// is picked, checked, and reserved before any other start can look.
@@ -1232,24 +1235,6 @@ export class LaneService {
 				? { preferredPort: input.preferredPort }
 				: {}),
 		});
-		const identity = await this.#worktrees.readExpoIdentity(
-			appPath ?? worktreePath
-		);
-		// A new lane's first launch restarts its app anyway, but one that was
-		// asked to and cannot name the app fails before anything boots.
-		if (input.restart && input.launch && !identity.bundleIdentifier) {
-			throw restartWithoutBundleIdentifier();
-		}
-		// Validate the slim request before anything is booted or spawned, so a
-		// typo in a profile id fails fast instead of after a 20s boot.
-		const slimRequest = input.slimProfileId
-			? this.#slimRequest(input.slimProfileId)
-			: undefined;
-		// Likewise a backend this lane cannot have, and a desktop environment
-		// no Metro can start with.
-		const backendPolicy = this.#backendPolicy(input.backend, environment);
-		const environmentProblem = this.#metro.environmentProblem();
-		if (environmentProblem) throw new Error(environmentProblem);
 		const logPath = this.#store.logPathFor(id);
 		const startedAt = this.#now();
 		const agent = this.#agentWithTimestamp(input.agent);
@@ -1369,6 +1354,46 @@ export class LaneService {
 			});
 		}
 		return { lane: this.#view(lane) };
+	}
+
+	/** The lane environment `id` names; a start for any other fails. */
+	#laneEnvironment(id: string): LaneEnvironment {
+		const environment = this.#environments.find(
+			(candidate) => candidate.id === id
+		);
+		if (!environment) throw new Error(`Unknown lane environment "${id}".`);
+		return environment;
+	}
+
+	/**
+	 * Refuses a new lane for `appDirectory` over what no Simulator changes,
+	 * before one is picked, a device request parked, or a clone made: a
+	 * restart its app.json cannot name the app for (a new lane's first launch
+	 * restarts the app anyway, but one asked to must be able to), a SimSlim
+	 * profile this build cannot apply, a backend this lane cannot have, and a
+	 * desktop environment no Metro starts with. A typo fails at once instead
+	 * of after a boot. Returns what the start goes on with.
+	 */
+	async #checkNewLane(
+		input: LaneStartInput,
+		appDirectory: string,
+		environment: LaneEnvironment
+	): Promise<{
+		identity: WorktreeExpoIdentity;
+		slimRequest: string | undefined;
+		backendPolicy: LaneBackendPolicy;
+	}> {
+		const identity = await this.#worktrees.readExpoIdentity(appDirectory);
+		if (input.restart && input.launch && !identity.bundleIdentifier) {
+			throw restartWithoutBundleIdentifier();
+		}
+		const slimRequest = input.slimProfileId
+			? this.#slimRequest(input.slimProfileId)
+			: undefined;
+		const backendPolicy = this.#backendPolicy(input.backend, environment);
+		const environmentProblem = this.#metro.environmentProblem();
+		if (environmentProblem) throw new Error(environmentProblem);
+		return { identity, slimRequest, backendPolicy };
 	}
 
 	/** Refuses a device someone other than `agent` holds (see LaneDeviceAccessPort). */
@@ -1660,6 +1685,22 @@ export class LaneService {
 					? 'Cloning the Simulator…'
 					: 'Starting the lane…',
 		});
+		const start: Omit<LaneStartInput, 'simulatorUdid'> = {
+			actionId: input.actionId,
+			kind: 'lane.start',
+			worktreePath: current.appPath ?? current.worktreePath,
+			environment: current.environment,
+			launch: current.launch,
+			...(current.restart ? { restart: true } : {}),
+			...(current.preferredPort !== undefined
+				? { preferredPort: current.preferredPort }
+				: {}),
+			...(current.slimProfileId
+				? { slimProfileId: current.slimProfileId }
+				: {}),
+			...(current.backend ? { backend: current.backend } : {}),
+			...(current.agent ? { agent: current.agent } : {}),
+		};
 		// Hold the device the user chose from this moment (a clone from the
 		// moment it exists), so a lane up that picks its own device cannot take
 		// it while the clone or the start is still running.
@@ -1671,6 +1712,16 @@ export class LaneService {
 		};
 		this.#reservations.add(reservation);
 		try {
+			// A clone is a new Simulator that stays, so a lane that cannot start
+			// on it is refused before it is made, as often as the user picks it.
+			// A clone never holds the app's lane, so the start makes a new one.
+			if (input.decision === 'clone') {
+				await this.#checkNewLane(
+					start,
+					laneAppDirectory(current),
+					this.#laneEnvironment(current.environment)
+				);
+			}
 			const simulatorUdid =
 				input.decision === 'clone'
 					? await this.#cloneDevice(
@@ -1681,23 +1732,7 @@ export class LaneService {
 						)
 					: input.simulatorUdid;
 			const outcome = await this.#startLane(
-				{
-					actionId: input.actionId,
-					kind: 'lane.start',
-					worktreePath: current.appPath ?? current.worktreePath,
-					simulatorUdid,
-					environment: current.environment,
-					launch: current.launch,
-					...(current.restart ? { restart: true } : {}),
-					...(current.preferredPort !== undefined
-						? { preferredPort: current.preferredPort }
-						: {}),
-					...(current.slimProfileId
-						? { slimProfileId: current.slimProfileId }
-						: {}),
-					...(current.backend ? { backend: current.backend } : {}),
-					...(current.agent ? { agent: current.agent } : {}),
-				},
+				{ ...start, simulatorUdid },
 				signal,
 				{ held: reservation, warnings }
 			);
