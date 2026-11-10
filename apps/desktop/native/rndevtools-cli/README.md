@@ -306,10 +306,12 @@ It declines a Bash line when any of these holds:
    at most 256 KiB that parses, from at most 16 directories in a call. The script, with the arguments the manager hands
    it, is judged as a line of its own from the package's directory by the
    rules above and by these rules again (a script that runs another), within
-   the same depth and script limits, and the reason quotes it. A workspace
-   filter (`--filter`, `-w`, `-r`, `yarn workspace`), `bun` with a script
-   named without `run` (`bun ios`), and anything the rules cannot read or
-   place run.
+   the same depth and script limits, and the reason quotes it (at most 160
+   bytes, keeping only letters, marks, numbers, punctuation, symbols and
+   spaces other than the backtick, so no control, bidi or zero-width character
+   of the repository's reaches the model). A workspace filter (`--filter`,
+   `-w`, `-r`, `yarn workspace`), `bun` with a script named without `run`
+   (`bun ios`), and anything the rules cannot read or place run.
 4. **The Supabase rules** decline it (see [Supabase steering](#supabase-steering)).
 
 **The one excuse.** The text rule's match is excused when the line looks as if

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -388,12 +389,23 @@ func namesPackageManager(source string) bool {
 	return strings.Contains(plain, "npm") || strings.Contains(plain, "yarn") || strings.Contains(plain, "bun")
 }
 
+// quotable reports whether a reason may quote character from text that the
+// repository or the command line controls: a graphic character (a letter,
+// mark, number, punctuation, symbol, or space), except the backtick that
+// quotes it there. Controls, format characters (bidi controls, zero-width
+// marks, tag characters), line and paragraph separators, and private-use or
+// unassigned characters can make quoted text read as something else, to the
+// model and to a person.
+func quotable(character rune) bool {
+	return character != '`' && unicode.IsGraphic(character)
+}
+
 // displayText bounds text to limit bytes for a reason, at a whole character,
-// and strips anything unprintable and the backticks that quote it there.
+// and keeps only what is quotable.
 func displayText(text string, limit int) string {
 	var builder strings.Builder
 	for _, character := range text {
-		if character < 0x20 || character == 0x7f || character == '`' {
+		if !quotable(character) {
 			continue
 		}
 		if builder.Len()+utf8.RuneLen(character) > limit {

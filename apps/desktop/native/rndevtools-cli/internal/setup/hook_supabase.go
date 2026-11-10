@@ -877,14 +877,14 @@ func killReason(command string) string {
 	return fmt.Sprintf("Blocked `%s`: native Supabase stacks share this Mac's process table, so this kills every agent's database. Stop only this worktree's stack: the rndevtools `supabase` tool (operation down) when RN Devtools manages it, otherwise `supabase stop` from the worktree.", command)
 }
 
-// displayPath bounds a path for a reason and strips anything unprintable.
+// displayPath bounds a path for a reason and keeps only what is quotable.
 func displayPath(path string) string {
 	if path == "" {
 		return "that directory"
 	}
 	var builder strings.Builder
 	for _, character := range path {
-		if character < 0x20 || character == 0x7f || character == '`' {
+		if !quotable(character) {
 			continue
 		}
 		builder.WriteRune(character)

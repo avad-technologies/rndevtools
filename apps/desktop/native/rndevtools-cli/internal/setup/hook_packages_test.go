@@ -186,6 +186,35 @@ func TestHookReadsThePackageScriptsALineRuns(t *testing.T) {
 	}
 }
 
+func TestReasonsQuoteOnlyTheRepositoryTextThatShows(t *testing.T) {
+	// A reason quotes a package.json script and its path, which the
+	// repository controls. Bidi controls, zero-width and other format
+	// characters, tag characters, line separators, and C1 controls can make
+	// the quoted text read as something else to the model and to a person, so
+	// they go with the C0 controls and the backticks.
+	hidden := "\u202e\u2066\u2069\u200b\u200d\u200e\ufeff\u00ad\U000e0041\u0085\u009b\u2028\u2029\t\x00\x7f`"
+	if got := displayText("expo"+hidden+" start", 160); got != "expo start" {
+		t.Errorf("displayText kept %q", got)
+	}
+	if got := displayPath("/Users/example/app" + hidden + "/package.json"); got != "/Users/example/app/package.json" {
+		t.Errorf("displayPath kept %q", got)
+	}
+	// Letters of any script, combining marks, and symbols stay, and the
+	// bound still ends at a whole character.
+	if text := "café 日本 ✓ e\u0301"; displayText(text, 160) != text {
+		t.Errorf("displayText dropped printable text: %q", displayText(text, 160))
+	}
+	if got := displayText(strings.Repeat("é", 10), 11); got != strings.Repeat("é", 5)+"…" {
+		t.Errorf("displayText bound: %q", got)
+	}
+	app := t.TempDir()
+	write(t, filepath.Join(app, "package.json"), `{"scripts":{"start":"expo start \u202e\u200b# trats opxe ton"}}`)
+	decision := judgeIn(app, "npm start")
+	if !decision.Block || !strings.Contains(decision.Reason, "`expo start # trats opxe ton`") || strings.ContainsAny(decision.Reason, "\u202e\u200b") {
+		t.Fatalf("the reason must quote the script without its format characters: %+v", decision)
+	}
+}
+
 func TestParsePackageScriptReadsTheManagersOwnWords(t *testing.T) {
 	for _, row := range []struct {
 		command   string
