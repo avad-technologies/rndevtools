@@ -170,20 +170,27 @@ lane; one app cannot have two.
 `lane --operation up` boots the Simulator if needed, starts Metro on the
 leased port, waits up to 15 s for `/status`, and deep-links the dev client
 with the SDK 57 launch form
-(`<scheme>://expo-development-client/?url=http://127.0.0.1:<port>`). Before a
-new lane's first launch it terminates any running copy of the app (its bundle
-identifier) on that Simulator, so the app starts fresh with only this lane's
-Metro. The result includes `lane.id`, `lane.port`, `lane.simulatorUdid`, and
-`lane.metro` (`starting` | `ready` | `stopped`). Pass `--launch=false` to lease
-and start Metro without opening the app.
+(`<scheme>://expo-development-client/?url=http://127.0.0.1:<port>`). Before
+the lane's first dev-client launch it terminates any running copy of the app
+on that Simulator, so the app starts fresh with only this lane's Metro. It
+names the app by the `ios.bundleIdentifier` that `app.json` declared when the
+lane started; without one, or when the Simulator cannot terminate the app, the
+launch goes ahead, and the result's `warnings` and the lane's log say so. The
+result includes `lane.id`, `lane.port`, `lane.simulatorUdid`, and `lane.metro`
+(`starting` | `ready` | `stopped`). Pass `--launch=false` to lease and start
+Metro without opening the app.
 
 Running `lane --operation up` again for the same worktree is safe: it returns
 the app's existing lane (on whatever Simulator it has, when you omit
-`--udid`), restarts Metro on the lane's port if it died, and relaunches
-without terminating the app; add `--restart` to start it fresh (see
-[Restart the app](#restart-the-app)). Naming a *different* Simulator for an
-app that already has a lane, or a Simulator that carries another app's lane,
-is a conflict; use `lane --operation ls` to see which.
+`--udid`), restarts Metro on the lane's port if it died, and relaunches. Once
+the lane's dev client has opened, a relaunch leaves the running app as it is;
+add `--restart` to start it fresh (see [Restart the app](#restart-the-app)). A
+lane whose dev client has not opened yet (one started with `--launch=false`,
+or whose launches failed or only opened a deep link) still terminates the app
+at its first dev-client launch, from whichever of `up` or `launch` opens it.
+Naming a *different* Simulator for an app that already has a lane, or a
+Simulator that carries another app's lane, is a conflict; use
+`lane --operation ls` to see which.
 
 Add `--slim <profileId>` (ids come from `rndevtools slimming --operation
 status`, e.g. `rndevtools-development`) to trim the Simulator's background
@@ -264,8 +271,11 @@ rndevtools lane --operation launch --worktree "$PWD" --url checkout/cart   # dee
 `--restart` on `rndevtools lane --operation up` (resuming an existing lane) or
 on `rndevtools lane --operation launch` terminates any running copy of the
 lane's app (its bundle identifier) on the lane's Simulator before the dev
-client opens, so the app starts fresh with only this lane's Metro. A new lane
-does this on its first launch without the flag.
+client opens, so the app starts fresh with only this lane's Metro. A lane does
+this on its first dev-client launch without the flag, as far as it can (see
+[Start a worktree on a Simulator](#start-a-worktree-on-a-simulator));
+`--restart` asks for it, so a terminate that fails fails the launch, and it
+needs the `ios.bundleIdentifier` the lane started with.
 
 ```bash
 rndevtools lane --operation up --worktree "$PWD" --restart
@@ -281,7 +291,8 @@ listed as a debug target on whatever Metro later takes the old port.
 Terminating an app that is not running counts as success, and device holds
 apply as they do to any `up` or `launch`.
 `rndevtools lane --operation launch --worktree "$PWD" --url <path>` without
-`--restart` never terminates the app: a deep link keeps its state.
+`--restart` never terminates the app: a deep link keeps its state, and it
+leaves that first restart to the dev-client launch after it.
 
 ## Drive the app that is running in the lane
 

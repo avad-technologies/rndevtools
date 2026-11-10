@@ -198,8 +198,16 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 		// The restart contract: lane up resuming a lane, and lane launch.
 		`rndevtools lane --operation up --worktree "$PWD" --restart`,
 		`rndevtools lane --operation launch --worktree "$PWD" --restart`,
-		"A new lane does this on its first launch without the flag",
+		// Which launch restarts the app unasked: a lane's first dev-client
+		// launch, whichever command opens it, as far as app.json and the
+		// Simulator let it; a deep link leaves it to the launch after.
+		"A lane does this on its first dev-client launch without the flag",
+		"from whichever of `up` or `launch` opens it",
+		"started with `--launch=false`",
+		"`ios.bundleIdentifier`",
+		"the result's `warnings`",
 		"without `--restart` never terminates the app",
+		"leaves that first restart to the dev-client launch after it",
 		"Terminating an app that is not running counts as success",
 		// The device choice stays with RN Devtools unless the user named one.
 		"Leave `--udid` out unless the user named a device",
@@ -213,5 +221,12 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 	}
 	if strings.Contains(flat, "Always pass `--udid`") {
 		t.Error("the lanes skill must not tell agents to always pass --udid")
+	}
+	// A lane started with --launch=false restarts the app at its first
+	// dev-client launch too, so no relaunch is "without terminating" as such.
+	for _, stale := range []string{"new lane's first launch", "A new lane does this", "relaunches without terminating the app"} {
+		if strings.Contains(flat, stale) {
+			t.Errorf("the lanes skill still says %q", stale)
+		}
 	}
 }

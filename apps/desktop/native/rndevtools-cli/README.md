@@ -476,12 +476,19 @@ teaches Claude Code and Codex the workflow; copy it into `.claude/skills` or
 paths, because neither shares the caller's directory.
 
 `--restart`, on `up` resuming an existing lane and on `launch`, terminates any
-running copy of the lane's app (its bundle identifier) on the lane's
-Simulator before the dev client opens, so the app starts fresh with only this
-lane's Metro; a new lane does that on its first launch without the flag.
-Terminating an app that is not running counts as success, and device holds
-apply as usual. `launch --url` without `--restart` never terminates the app,
-because a deep link keeps its state. React Native's dev client keeps an
+running copy of the lane's app on the lane's Simulator before the dev client
+opens, so the app starts fresh with only this lane's Metro, and a terminate
+that fails fails the launch. A lane does that without the flag on its first
+dev-client launch, from whichever of `up` and `launch` opens the dev client
+first (a lane started with `--launch=false` included), as far as it can: it
+names the app by the `ios.bundleIdentifier` the worktree's `app.json`
+declared when the lane started, and when there is none, or the Simulator
+cannot terminate the app, the launch goes ahead and the receipt's `warnings`
+say so. Later launches restart the app only when asked. Terminating an app
+that is not running counts as success, and device holds apply as usual.
+`launch --url` without `--restart` never terminates the app, because a deep
+link keeps its state, and it leaves that first restart to the dev-client
+launch after it. React Native's dev client keeps an
 inspector connection to every Metro it was pointed at for as long as it runs,
 so without a restart an app re-pointed to a new port stays listed as a debug
 target on whatever Metro later takes the old port.
