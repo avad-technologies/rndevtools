@@ -431,6 +431,10 @@ class FakeWorktrees implements WorktreeInspectorPort {
 	readExpoIdentity = async () => this.identity;
 }
 
+/** Why no Metro can start while RNDEVTOOLS_CHILD_ENV_STRIP is malformed. */
+const MALFORMED_STRIP =
+	'RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name or a NAME_PREFIX* pattern. Separate entries with commas, fix it, and restart RN Devtools.';
+
 const STACK_ID =
 	'64616c83912c48442ec266f86ee2d7f004d2be5c8b7f31a6d6b4c2634f82145f';
 const JOB_ID = 'supabase-job-11111111-2222-4333-8444-555555555555';
@@ -3244,9 +3248,6 @@ describe('LaneService', () => {
 			expect(metro.started[0]).not.toHaveProperty('laneEnv');
 		});
 
-		const MALFORMED_STRIP =
-			'RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name or a NAME_PREFIX* pattern. Separate entries with commas, fix it, and restart RN Devtools.';
-
 		it('refuses a new lane before its Simulator boots when no Metro could start with the desktop environment', async () => {
 			metro.environmentIssue = MALFORMED_STRIP;
 			const receipt = await service.runOperation({
@@ -3298,8 +3299,10 @@ describe('LaneService', () => {
 		beforeEach(async () => {
 			backends = new FakeBackends();
 			// Every spawn gets its own PID and answers at once, so a restart
-			// is visible as a new Metro on the same port.
+			// is visible as a new Metro on the same port. Under a malformed
+			// strip list it refuses, as the real supervisor's start does.
 			metro.start = async (input) => {
+				if (metro.environmentIssue) throw new Error(metro.environmentIssue);
 				metro.healthyPorts.add(input.port);
 				return metro.launch(input);
 			};
@@ -3928,6 +3931,28 @@ describe('LaneService', () => {
 			expect(metro.started).toHaveLength(2);
 			expect(metro.started[1]?.laneEnv).toEqual(backendEnv(MOVED_API_URL));
 			expect(resumed.backend).toMatchObject({ apiUrl: MOVED_API_URL });
+		});
+
+		it('refuses to respawn a dead Metro before booting its Simulator or ensuring its backend when no Metro could start', async () => {
+			const first = await up({ launch: false });
+			metro.deadPids.add(first.lane?.metroPid as number);
+			// The Simulator went down with it, so a respawn would boot it first.
+			simulator.state = simulatorState([
+				{ udid: UDID, state: 'shutdown' },
+				{ udid: OTHER_UDID, state: 'booted' },
+			]);
+			metro.environmentIssue = MALFORMED_STRIP;
+			const actions = simulator.actions.length;
+			const ensures = backends.ensured.length;
+			const resumed = await up({ launch: false });
+			expect(resumed).toMatchObject({
+				completed: false,
+				error: MALFORMED_STRIP,
+			});
+			expect(kinds().slice(actions)).toEqual([]);
+			expect(backends.ensured).toHaveLength(ensures);
+			expect(metro.started).toHaveLength(1);
+			expect(lanes.getState().lanes).toMatchObject([{ id: first.lane?.id }]);
 		});
 
 		it('lets the backend go on lane stop without waiting, and a failing port never keeps the lane', async () => {

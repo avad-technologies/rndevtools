@@ -63,9 +63,10 @@ export type MetroSupervisorPort = {
 	/**
 	 * Why `start` would refuse whatever it is given, the desktop's
 	 * environment being as it is (a malformed RNDEVTOOLS_CHILD_ENV_STRIP), or
-	 * undefined when it would not. The lane service asks before it boots a new
-	 * lane's Simulator and before it stops a running Metro to replace it, so a
-	 * replacement that cannot start never leaves a lane without its Metro.
+	 * undefined when it would not. The lane service asks before it boots a
+	 * Simulator for a lane whose Metro it must start, new or gone, and before
+	 * it stops a running Metro to replace it, so a replacement that cannot
+	 * start never leaves a lane without its Metro.
 	 */
 	environmentProblem: () => string | undefined;
 	start: (input: MetroLaunchInput) => Promise<number>;

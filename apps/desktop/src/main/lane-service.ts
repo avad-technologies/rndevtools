@@ -1731,6 +1731,10 @@ export class LaneService {
 				);
 			}
 			reservation.port = lane.port;
+			// As for a new lane, a Metro the desktop's environment would refuse
+			// fails the lane up before its Simulator boots or its backend starts.
+			const environmentProblem = this.#metro.environmentProblem();
+			if (environmentProblem) throw new Error(environmentProblem);
 		}
 		const inventory = await this.#simulator.refresh();
 		const device = inventory.devices.find(
