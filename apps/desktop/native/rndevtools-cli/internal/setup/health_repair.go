@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -414,15 +416,22 @@ const (
 )
 
 // healthHistory lists the repair history: the files in it, by name, and when
-// each was last written. It reads at most healthHistoryEntries entries.
-func healthHistory(options HealthOptions) map[string]time.Time {
+// each was last written. It reads at most healthHistoryEntries entries, in
+// the order the directory returns them, and complete says that was all of
+// them. A listing cut short cannot show that a file is missing, so nothing is
+// pruned from one.
+func healthHistory(options HealthOptions) (files map[string]time.Time, complete bool) {
 	directory, err := os.Open(healthStateDir(options))
 	if err != nil {
-		return nil
+		return nil, errors.Is(err, fs.ErrNotExist)
 	}
 	defer directory.Close()
-	entries, _ := directory.ReadDir(healthHistoryEntries)
-	files := make(map[string]time.Time, len(entries))
+	entries, err := directory.ReadDir(healthHistoryEntries + 1)
+	complete = (err == nil || errors.Is(err, io.EOF)) && len(entries) <= healthHistoryEntries
+	if len(entries) > healthHistoryEntries {
+		entries = entries[:healthHistoryEntries]
+	}
+	files = make(map[string]time.Time, len(entries))
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() {
 			continue
@@ -431,7 +440,15 @@ func healthHistory(options HealthOptions) map[string]time.Time {
 			files[entry.Name()] = info.ModTime()
 		}
 	}
-	return files
+	return files, complete
+}
+
+// healthOnDisk reports whether the history holds name now, as the directory
+// says rather than a listing taken earlier; also when that cannot be told, so
+// a file whose partner may exist keeps its pair.
+func healthOnDisk(options HealthOptions, name string) bool {
+	_, err := os.Lstat(filepath.Join(healthStateDir(options), name))
+	return !errors.Is(err, fs.ErrNotExist)
 }
 
 // healthPruneExpired deletes what an expired preview left: its record, which
@@ -440,31 +457,30 @@ func healthHistory(options HealthOptions) map[string]time.Time {
 // undo; a record without one is a preview, or an apply that stopped before it
 // changed the configuration.
 func healthPruneExpired(options HealthOptions) {
-	files := healthHistory(options)
+	files, complete := healthHistory(options)
+	if !complete {
+		return
+	}
 	expired := time.Now().Add(-healthPlanLifetime)
 	for name, modified := range files {
 		if !modified.Before(expired) {
 			continue
 		}
 		id, isRecord := strings.CutSuffix(name, ".json")
-		preview := isRecord && healthID.MatchString(id)
-		if _, repaired := files[id+".summary.json"]; repaired {
-			preview = false
-		}
+		preview := isRecord && healthID.MatchString(id) && !healthOnDisk(options, id+".summary.json")
 		if preview || strings.HasPrefix(name, ".rndevtools-setup-") {
 			_ = os.Remove(filepath.Join(healthStateDir(options), name))
 		}
 	}
 }
 
-// healthScopeReceipts are the repairs of options' scope that undo can still
-// reach (a summary with its record), newest first.
-func healthScopeReceipts(options HealthOptions) []HealthReceipt {
-	files := healthHistory(options)
+// healthScopeReceipts are the repairs of options' scope among files that undo
+// can still reach (a summary with its record), newest first.
+func healthScopeReceipts(options HealthOptions, files map[string]time.Time) []HealthReceipt {
 	result := []HealthReceipt{}
 	for name := range files {
 		id, isSummary := strings.CutSuffix(name, ".summary.json")
-		if _, recorded := files[id+".json"]; !isSummary || !recorded || !healthID.MatchString(id) {
+		if !isSummary || !healthID.MatchString(id) || !healthOnDisk(options, id+".json") {
 			continue
 		}
 		data, _, err := healthRead(filepath.Join(healthStateDir(options), name))
@@ -487,7 +503,8 @@ func healthScopeReceipts(options HealthOptions) []HealthReceipt {
 
 // healthReceipts are the scope's newest repairs, at most healthReceiptLimit.
 func healthReceipts(options HealthOptions) []HealthReceipt {
-	result := healthScopeReceipts(options)
+	files, _ := healthHistory(options)
+	result := healthScopeReceipts(options, files)
 	if len(result) > healthReceiptLimit {
 		result = result[:healthReceiptLimit]
 	}
@@ -498,16 +515,17 @@ func healthReceipts(options HealthOptions) []HealthReceipt {
 // healthReceiptLimit, which the report no longer lists, and summaries left
 // without their record.
 func healthPruneReceipts(options HealthOptions) {
-	receipts := healthScopeReceipts(options)
+	files, complete := healthHistory(options)
+	if !complete {
+		return
+	}
+	receipts := healthScopeReceipts(options, files)
 	for index := healthReceiptLimit; index < len(receipts); index++ {
 		healthForget(options, receipts[index].ID)
 	}
-	files := healthHistory(options)
 	for name := range files {
-		if id, isSummary := strings.CutSuffix(name, ".summary.json"); isSummary && healthID.MatchString(id) {
-			if _, recorded := files[id+".json"]; !recorded {
-				_ = os.Remove(filepath.Join(healthStateDir(options), name))
-			}
+		if id, isSummary := strings.CutSuffix(name, ".summary.json"); isSummary && healthID.MatchString(id) && !healthOnDisk(options, id+".json") {
+			_ = os.Remove(filepath.Join(healthStateDir(options), name))
 		}
 	}
 }

@@ -642,6 +642,75 @@ func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T)
 	}
 }
 
+func TestAgentHealthPrunesNothingFromAHistoryItCannotListWhole(t *testing.T) {
+	// One listing reads at most healthHistoryEntries files, in no particular
+	// order. Past that, a repair's summary can be left out of it while it is
+	// on disk, so that its record looks like an expired preview, or its
+	// record left out, so that the summary looks orphaned. A history that one
+	// listing cannot hold is therefore not pruned at all.
+	options := healthFixture(t)
+	dir, err := healthPrivateDir(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-10 * time.Minute)
+	age := func(name string) {
+		t.Helper()
+		if err := os.Chtimes(filepath.Join(dir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := []string{}
+	for i := 1; i <= 8; i++ {
+		id := fmt.Sprintf("check-%032x", i)
+		healthStoredRepair(t, options, id, int64(1_000+i))
+		for _, name := range []string{id + ".json", id + ".summary.json"} {
+			age(name)
+			kept = append(kept, name)
+		}
+	}
+	previews := []string{}
+	for i := 1; i <= healthHistoryEntries; i++ {
+		name := fmt.Sprintf("check-%032x.json", 1<<20+i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"plan":{}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		age(name)
+		previews = append(previews, name)
+	}
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	plan := healthRepair(t, options, "codex", "plugin-controller")
+	kept = append(kept, plan.ID+".json", plan.ID+".summary.json")
+	missing := func(names []string) []string {
+		gone := []string{}
+		for _, name := range names {
+			if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+				gone = append(gone, name)
+			}
+		}
+		return gone
+	}
+	if gone := missing(append(append([]string{}, kept...), previews...)); len(gone) > 0 {
+		t.Fatalf("a history one listing cannot hold was pruned: %d files gone, starting with %v", len(gone), gone[:min(len(gone), 4)])
+	}
+	// Once it fits in one listing again, expired previews go and every
+	// repair keeps its pair.
+	for _, name := range previews[8:] {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	healthPut(t, filepath.Join(options.Home, ".claude", "settings.json"), `{"enabledPlugins":{"simview@tools":true}}`)
+	plan = healthRepair(t, options, "claude", "plugin-controller")
+	kept = append(kept, plan.ID+".json", plan.ID+".summary.json")
+	if gone := missing(kept); len(gone) > 0 {
+		t.Fatalf("repairs lost files: %v", gone)
+	}
+	if gone := missing(previews[:8]); len(gone) != 8 {
+		t.Fatalf("expired previews kept from a whole listing: %v", previews[:8])
+	}
+}
+
 func TestAgentHealthPlanNamesTheFileItWritesThroughALink(t *testing.T) {
 	// A dotfiles link is edited where it points; the preview says so.
 	options := healthFixture(t)
