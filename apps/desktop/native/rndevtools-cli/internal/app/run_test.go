@@ -498,6 +498,10 @@ func TestHookUsageDescribesTheSupabaseRules(t *testing.T) {
 			t.Fatalf("hook usage lacks %q:\n%s", phrase, stdout.String())
 		}
 	}
+	// It names the simctl commands the MCP instructions name.
+	if flat := strings.Join(strings.Fields(stdout.String()), " "); !strings.Contains(flat, "simctl boot/shutdown/openurl/ install/launch/terminate/io") {
+		t.Fatalf("hook usage must name terminate with the other simctl commands:\n%s", stdout.String())
+	}
 }
 
 func TestSessionEndReleaseCommandForwardsOnlyAnAbsoluteCwd(t *testing.T) {

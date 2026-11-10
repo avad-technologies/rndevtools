@@ -659,11 +659,11 @@ tools (or the ` + "`rndevtools`" + ` CLI, where an operation is always the
 worktree on its own Simulator with its own Metro port,
 ` + "`rndevtools lane --operation launch --worktree <app directory> --restart`" + `
 starts the app fresh, and ` + "`input`" + ` and ` + "`capture`" + ` drive and observe the device.
-Leave out ` + "`--udid`" + ` unless the user named a device: RN Devtools picks a free
-iPhone. Never run ` + "`xcrun simctl boot`" + `, ` + "`shutdown`" + `, ` + "`openurl`" + `, ` + "`install`" + `,
-` + "`launch`" + `, or start Metro by hand (` + "`npx expo`" + `, ` + "`expo start`" + `, or
-` + "`expo run:ios`" + ` without ` + "`--no-bundler`" + `): other agents share these devices
-and the desktop app owns their ports and claims.
+Leave out ` + "`--udid`" + ` unless the user named a device or is using one: RN Devtools
+picks a free iPhone. Never run ` + "`xcrun simctl boot`" + `, ` + "`shutdown`" + `, ` + "`openurl`" + `,
+` + "`install`" + `, ` + "`launch`" + `, ` + "`terminate`" + `, or ` + "`io`" + `, and never start Metro by hand
+(` + "`npx expo`" + `, ` + "`expo start`" + `, or ` + "`expo run:ios`" + ` without ` + "`--no-bundler`" + `): other
+agents share these devices and the desktop app owns their ports and claims.
 `
 	if project != "" && isRegularFile(filepath.Join(project, "supabase", "config.toml")) {
 		block += `

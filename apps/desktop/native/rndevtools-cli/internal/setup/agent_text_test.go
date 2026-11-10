@@ -89,6 +89,36 @@ func TestNoStringOfTheCLISpellsAnOperationAsAWord(t *testing.T) {
 	}
 }
 
+func TestAgentTextsAgreeOnTheSimctlCommandsAndTheUDIDCaveat(t *testing.T) {
+	// The texts that list the simctl commands never to run name the same
+	// ones as the MCP instructions (restart replaced terminate), and the ones
+	// that say to leave --udid out give the same caveat: a booted Simulator
+	// nobody holds can still be in a person's hands.
+	flat := func(text string) string { return strings.Join(strings.Fields(text), " ") }
+	skill, err := skillFiles.ReadFile("skills/rndevtools-lanes/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		name, text string
+		phrases    []string
+	}{
+		{"the AGENTS.md block", flat(AgentsBlock("")), []string{
+			"`xcrun simctl boot`, `shutdown`, `openurl`, `install`, `launch`, `terminate`, or `io`",
+			"Leave out `--udid` unless the user named a device or is using one",
+		}},
+		{"the routing block", flat(healthRoutingBlock()), []string{"`launch`, `terminate`, or `io`", "named a device or is using one"}},
+		{"the Metro reason", flat(metroDecision().Reason), []string{"Leave out `--udid` unless the user named a device or is using one"}},
+		{"the lanes skill", flat(string(skill)), []string{"xcrun simctl boot/shutdown/openurl/install/launch/terminate/io"}},
+	} {
+		for _, phrase := range row.phrases {
+			if !strings.Contains(row.text, phrase) {
+				t.Errorf("%s lacks %q", row.name, phrase)
+			}
+		}
+	}
+}
+
 func TestAgentsBlockGivesTheLaneCommandsAsTheCLIParsesThem(t *testing.T) {
 	flat := strings.Join(strings.Fields(AgentsBlock("")), " ")
 	for _, phrase := range []string{

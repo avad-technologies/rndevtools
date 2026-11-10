@@ -212,7 +212,7 @@ func metroDecision() HookDecision {
 		Block: true,
 		Reason: "Blocked starting Metro by hand: RN Devtools leases Metro ports, and 8081 is shared with other agents. Run the app in a lane instead: " +
 			"`rndevtools lane --operation up --worktree " + appDirectory + "` (the rndevtools `lane` tool, operation up) starts Metro on a leased port " +
-			"and opens the dev client against it. Leave out `--udid` unless the user named a device: RN Devtools picks a free iPhone.",
+			"and opens the dev client against it. Leave out `--udid` unless the user named a device or is using one: RN Devtools picks a free iPhone.",
 	}
 }
 

@@ -11,8 +11,8 @@ description: >
   like "run this branch", "open the simulator", "screenshot the simulator",
   "tap X on the device", "start the app for my worktree", "restart the app",
   "pick a free simulator", or "fix a Metro port collision". Never drive a
-  Simulator with xcrun simctl boot/shutdown/openurl/install/launch/io, idb,
-  axe, or another Simulator MCP server (XcodeBuildMCP, ios-simulator).
+  Simulator with xcrun simctl boot/shutdown/openurl/install/launch/terminate/io,
+  idb, axe, or another Simulator MCP server (XcodeBuildMCP, ios-simulator).
 ---
 
 # RN Devtools lanes
