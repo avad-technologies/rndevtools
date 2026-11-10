@@ -2797,7 +2797,14 @@ export class LaneService {
 			this.#clearIdentityError(lane.id, lane.metroPid);
 			return 'stopped';
 		}
-		if (this.#verifiedMetros.get(lane.id) !== lane.metroPid) return 'starting';
+		// A running PID that is not proven the lane's Metro keeps a starting
+		// lane starting until it is. A lane that reads stopped stays stopped:
+		// its Metro exited or was stopped, and PIDs get reused, so whatever
+		// runs under that PID now is some other process until a check that
+		// proves otherwise (adoption, lane up or launch) has run.
+		if (this.#verifiedMetros.get(lane.id) !== lane.metroPid) {
+			return lane.metro === 'stopped' ? 'stopped' : 'starting';
+		}
 		return lane.metro === 'stopped' ? 'starting' : lane.metro;
 	}
 

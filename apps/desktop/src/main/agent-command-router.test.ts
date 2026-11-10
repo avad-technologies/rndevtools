@@ -2231,8 +2231,9 @@ describe('agent command router', () => {
 
 			it('holds the build command back from one that never turns ready', async () => {
 				// A Metro the lane service could not prove is the lane's own (an
-				// adoption that failed, a stop to retry, a recycled PID) stays
-				// starting while another packager may answer on the port.
+				// adoption that failed, a stop to retry) stays starting while
+				// another packager may answer on the port. A lane whose PID is
+				// some other process's now reads stopped instead.
 				const { settled, pending } = planFor(buildLanes(undefined, 'starting'));
 				// Nothing answers before the full 15 s, and the answer comes then.
 				await vi.advanceTimersByTimeAsync(14_999);

@@ -488,8 +488,10 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
  * the lane's Metro: the lane service marks a lane ready only once the Metro
  * answering on its port is proven to be the lane's own, and a starting lane
  * may hold one it could not prove (an adoption that failed, a stop it must
- * retry) while another worktree's packager answers there. A lane whose
- * recorded PID now names some other process reads stopped instead.
+ * retry) while another worktree's packager answers there. A lane whose Metro
+ * exited reads stopped, and stays stopped when some other process gets its
+ * PID later; one whose recorded PID turns out to name another process when
+ * its ownership is checked forgets that PID and reads stopped too.
  */
 async function awaitBuildLane(
 	lanes: LanePort | undefined,

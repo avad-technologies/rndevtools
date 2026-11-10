@@ -3246,6 +3246,43 @@ describe('LaneService', () => {
 			expect(metro.stopped).toEqual([]);
 		});
 
+		it('keeps a lane whose Metro exited stopped once some other process gets its PID', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-reused-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const pid = started.lane?.metroPid as number;
+			const pass = (n: number) =>
+				service.runOperation({
+					actionId: `op-reused-pass-${n}`,
+					kind: 'lane.refresh',
+				});
+			await pass(1);
+			expect(service.getState().lanes[0]?.metro).toBe('ready');
+			// The lane's Metro exits, and a status pass finds it gone.
+			metro.deadPids.add(pid);
+			metro.listeners.delete(8_100);
+			await pass(2);
+			expect(service.getState().lanes[0]).toMatchObject({
+				metro: 'stopped',
+				metroPid: pid,
+			});
+			// An unrelated process gets that PID later. It is no Metro of the
+			// lane's, and status passes never prove PIDs, so the lane reads
+			// stopped still: only lane up, which starts a Metro, helps it.
+			metro.deadPids.delete(pid);
+			await pass(3);
+			await pass(4);
+			expect(service.getState().lanes[0]?.metro).toBe('stopped');
+			expect(service.getState().error).toBeUndefined();
+			expect(metro.stopped).toEqual([]);
+		});
+
 		it('starts the desktop service without waiting for surviving Metro ownership probes', async () => {
 			const started = await service.runOperation({
 				actionId: 'op-background-start',
