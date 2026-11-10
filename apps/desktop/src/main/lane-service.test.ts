@@ -5202,6 +5202,65 @@ describe('LaneService', () => {
 				/already assigned to lane/
 			);
 		});
+
+		it('fulfils a request with the lane it stored when only that lane launch fails', async () => {
+			for (const port of [8_100, 8_101, 8_102]) metro.healthyPorts.add(port);
+			await up({ simulatorUdid: UDID });
+			await service.runOperation({
+				actionId: 'op-other-app-launch',
+				kind: 'lane.start',
+				worktreePath: OTHER_WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const parked = await service.runOperation({
+				actionId: 'op-third-launch',
+				kind: 'lane.start',
+				worktreePath: THIRD_WORKTREE,
+				environment: 'development',
+				launch: true,
+			});
+			const requestId = parked.deviceRequest?.id ?? '';
+			// The clone's lane is stored; its dev client is not installed there.
+			simulator.installedApps = [];
+			const settled = await service.runOperation({
+				actionId: 'op-clone-launch',
+				kind: 'lane.provide-device',
+				requestId,
+				decision: 'clone',
+				simulatorUdid: OTHER_UDID,
+			});
+			expect(settled.completed).toBe(false);
+			expect(settled.error).toMatch(
+				/^com\.example\.app is not installed on this Simulator/
+			);
+			const laneId = settled.lane?.id as string;
+			expect(laneId).toBeDefined();
+			expect(service.getState().lanes.some((lane) => lane.id === laneId)).toBe(
+				true
+			);
+			// The request is settled by that lane: an agent polling lane ls finds
+			// it there, not a request still waiting on the user.
+			const request = service
+				.getState()
+				.deviceRequests.find((candidate) => candidate.id === requestId);
+			expect(request).toMatchObject({ status: 'fulfilled', laneId });
+			expect(request?.message).toMatch(
+				new RegExp(
+					`^Started on ${CLONE_UDID}, but its launch failed: com\\.example\\.app is not installed`
+				)
+			);
+			// Settled once, it cannot be settled again into a second lane.
+			const again = await service.runOperation({
+				actionId: 'op-clone-again',
+				kind: 'lane.provide-device',
+				requestId,
+				decision: 'use',
+				simulatorUdid: UDID,
+			});
+			expect(again.error).toBe(`Device request ${requestId} is fulfilled.`);
+		});
 	});
 
 	describe('slimming on lane start', () => {

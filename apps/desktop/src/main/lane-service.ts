@@ -1564,8 +1564,10 @@ export class LaneService {
 	 * Settles a device request from the Lanes panel. `use` starts the lane on
 	 * the chosen Simulator; `clone` first clones it (the signed helper's clone
 	 * path, the same one the Simulator panel uses) and starts on the copy. A
-	 * start that fails leaves the request pending with the reason, so the user
-	 * can pick again and the agent keeps seeing an open request.
+	 * start that fails before its lane is stored leaves the request pending
+	 * with the reason, so the user can pick again and the agent keeps seeing
+	 * an open request. One that stored its lane and then failed to launch it
+	 * fulfils the request with that lane and says why.
 	 */
 	async provideDevice(
 		input: Extract<LaneOperation, { kind: 'lane.provide-device' }>,
@@ -1651,10 +1653,28 @@ export class LaneService {
 			});
 			return { lane: outcome.lane };
 		} catch (error) {
-			this.#updateDeviceRequest(current, {
-				status: 'pending',
-				message: safeErrorText(error),
-			});
+			// A start that stored its lane before its launch failed settled the
+			// request with that lane: the agent polling for it finds its lane,
+			// and nobody starts a second one on another device or clone.
+			const stored =
+				error instanceof LaneLaunchError &&
+				!this.#stoppingLanes.has(error.laneId)
+					? this.#store.get(error.laneId)
+					: undefined;
+			this.#updateDeviceRequest(
+				current,
+				stored
+					? {
+							status: 'fulfilled',
+							laneId: stored.id,
+							message:
+								`Started on ${stored.simulatorUdid}, but its launch failed: ${safeErrorText(error)}`.slice(
+									0,
+									4_096
+								),
+						}
+					: { status: 'pending', message: safeErrorText(error) }
+			);
 			throw error;
 		} finally {
 			this.#reservations.delete(reservation);
