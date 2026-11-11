@@ -149,6 +149,46 @@ func TestRunWithFieldFlagsReachesTheDesktopWhileStdinStaysOpen(t *testing.T) {
 	}
 }
 
+func TestRunBareSimulatorsReachesTheDesktopWhileStdinStaysOpen(t *testing.T) {
+	// The lanes skill tells agents to run a bare `rndevtools simulators`.
+	// It is complete without any field, so it never waits on a stdin that
+	// stays open, as the harnesses that run commands with one leave it.
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	var seen protocol.Request
+	socketPath := appTestServerCapturing(t, &seen, func(id string) string {
+		return `{"protocol":"rndevtools/1","id":"` + id + `","ok":true,"result":{"devices":[]}}`
+	})
+	exit := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		exit <- Run(Config{
+			Arguments:      []string{"simulators"},
+			Stdin:          reader,
+			StdinAvailable: true,
+			Stdout:         &stdout,
+			Stderr:         &stderr,
+			SocketPath:     socketPath,
+			Lookup:         func(string) string { return "" },
+		})
+	}()
+	select {
+	case code := <-exit:
+		if code != ExitSuccess {
+			t.Fatalf("exit %d; stderr %s", code, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a bare simulators waited on a stdin that never closes")
+	}
+	if want := `{"kind":"simulators"}`; string(seen.Command) != want {
+		t.Fatalf("command sent: %s, want %s", seen.Command, want)
+	}
+}
+
 func appTestServer(t *testing.T, response func(string) string) string {
 	t.Helper()
 	directory, err := os.MkdirTemp("", "pd-app-")

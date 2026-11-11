@@ -49,16 +49,20 @@ Commands are `doctor`, `simulators`, `simulator`, `apps`, `screen`, `elements`, 
 `wait`, `capture`, `record`, `network`, `recipe`, `jobs`, `slimming`, `lane`,
 `supabase`, `native`, `agents`, `claim`, `release`, and `input`. Run `rndevtools <command> --help` for structured flags.
 
-Field flags are the whole command: given any of a command's field flags, the
-CLI never reads standard input, so a pipe or socket that is never closed (some
-agent harnesses run commands with one) cannot hang it. Given none, a command
-reads one JSON command object from standard input, unless that is a terminal,
-and waits for the input to end before it sends anything; `--request-timeout-ms`
-is no field flag. `--stdin` reads that object beside the flags, which may then
-add different fields (redefining a stdin field is rejected), and
-`--stdin=false` never reads standard input, for a command run with no field
-flag where the input may stay open. `doctor` and `agents` take no fields and
-never read standard input.
+The CLI reads standard input only when a command cannot do without it, so a
+pipe or socket that is never closed (some agent harnesses run commands with
+one) cannot hang a command given its flags. Field flags are the whole command:
+given any of a command's field flags, the CLI never reads standard input. A
+command complete without any field never reads it either: `doctor` and
+`agents` take no fields, and `simulators`, whose one field
+(`--include-unavailable`) is optional, reads standard input only with
+`--stdin`. Given no field flag, a command that needs fields, such as a bare
+`lane`, reads one JSON command object from standard input, unless that is a
+terminal, and waits for the input to end before it sends anything;
+`--request-timeout-ms` is no field flag. `--stdin` reads that object beside the
+flags, which may then add different fields (redefining a stdin field is
+rejected), and `--stdin=false` never reads standard input, for a command run
+with no field flag where the input may stay open.
 
 `slimming` exposes the read-only
 `status`, `preview`, `doctor`, and `verify` operations and the mutating `apply`,

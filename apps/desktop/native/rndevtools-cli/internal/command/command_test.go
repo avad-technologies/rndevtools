@@ -200,7 +200,7 @@ func TestParseRejectsAmbiguityAndOversizedInput(t *testing.T) {
 	}
 	if _, err := Parse(
 		protocol.CommandSimulators,
-		nil,
+		[]string{"--stdin"},
 		strings.NewReader(strings.Repeat("x", protocol.MaxRequestBytes+1)),
 		true,
 	); err == nil {
@@ -231,11 +231,63 @@ func TestCommandsWithoutFieldsNeverReadStdin(t *testing.T) {
 			t.Fatalf("%s usage must say it ignores stdin:\n%s", kind, Usage(kind))
 		}
 	}
-	// A command with fields still documents stdin, and when it reads it.
+	// A command that needs fields still documents stdin, and when it reads it.
 	for _, phrase := range []string{"JSON command object on stdin", "stdin is never read", "--stdin=false"} {
-		if !strings.Contains(strings.Join(strings.Fields(Usage(protocol.CommandSimulators)), " "), phrase) {
-			t.Fatalf("simulators usage lacks %q:\n%s", phrase, Usage(protocol.CommandSimulators))
+		if !strings.Contains(strings.Join(strings.Fields(Usage(protocol.CommandLane)), " "), phrase) {
+			t.Fatalf("lane usage lacks %q:\n%s", phrase, Usage(protocol.CommandLane))
 		}
+	}
+	// One complete without them says it reads stdin only when asked.
+	if phrase := "reads stdin only with --stdin"; !strings.Contains(strings.Join(strings.Fields(Usage(protocol.CommandSimulators)), " "), phrase) {
+		t.Fatalf("simulators usage lacks %q:\n%s", phrase, Usage(protocol.CommandSimulators))
+	}
+}
+
+// readSpy notes whether anything read it.
+type readSpy struct{ read bool }
+
+func (spy *readSpy) Read([]byte) (int, error) {
+	spy.read = true
+	return 0, io.EOF
+}
+
+func TestOnlyACommandThatNeedsFieldsReadsStdinWhenGivenNone(t *testing.T) {
+	// A pipe or socket that stays open would hang a command that reads it to
+	// its end. A command complete without any field (doctor, agents,
+	// simulators) never reads stdin unless --stdin asks; one that is not
+	// (a bare lane, say) reads its JSON object there, unless stdin is a
+	// terminal.
+	complete := map[protocol.Command]bool{}
+	for kind := range commandFields {
+		bare := Validate(json.RawMessage(`{"kind":"`+string(kind)+`"}`), kind) == nil
+		complete[kind] = bare
+		spy := &readSpy{}
+		parsed, err := Parse(kind, nil, spy, true)
+		if spy.read == bare {
+			t.Errorf("%s given no field flag: read stdin %v, complete without fields %v", kind, spy.read, bare)
+		}
+		if bare && (err != nil || string(parsed.Command) != `{"kind":"`+string(kind)+`"}`) {
+			t.Errorf("%s given no field flag: parsed %s, error %v", kind, parsed.Command, err)
+		}
+		// A terminal is never read without --stdin.
+		terminal := &readSpy{}
+		_, _ = Parse(kind, nil, terminal, false)
+		if terminal.read {
+			t.Errorf("%s read a terminal without --stdin", kind)
+		}
+	}
+	for _, kind := range []protocol.Command{protocol.CommandDoctor, protocol.CommandAgents, protocol.CommandSimulators} {
+		if !complete[kind] {
+			t.Errorf("%s must be complete without fields", kind)
+		}
+	}
+	if complete[protocol.CommandLane] {
+		t.Error("a bare lane must not be complete")
+	}
+	// A bare lane takes its command from stdin.
+	parsed, err := Parse(protocol.CommandLane, nil, strings.NewReader(`{"operation":"ls"}`), true)
+	if err != nil || string(parsed.Command) != `{"kind":"lane","operation":"ls"}` {
+		t.Fatalf("bare lane from stdin: parsed %s, error %v", parsed.Command, err)
 	}
 }
 
@@ -300,18 +352,24 @@ func TestSimulatorLifecycleTakesTheMissingUDIDFromStdinWithTheStdinFlag(t *testi
 	}
 }
 
-func TestSimulatorsPreservesLegacyListAndJSONStdin(t *testing.T) {
+func TestSimulatorsReadsItsJSONObjectOnlyWithTheStdinFlag(t *testing.T) {
+	// A bare simulators is the whole list command, so the object it may read
+	// takes --stdin.
 	for input, want := range map[string]string{
 		"":                            `{"kind":"simulators"}`,
 		`{"includeUnavailable":true}`: `{"includeUnavailable":true,"kind":"simulators"}`,
 	} {
-		parsed, err := Parse(protocol.CommandSimulators, nil, strings.NewReader(input), true)
+		parsed, err := Parse(protocol.CommandSimulators, []string{"--stdin"}, strings.NewReader(input), true)
 		if err != nil || string(parsed.Command) != want {
 			t.Fatalf("input %q: parsed %s, error %v; want %s", input, parsed.Command, err, want)
 		}
 	}
-	if _, err := Parse(protocol.CommandSimulators, nil, strings.NewReader(`{"operation":"boot","udid":"`+testUDID+`"}`), true); err == nil {
-		t.Fatal("legacy simulators accepted a lifecycle request")
+	parsed, err := Parse(protocol.CommandSimulators, nil, unreadable{t}, true)
+	if err != nil || string(parsed.Command) != `{"kind":"simulators"}` {
+		t.Fatalf("bare simulators: parsed %s, error %v", parsed.Command, err)
+	}
+	if _, err := Parse(protocol.CommandSimulators, []string{"--stdin"}, strings.NewReader(`{"operation":"boot","udid":"`+testUDID+`"}`), true); err == nil {
+		t.Fatal("simulators accepted a lifecycle request")
 	}
 }
 

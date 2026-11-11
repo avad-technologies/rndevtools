@@ -23,10 +23,11 @@ description: >
 > the fallback when no MCP server is registered. On the command line an
 > operation is always the `--operation` flag (`rndevtools lane --operation up`);
 > the CLI rejects an operation written as a positional word. A command given
-> any field flag never reads stdin, so an input that stays open cannot hang it;
-> one given none, such as a bare `rndevtools simulators`, reads a JSON command
-> from stdin unless that is a terminal, so add `--stdin=false` where stdin may
-> stay open.
+> any field flag never reads stdin, and neither does one complete without any,
+> such as a bare `rndevtools simulators`, so an input that stays open cannot
+> hang them. One that needs fields and is given none, such as a bare
+> `rndevtools lane`, reads a JSON command from stdin unless that is a
+> terminal: pass its flags instead.
 
 A **lane** is one git worktree running on one Simulator, served by one Metro on
 a port the desktop leased for it. Lanes are how several branches, and the agents

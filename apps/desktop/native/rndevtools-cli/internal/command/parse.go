@@ -245,12 +245,14 @@ func ParseWithEnvironment(
 	command := map[string]any{}
 	// Reading stdin waits for it to end, and a parent may never end it: some
 	// agent harnesses run commands with a pipe or a socket for stdin that
-	// stays open, and so does `ssh host rndevtools …`. Field flags are the
-	// whole command, so a command given one never reads stdin; one given
-	// none reads it unless it is a terminal. --stdin reads it either way,
-	// beside the flags, and --stdin=false never does. A command with no
-	// fields (doctor, agents) has nothing to read.
-	readStdin := stdinAvailable
+	// stays open, and so does `ssh host rndevtools …`. So stdin is read only
+	// when the command cannot do without it. Field flags are the whole
+	// command, so a command given one never reads stdin. Given none, a
+	// command that needs fields (a bare lane) reads it unless it is a
+	// terminal, and one complete without any (doctor, agents, simulators)
+	// never does. --stdin reads it either way, beside the flags, and
+	// --stdin=false never does.
+	readStdin := stdinAvailable && !completeWithoutFields(kind)
 	for _, value := range values {
 		if value.set {
 			readStdin = false
@@ -308,6 +310,14 @@ func ParseWithEnvironment(
 	return Parsed{Command: encoded, Timeout: timeout}, nil
 }
 
+// completeWithoutFields reports whether `kind` given no field at all is a
+// whole command, as doctor, agents and simulators are: its schema requires
+// none. Such a command never waits on stdin unless --stdin asks.
+func completeWithoutFields(kind protocol.Command) bool {
+	encoded, err := json.Marshal(map[string]string{"kind": string(kind)})
+	return err == nil && Validate(encoded, kind) == nil
+}
+
 // resolveAgainstWorkingDirectory turns a relative path flag (`--worktree .`)
 // into the absolute path the desktop requires. Absolute and empty values pass
 // through unchanged; validation rejects whatever is still not absolute.
@@ -329,9 +339,14 @@ const stdinUsage = "Read the JSON command object on stdin beside the field flags
 func Usage(kind protocol.Command) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Usage: rndevtools %s [flags]\n", kind)
-	if len(commandFields[kind]) == 0 {
+	switch {
+	case len(commandFields[kind]) == 0:
 		builder.WriteString("Takes no fields, so it never reads stdin.\n\nFlags:\n")
-	} else {
+	case completeWithoutFields(kind):
+		builder.WriteString("It is a whole command without any field, so it reads stdin only with --stdin,\n")
+		builder.WriteString("which reads one JSON command object there, to the end of the input, beside the\n")
+		builder.WriteString("flags (defining the same field twice is rejected).\n\nFlags:\n")
+	default:
 		builder.WriteString("With any field flag below, the flags are the whole command and stdin is never read.\n")
 		builder.WriteString("With none, it reads one JSON command object on stdin, to the end of the input,\n")
 		builder.WriteString("unless stdin is a terminal. --stdin reads that object beside the flags, which may\n")
