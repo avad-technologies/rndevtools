@@ -141,6 +141,24 @@ func TestTheSkillsGiveEveryLaneCommandTheLaneItActsOn(t *testing.T) {
 	}
 }
 
+// nativeCommand is a native command a text tells an agent to run, up to the
+// end of its code span or its line.
+var nativeCommand = regexp.MustCompile("rndevtools native --operation (plan|install)\\b([^`\\n]*)")
+
+func TestAgentTextsGiveEveryNativeCommandWhatItNeeds(t *testing.T) {
+	// native refuses a command without an absolute worktreePath ("native
+	// requires an absolute worktreePath"), and install one without its udid,
+	// so each native command an agent is told to run names them.
+	for name, text := range agentTexts(t) {
+		for _, match := range nativeCommand.FindAllStringSubmatch(text, -1) {
+			flags := match[2]
+			if !strings.Contains(flags, "--worktree") || (match[1] == "install" && !strings.Contains(flags, "--udid")) {
+				t.Errorf("%s writes %q without what native needs", name, strings.TrimSpace(match[0]))
+			}
+		}
+	}
+}
+
 func TestAgentsBlockGivesTheLaneCommandsAsTheCLIParsesThem(t *testing.T) {
 	flat := strings.Join(strings.Fields(AgentsBlock("")), " ")
 	for _, phrase := range []string{

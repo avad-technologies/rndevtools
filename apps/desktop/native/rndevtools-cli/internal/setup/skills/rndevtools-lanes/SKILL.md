@@ -49,9 +49,10 @@ a private local socket.
   only for a new lane. The error's `recovery` gives both commands.
 - The Expo development client is **already installed** on the Simulator. Lanes
   never trigger a native build. If `rndevtools apps --udid <UDID>` does not list
-  the app, follow `rndevtools native --operation plan` (below): reserve a lane
-  first, then use its cached install or its build command, and restart the app
-  on the lane after a build.
+  the app, follow
+  `rndevtools native --operation plan --worktree "$PWD" --udid <UDID>` (below):
+  reserve a lane first, then use its cached install or its build command, and
+  restart the app on the lane after a build.
 
 ## Rules
 

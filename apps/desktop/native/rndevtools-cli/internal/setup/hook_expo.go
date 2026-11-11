@@ -158,7 +158,7 @@ func runIOSDecision() HookDecision {
 			"`rndevtools native --operation plan --worktree " + appDirectory + " --udid <UDID>` says whether this native build is installed, cached, or must be built, " +
 			"and `rndevtools native --operation install --worktree " + appDirectory + " --udid <UDID>` installs a cached build in seconds. " +
 			"When it must be built, reserve the lane with `rndevtools lane --operation up --worktree " + appDirectory + " --launch=false` " +
-			"and run `rndevtools native --operation plan` again: once the lane's Metro is ready it gives the build, `npx expo run:ios --device <UDID> --no-bundler` " +
+			"and run `rndevtools native --operation plan --worktree " + appDirectory + " --udid <UDID>` again: once the lane's Metro is ready it gives the build, `npx expo run:ios --device <UDID> --no-bundler` " +
 			"(add no `--port`: Expo CLI refuses it with `--no-bundler`; and leave out `--configuration Debug`: Debug is the default). " +
 			"The build opens the app against port 8081, so after it run `rndevtools lane --operation launch --worktree " + appDirectory + " --restart`, " +
 			"which starts the app fresh with the lane's Metro alone.",
