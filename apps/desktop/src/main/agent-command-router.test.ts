@@ -2139,6 +2139,56 @@ describe('agent command router', () => {
 			}
 		});
 
+		it.each([
+			['exampleapp', 'exampleapp', ''],
+			[
+				undefined,
+				'<scheme>',
+				', with <scheme> the URL scheme the app registers',
+			],
+		] as const)(
+			"gives a lane with no URL scheme the dev client's full URL after a build (plan scheme %s)",
+			async (planScheme, scheme, placeholder) => {
+				// A lane reads its scheme from app.json only when it starts, and
+				// one with none opens its dev client only through a full URL.
+				const url = `'${scheme}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8107&disableOnboarding=1&disableAutoLaunch=1'`;
+				const afterward = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID} --url ${url} --restart\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler, and the restart reopens it with lane ${BUILD_LANE_ID}'s Metro on port 8107. Lane ${BUILD_LANE_ID} has no URL scheme, as the worktree's app.json gave none when the lane started, so that launch names its dev client's full URL${placeholder}`;
+				const build = `npx expo run:ios --device ${UDID} --no-bundler`;
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const route = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(undefined, 'ready', {
+						bundleIdentifier: 'com.example.app',
+					}),
+					nativePlan: async () => {
+						const { scheme: _scheme, ...planned } = await plan('miss')();
+						return planScheme ? { ...planned, scheme: planScheme } : planned;
+					},
+				});
+				const native = {
+					kind: 'native',
+					configuration: 'Debug',
+					worktreePath: '/Users/dev/app',
+					udid: UDID,
+				} as const;
+				const planned = (await route(
+					{ ...native, operation: 'plan' },
+					context
+				)) as Record<string, unknown>;
+				expect(planned.recommendation).toBe(
+					`build: no cached binary for this fingerprint; run \`${build}\` once (the build cache will store it for every other worktree), ${afterward}.`
+				);
+				await expect(
+					route({ ...native, operation: 'install' }, context)
+				).rejects.toMatchObject({
+					code: 'cache_miss',
+					recovery: `Run \`${build}\`, ${afterward}.`,
+				});
+			}
+		);
+
 		it('does not borrow a sibling app lane port in a monorepo', async () => {
 			const { dependencies } = fixture();
 			const { port } = simulatorWithApps([]);

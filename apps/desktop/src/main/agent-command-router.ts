@@ -25,6 +25,7 @@ import {
 	type LaneView,
 	laneAppDirectory,
 	laneDevClientLaunchUrl,
+	laneSchemeSchema,
 } from '../shared/lane-protocol';
 import type {
 	DesktopAction,
@@ -526,15 +527,28 @@ async function awaitBuildLane(
  * restart terminates the app by the bundle identifier the worktree's
  * app.json declared when the lane started, and the lane service refuses one
  * for a lane without it, so such a lane gets the launch alone, after the app
- * is restarted by hand.
+ * is restarted by hand. A lane reads its scheme from app.json only when it
+ * starts too, and one with none opens its dev client only through a launch
+ * with a full URL, built from `planScheme` (the scheme the plan read from
+ * the worktree's evaluated Expo config) when that is a URL scheme.
  */
-function afterNativeBuild(lane: LaneState['lanes'][number]): string {
-	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}`;
+function afterNativeBuild(
+	lane: LaneState['lanes'][number],
+	planScheme: string | undefined
+): string {
+	const known = laneSchemeSchema.safeParse(planScheme);
+	const url = lane.scheme
+		? ''
+		: ` --url ${shellWord(laneDevClientLaunchUrl(known.success ? known.data : '<scheme>', lane.port))}`;
+	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}${url}`;
 	const opened =
 		'the build opens the app against port 8081, since Expo refuses --port with --no-bundler';
-	return lane.bundleIdentifier
+	const step = lane.bundleIdentifier
 		? `then \`${launch} --restart\`: ${opened}, and the restart reopens it with lane ${lane.id}'s Metro on port ${lane.port}`
 		: `then \`${launch}\`: ${opened}. Lane ${lane.id} cannot restart the app, as the worktree's app.json declared no ios.bundleIdentifier when the lane started, so restart it by hand: quit it on the Simulator before that launch, which then opens it with lane ${lane.id}'s Metro on port ${lane.port}`;
+	return lane.scheme
+		? step
+		: `${step}. Lane ${lane.id} has no URL scheme, as the worktree's app.json gave none when the lane started, so that launch names its dev client's full URL${known.success ? '' : ', with <scheme> the URL scheme the app registers'}`;
 }
 
 async function runSimulatorAction(
@@ -2002,7 +2016,7 @@ function createRoutes({
 					if (lane?.metro === 'ready') {
 						return {
 							command: `npx expo run:ios${configurationFlag} --device ${lane.simulatorUdid} --no-bundler`,
-							afterward: afterNativeBuild(lane),
+							afterward: afterNativeBuild(lane, plan.scheme),
 						};
 					}
 					return {
