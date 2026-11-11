@@ -52,9 +52,14 @@ Local iOS Simulator tooling on macOS:
   it at. That copy loses its in-memory state. The lane names the app by the
   `ios.bundleIdentifier` the worktree's static `app.json` declared when the
   lane started; without one, or when the Simulator cannot terminate the app,
-  the launch goes ahead without the restart and says so in the lane's log and
-  in the receipt's `warnings`. A deep link terminates nothing unless it is
-  asked to restart, and leaves that first restart to the dev-client launch
+  the launch goes ahead without the restart, and the lane's Metro log, which
+  the Lanes panel shows, says so. When an agent's `lane --operation up` or
+  `launch` ran that launch itself, its result says so too, in `warnings`.
+  When the Lanes panel ran it (a waiting agent start the user gave a
+  Simulator included), or the launch was held back for the lane's local
+  backend and opened in the background, the log alone has the note: the
+  panel shows no receipt `warnings`. A deep link terminates nothing unless it
+  is asked to restart, and leaves that first restart to the dev-client launch
   after it. Later launches restart the app only when asked to.
 
   A lane's Metro and the native build plan inherit the desktop's environment
