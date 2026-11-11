@@ -4915,7 +4915,7 @@ describe('LaneService', () => {
 			]);
 		});
 
-		it('keeps a held-back restart through a deep link that does not restart, for the launch it goes with', async () => {
+		it('keeps a held-back launch and its restart through a deep link, restarting or not, for the dev client', async () => {
 			const started = await up({ backend: 'off' });
 			const laneId = started.lane?.id as string;
 			const late = deferred<LaneBackendLateAttach>();
@@ -4945,7 +4945,8 @@ describe('LaneService', () => {
 			]);
 			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
 
-			// A deep link that restarts does that restart: it leaves nothing held.
+			// A deep link that restarts does its own restart, and is still no
+			// dev-client launch: the held-back launch stays, its restart with it.
 			backends.answers.push(starting(new Promise(() => undefined)));
 			await up({ backend: 'auto', restart: true });
 			expect(lanes.getState().lanes[0]?.backend).toMatchObject({
@@ -4964,8 +4965,71 @@ describe('LaneService', () => {
 				'app.terminate',
 				'url.open',
 			]);
-			expect(restarted.lane?.backend).not.toHaveProperty('launch');
+			expect(restarted.lane?.backend).toMatchObject({ launch: 'deferred' });
+			await lanes.launchDeferred(laneId);
+			expect(kinds().slice(12)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
 		});
+
+		it.each([false, true])(
+			"keeps a new lane's held-back first launch through a deep link, so its dev client still opens on the lane's Metro once the backend attaches (deep link restart %s)",
+			async (restart) => {
+				const late = deferred<LaneBackendLateAttach>();
+				backends.answers.push(starting(late.promise));
+				const started = await up();
+				expect(started.completed).toBe(true);
+				expect(started.backend).toMatchObject({ launch: 'deferred' });
+				const laneId = started.lane?.id as string;
+				expect(kinds()).toEqual(['device.boot']);
+
+				// A deep link opens the app as it is, pointed wherever it was, so
+				// it is not the lane's launch: the held-back one stays.
+				const linked = await lanes.runOperation({
+					actionId: 'op-new-lane-link',
+					kind: 'lane.launch',
+					laneId,
+					url: 'checkout',
+					...(restart ? { restart } : {}),
+				});
+				expect(linked.completed).toBe(true);
+				expect(kinds().slice(1)).toEqual(
+					restart
+						? ['app.list', 'app.terminate', 'url.open']
+						: ['app.list', 'url.open']
+				);
+				expect(linked.lane).not.toHaveProperty('lastLaunchedAt');
+				expect(linked.lane?.backend).toMatchObject({ launch: 'deferred' });
+
+				// Metro restarts with the backend, and the held-back launch opens
+				// the dev client against it as the lane's first dev-client launch,
+				// so the app starts fresh.
+				const mark = kinds().length;
+				late.resolve(ready());
+				await eventually(() =>
+					expect(lanes.getState().lanes[0]?.lastLaunchedAt).toBeDefined()
+				);
+				expect(metro.started).toHaveLength(2);
+				expect(lanes.getState().lanes[0]?.backend).toEqual({
+					...readySummary(),
+					metro: 'restarted',
+				});
+				expect(kinds().slice(mark)).toEqual([
+					'app.list',
+					'app.terminate',
+					'url.open',
+				]);
+				expect(simulator.actions.at(-1)).toMatchObject({
+					kind: 'url.open',
+					url: expect.stringMatching(
+						/^exampleapp:\/\/expo-development-client\/\?url=/
+					),
+				});
+			}
+		);
 
 		it('drops a restart once a lane up hands it to a launch, even one that fails, so a later relaunch keeps the app', async () => {
 			const started = await up({ backend: 'off' });

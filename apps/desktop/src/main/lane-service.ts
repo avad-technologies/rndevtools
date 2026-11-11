@@ -2308,12 +2308,13 @@ export class LaneService {
 			...(url === undefined ? { lastLaunchedAt: this.#now() } : {}),
 			...(holder ? { agent: holder } : {}),
 		};
-		// Whoever launched, a launch held back for the backend has happened,
-		// unless it was held back with a restart this launch did not do: a
-		// deep link without restart never terminates the app, so that launch
-		// stays held back, its restart with it, for the dev client to open.
+		// A launch held back for the backend opens the dev client, so only a
+		// dev-client launch, whoever asked for it, fulfils it, and it took the
+		// held-back restart too (`asked`). A deep link, restarting or not, opens
+		// the app as it is, pointed wherever it was: the held-back launch stays,
+		// its restart with it, for the dev client to open on this lane's Metro.
 		const record = this.#backendRecords.get(laneId);
-		if (record && (asked || !record.deferredRestart)) {
+		if (record && url === undefined) {
 			record.deferredLaunch = false;
 			record.deferredRestart = false;
 		}
