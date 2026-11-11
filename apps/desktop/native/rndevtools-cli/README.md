@@ -64,6 +64,13 @@ flags, which may then add different fields (redefining a stdin field is
 rejected), and `--stdin=false` never reads standard input, for a command run
 with no field flag where the input may stay open.
 
+Piping part of a command and passing the rest as flags therefore needs
+`--stdin`: without it the flags are the whole command, and one that lacks a
+required field is refused (`invalid_arguments`, exit 2) instead of being
+completed from standard input. For example, `rndevtools simulator --operation boot` with
+`{"udid":"<UDID>"}` piped in is refused, while
+`rndevtools simulator --operation boot --stdin` takes the UDID from the pipe.
+
 `slimming` exposes the read-only
 `status`, `preview`, `doctor`, and `verify` operations and the mutating `apply`,
 `undo`, and `restore`; mutations run only while SimSlim is enabled in RN
