@@ -1216,8 +1216,7 @@ function laneForTarget(
 				? `No lane ${target.laneId} exists.`
 				: `No lane is running for worktree ${target.worktreePath}.`,
 			retryable: false,
-			recovery:
-				'Run rndevtools lane --operation ls to see live lanes, or lane --operation up to start one.',
+			recovery: `Run \`rndevtools lane --operation ls\` to see live lanes, or \`rndevtools lane --operation up --worktree ${!target.laneId && target.worktreePath ? shellWord(target.worktreePath) : '<app directory>'}\` to start one.`,
 		});
 	}
 	return lane;
@@ -1960,7 +1959,7 @@ function createRoutes({
 					const bundle = plan.bundleIdentifier;
 					if (command.operation === 'plan' && bundle) {
 						if (target.state !== 'booted') {
-							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (\`rndevtools lane --operation up\` boots it).`;
+							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (\`rndevtools lane --operation up --worktree ${shellWord(command.worktreePath)} --udid ${target.udid} --launch=false\` boots it).`;
 						} else {
 							const listing = (await runSimulatorAction(
 								simulator,

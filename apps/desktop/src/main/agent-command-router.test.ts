@@ -2504,9 +2504,11 @@ describe('agent command router', () => {
 				expect(result).not.toHaveProperty('installed');
 				const recommendation = String(result.recommendation);
 				expect(recommendation).toMatch(verb);
-				expect(recommendation).toMatch(
-					/ installed is left out: this Simulator is shut down, and its apps can be listed only while it is booted \(`rndevtools lane --operation up` boots it\)\.$/
-				);
+				// The lane up that boots it names the app directory and the
+				// Simulator, as the CLI requires, and reserves the lane without
+				// launching an app that may not be installed.
+				const unknown = ` installed is left out: this Simulator is shut down, and its apps can be listed only while it is booted (\`rndevtools lane --operation up --worktree /Users/dev/app --udid ${UDID} --launch=false\` boots it).`;
+				expect(recommendation.slice(-unknown.length)).toBe(unknown);
 				// A Simulator that is not booted has nothing to list.
 				expect(actions).toHaveLength(0);
 			}
@@ -4150,6 +4152,25 @@ describe('agent command router', () => {
 		).rejects.toEqual(
 			expect.objectContaining<Partial<AgentCliError>>({
 				code: 'lane_not_found',
+				recovery:
+					'Run `rndevtools lane --operation ls` to see live lanes, or `rndevtools lane --operation up --worktree <app directory>` to start one.',
+			})
+		);
+		// A lane named by its app directory gets the lane up for that directory.
+		await expect(
+			handler(
+				{
+					kind: 'lane',
+					operation: 'log',
+					worktreePath: '/Users/dev/app-feature',
+				},
+				context
+			)
+		).rejects.toEqual(
+			expect.objectContaining<Partial<AgentCliError>>({
+				code: 'lane_not_found',
+				recovery:
+					'Run `rndevtools lane --operation ls` to see live lanes, or `rndevtools lane --operation up --worktree /Users/dev/app-feature` to start one.',
 			})
 		);
 	});

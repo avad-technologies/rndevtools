@@ -27,6 +27,14 @@ const OPERATOR_ONLY = new Set([
 	'This stack runs on Docker and listens on your network. Destroy it; lane up then creates a native one.',
 ]);
 
+/**
+ * A lane up as a command, and what follows it on its line up to the next
+ * backtick or quote. The CLI answers a lane up without --worktree with "The
+ * up operation requires worktreePath.", so every lane up an agent is told to
+ * run names the app directory it starts, as a placeholder or a path.
+ */
+const LANE_UP_COMMAND = /\blane --operation up\b([^`'"\n]*)/g;
+
 function sourceFiles(directory: string): string[] {
 	return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
 		const entryPath = path.join(directory, entry.name);
@@ -56,6 +64,21 @@ describe('agent-facing desktop texts', () => {
 				if ([...OPERATOR_ONLY].some((copy) => text.includes(copy))) continue;
 				violations.push(
 					`${path.relative(desktopSource, file)}:${line}: ${match[0]}`
+				);
+			}
+		}
+		expect(violations).toEqual([]);
+	});
+
+	it('give every lane up the app directory it starts', () => {
+		const violations: string[] = [];
+		for (const file of agentTextRoots.flatMap(sourceFiles)) {
+			const code = withoutComments(fs.readFileSync(file, 'utf8'));
+			for (const match of code.matchAll(LANE_UP_COMMAND)) {
+				if (/^\s*--worktree\b/.test(match[1] ?? '')) continue;
+				const line = code.slice(0, match.index).split('\n').length;
+				violations.push(
+					`${path.relative(desktopSource, file)}:${line}: ${match[0].trim()}`
 				);
 			}
 		}
