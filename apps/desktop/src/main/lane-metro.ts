@@ -20,6 +20,15 @@ const MAX_LOG_NOTE_LENGTH = 4 * 1024;
 const LSOF_PATH = '/usr/sbin/lsof';
 const OWNER_PROBE_TIMEOUT_MS = 3_000;
 const OWNER_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
+/** How long the ps that reads a Metro's command line may take. */
+const COMMAND_PROBE_TIMEOUT_MS = 5_000;
+/**
+ * The longest one ownership proof (verifyMetroOwnership) can take before it
+ * gives up: its ps for the command line, then its lsof for the working
+ * directory, each run into its timeout. Normally it takes milliseconds.
+ */
+export const METRO_OWNERSHIP_PROOF_TIMEOUT_MS =
+	COMMAND_PROBE_TIMEOUT_MS + OWNER_PROBE_TIMEOUT_MS;
 const MAX_LANE_ENV_ENTRIES = 32;
 
 /**
@@ -772,7 +781,7 @@ async function verifyMetroOwnership(
 		const result = await runCommand(
 			'/bin/ps',
 			['-p', String(pid), '-o', 'command='],
-			{ timeoutMs: 5_000, maxOutputBytes: 64 * 1024 }
+			{ timeoutMs: COMMAND_PROBE_TIMEOUT_MS, maxOutputBytes: 64 * 1024 }
 		);
 		if (isLaneMetroCommand(result.stdout, port)) {
 			cwd = await processCwd(pid, runCommand);

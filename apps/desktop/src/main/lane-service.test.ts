@@ -1028,6 +1028,60 @@ describe('LaneService', () => {
 			}
 		);
 
+		it('is still killed when quit finds both ownership proofs slow', async () => {
+			// The clock moves only as this test says: each proof runs its ps and
+			// its lsof close to their timeouts (5 s and 3 s).
+			clearInterval(advance);
+			const PROOF_MS = 7_900;
+			const proofs = [deferred<void>(), deferred<void>()];
+			const entered = [deferred<void>(), deferred<void>()];
+			metro.stop = async (pid, port, _directory, options) => {
+				const force = options?.force === true;
+				const step = force ? 1 : 0;
+				entered[step]?.resolve();
+				await proofs[step]?.promise;
+				signals.push({ pid, force });
+				if (!force) return;
+				metro.deadPids.add(pid);
+				if (metro.listeners.get(port) === pid) metro.listeners.delete(port);
+			};
+			const held = startHeld(new AbortController().signal);
+			await held.spawning;
+			let quit = false;
+			const stopping = service.stop().then(() => {
+				quit = true;
+			});
+			held.release(undefined);
+			try {
+				await entered[0]?.promise;
+				now += PROOF_MS;
+				proofs[0]?.resolve();
+				await vi.waitFor(() => expect(signals).toHaveLength(1));
+				// The Metro ignores its SIGTERM for the whole grace.
+				now += 5_000;
+				await entered[1]?.promise;
+				// Quit keeps waiting while the second proof runs, past a few of
+				// its polls.
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				expect(quit).toBe(false);
+				now += PROOF_MS;
+				proofs[1]?.resolve();
+				await stopping;
+				expect(signals).toEqual([
+					{ pid: 1_001, force: false },
+					{ pid: 1_001, force: true },
+				]);
+				expect(metro.isProcessRunning(1_001)).toBe(false);
+				expect((await held.starting).completed).toBe(false);
+			} finally {
+				// Whatever failed, let the cleanup and the clock run out.
+				for (const proof of proofs) proof.resolve();
+				advance = setInterval(() => {
+					now += 1_000;
+				}, 5);
+			}
+		});
+
 		it('keeps a recovery lease for one that outlives SIGKILL too', async () => {
 			stubbornMetro({ killable: false });
 			const controller = new AbortController();

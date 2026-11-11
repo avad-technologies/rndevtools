@@ -57,6 +57,7 @@ import {
 import { waitForJob } from './job-wait';
 import {
 	laneEnvProblem,
+	METRO_OWNERSHIP_PROOF_TIMEOUT_MS,
 	type MetroSupervisorPort,
 	metroSupervisor,
 	NotLaneMetroError,
@@ -111,10 +112,17 @@ const METRO_KILL_GRACE_MS = 2_000;
 /**
  * How long stopping the lanes, as the app quits, waits for a Metro spawn or
  * the cleanup of a Metro no lane keeps: that cleanup's SIGTERM grace and
- * SIGKILL wait, with time left for its two ownership probes.
+ * SIGKILL wait, and the ownership proof before each signal at its probes'
+ * timeouts (METRO_OWNERSHIP_PROOF_TIMEOUT_MS, 8 s), with a second to spare
+ * for the waits' polls. A spawn that has yet to return when the quit starts
+ * uses part of it. Probes that answer, as they normally do within
+ * milliseconds, end the wait far sooner.
  */
 const METRO_SHUTDOWN_GRACE_MS =
-	METRO_STOP_GRACE_MS + METRO_KILL_GRACE_MS + 3_000;
+	METRO_STOP_GRACE_MS +
+	METRO_KILL_GRACE_MS +
+	2 * METRO_OWNERSHIP_PROOF_TIMEOUT_MS +
+	1_000;
 const MAX_BACKEND_REASON_LENGTH = 1_024;
 
 export type LaneSimulatorPort = {
@@ -615,13 +623,15 @@ export class LaneService {
 		// already started a write or an expired hold's release, and for every
 		// lane stop under way: release --all answers before a slow Metro has
 		// exited, and its stop must still finish that Metro off and drop the
-		// lane. Each stop is bounded by its exit waits.
+		// lane. Each stop is bounded by its exit waits and by the timeouts of
+		// the probes that prove the PID before each signal.
 		await Promise.allSettled([
 			...this.#maintenanceWrites,
 			...this.#stoppingLanes.values(),
 		]);
 		// A Metro spawning now has no lane to keep it and is cleaned up once
-		// its spawn returns; give that cleanup time to signal it.
+		// its spawn returns; give that cleanup time to prove it, signal it and
+		// kill it if it outlives SIGTERM, even with probes that run slow.
 		await this.#drainMetroWork(this.#now() + METRO_SHUTDOWN_GRACE_MS);
 		// Metro processes are detached on purpose; they keep serving the agents
 		// that started them after the desktop app quits.
