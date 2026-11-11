@@ -1860,9 +1860,17 @@ describe('agent command router', () => {
 			return { port, actions };
 		}
 		const BUILD_LANE_ID = 'lane-11111111-2222-4333-8444-555555555555';
+		/**
+		 * The worktree's lane, with the identity its app.json gave it when it
+		 * started: by default a bundle identifier and a scheme.
+		 */
 		function buildLanes(
 			appPath?: string,
-			metro: LaneState['lanes'][number]['metro'] = 'ready'
+			metro: LaneState['lanes'][number]['metro'] = 'ready',
+			identity: { bundleIdentifier?: string; scheme?: string } = {
+				bundleIdentifier: 'com.example.app',
+				scheme: 'exampleapp',
+			}
 		) {
 			let state: LaneState = {
 				revision: 1,
@@ -1880,6 +1888,7 @@ describe('agent command router', () => {
 						metro,
 						logPath: '/Users/dev/lane.log',
 						startedAt: now,
+						...identity,
 					},
 				],
 				worktrees: [],
@@ -2084,6 +2093,52 @@ describe('agent command router', () => {
 			}
 		});
 
+		it('gives a lane with no bundle identifier the launch without restart, and says to restart the app by hand', async () => {
+			// The lane service refuses a restart for a lane whose app.json named
+			// no ios.bundleIdentifier when it started: it has nothing to
+			// terminate the app by.
+			const afterward = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID}\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler. Lane ${BUILD_LANE_ID} cannot restart the app, as the worktree's app.json declared no ios.bundleIdentifier when the lane started, so restart it by hand: quit it on the Simulator before that launch, which then opens it with lane ${BUILD_LANE_ID}'s Metro on port 8107`;
+			const build = `npx expo run:ios --device ${UDID} --no-bundler`;
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const route = (cache: 'miss' | 'no-provider') =>
+				createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(undefined, 'ready', { scheme: 'exampleapp' }),
+					nativePlan: plan(cache),
+				});
+			const native = {
+				kind: 'native',
+				configuration: 'Debug',
+				worktreePath: '/Users/dev/app',
+				udid: UDID,
+			} as const;
+			const miss = (await route('miss')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(miss.recommendation).toBe(
+				`build: no cached binary for this fingerprint; run \`${build}\` once (the build cache will store it for every other worktree), ${afterward}.`
+			);
+			const uncached = (await route('no-provider')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(uncached.recommendation).toBe(
+				`build: this project declares no buildCacheProvider, so every worktree builds; run \`${build}\`, ${afterward}.`
+			);
+			await expect(
+				route('miss')({ ...native, operation: 'install' }, context)
+			).rejects.toMatchObject({
+				code: 'cache_miss',
+				recovery: `Run \`${build}\`, ${afterward}.`,
+			});
+			for (const text of [miss.recommendation, uncached.recommendation]) {
+				expect(text).not.toContain('--restart');
+			}
+		});
+
 		it('does not borrow a sibling app lane port in a monorepo', async () => {
 			const { dependencies } = fixture();
 			const { port } = simulatorWithApps([]);
@@ -2245,7 +2300,7 @@ describe('agent command router', () => {
 					(settled.value as Record<string, unknown>).recommendation
 				);
 				expect(recommendation).toBe(
-					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the restart that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native with operation plan again.`
+					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the launch that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native with operation plan again.`
 				);
 				expect(vi.getTimerCount()).toBe(0);
 			});
