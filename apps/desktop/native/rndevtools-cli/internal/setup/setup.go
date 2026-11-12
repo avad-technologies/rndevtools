@@ -738,10 +738,11 @@ func installAgentsBlock(project string, write bool) (Change, error) {
 // installClaudeImport routes Claude Code to the AGENTS.md block, since it
 // reads a project's CLAUDE.md and not its AGENTS.md. A project without a
 // CLAUDE.md gets one that only imports AGENTS.md (@AGENTS.md). A CLAUDE.md the
-// project has is its own: it is left as it is when it imports AGENTS.md, or
-// is AGENTS.md through a link; a block it carries between the rndevtools
-// markers is kept current as AGENTS.md's is; otherwise the change says what
-// to add rather than editing it.
+// project has is its own: it is left as it is when it is AGENTS.md through a
+// link; a block it carries between the rndevtools markers is kept current as
+// AGENTS.md's is, also beside an import of AGENTS.md, since Claude Code reads
+// both; without a block it is left as it is when it imports AGENTS.md;
+// otherwise the change says what to add rather than editing it.
 func installClaudeImport(project string, write bool) (Change, error) {
 	path := filepath.Join(project, "CLAUDE.md")
 	change := Change{Path: path}
@@ -764,15 +765,16 @@ func installClaudeImport(project string, write bool) (Change, error) {
 		change.Detail = "CLAUDE.md is AGENTS.md through a link"
 		return change, nil
 	}
+	if _, _, found, paired := agentsBlockSpan(string(raw)); found || !paired {
+		// Marker lines: a block to keep current, or markers installBlock
+		// reports as not pairing up. An import of AGENTS.md beside them does
+		// not make them current: Claude Code reads this block too.
+		return installBlock(path, AgentsBlock(project), write)
+	}
 	if importsAgentsFile(raw) {
 		change.Action = "unchanged"
 		change.Detail = "CLAUDE.md already imports AGENTS.md"
 		return change, nil
-	}
-	if _, _, found, paired := agentsBlockSpan(string(raw)); found || !paired {
-		// Marker lines: a block to keep current, or markers installBlock
-		// reports as not pairing up.
-		return installBlock(path, AgentsBlock(project), write)
 	}
 	change.Action = "skip"
 	change.Detail = "Claude Code reads CLAUDE.md, which neither imports AGENTS.md nor carries the RN Devtools block; add a line `@AGENTS.md` to it, then rerun setup"

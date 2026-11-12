@@ -324,8 +324,9 @@ func TestProjectModeRoutesClaudeCodeToTheAgentsBlock(t *testing.T) {
 	// Claude Code reads a project's CLAUDE.md, not its AGENTS.md. A project
 	// without one gets a CLAUDE.md that only imports AGENTS.md; a CLAUDE.md
 	// the project has stays as it is, its block (if it carries one) kept
-	// current, and setup says what to add when it neither imports AGENTS.md
-	// nor carries the block.
+	// current, also beside an import of AGENTS.md, since Claude Code reads
+	// both, and setup says what to add when it neither imports AGENTS.md nor
+	// carries the block.
 	home := t.TempDir()
 	run := func(project string, write bool, agents ...Agent) Change {
 		t.Helper()
@@ -369,10 +370,17 @@ func TestProjectModeRoutesClaudeCodeToTheAgentsBlock(t *testing.T) {
 	if change := run(unreadable, true, AgentClaude); change.Action != "skip" || !strings.Contains(change.Detail, "@AGENTS.md") || !exists(filepath.Join(unreadable, "AGENTS.md")) {
 		t.Fatalf("an unreadable CLAUDE.md is skipped: %+v", change)
 	}
+	stale := "<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n"
 	for name, row := range map[string]struct{ content, action, detail string }{
 		"an import":          {"# Example app\n\n@./AGENTS.md\n", "unchanged", ""},
 		"no import":          {"# Example app\n\nOur own rules.\n", "skip", "@AGENTS.md"},
-		"a block of its own": {"# Example app\n\n<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n", "update", ""},
+		"a block of its own": {"# Example app\n\n" + stale, "update", ""},
+		// Claude Code reads a block beside the import as well as the one it
+		// imports, so a stale one is updated, and markers setup cannot pair
+		// are reported, as without the import.
+		"an import and a stale block":    {"# Example app\n\n@AGENTS.md\n\n" + stale, "update", ""},
+		"an import and a current block":  {"# Example app\n\n@AGENTS.md\n\n" + AgentsBlock(""), "unchanged", "block already current"},
+		"an import and unpaired markers": {"# Example app\n\n@AGENTS.md\n\n<!-- rndevtools:start -->\nold\n", "skip", "do not pair up"},
 	} {
 		project := filepath.Join(home, strings.ReplaceAll(name, " ", "-"))
 		file := filepath.Join(project, "CLAUDE.md")
@@ -383,8 +391,8 @@ func TestProjectModeRoutesClaudeCodeToTheAgentsBlock(t *testing.T) {
 		}
 		got := string(mustRead(t, file))
 		if row.action == "update" {
-			if !strings.HasPrefix(got, "# Example app\n\n") || !strings.Contains(got, AgentsBlock(project)) || strings.Contains(got, "old\n") {
-				t.Errorf("%s: the block must be replaced in place:\n%s", name, got)
+			if want := strings.Replace(row.content, stale, AgentsBlock(project), 1); got != want {
+				t.Errorf("%s: the block must be replaced in place and the rest kept:\n%s", name, got)
 			}
 		} else if got != row.content {
 			t.Errorf("%s: CLAUDE.md was rewritten:\n%s", name, got)
