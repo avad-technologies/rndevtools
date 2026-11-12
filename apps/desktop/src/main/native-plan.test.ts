@@ -249,6 +249,31 @@ describe('runNativePlan', () => {
 		}
 	);
 
+	it.each([
+		['an error on stderr', '>&2\nexit 2', /failed: Error: rejected /],
+		[
+			'output on stdout with no plan',
+			'',
+			/exited without reporting a plan; it printed: Error: rejected /,
+		],
+	])('redacts a token printed in color in %s', async (_, redirect, message) => {
+		// In colored output a credential follows an escape sequence's final
+		// letter directly, where the redaction rules find no word boundary.
+		const jwt =
+			'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.ZXhhbXBsZS1zaWduYXR1cmU';
+		const failure: unknown = await fakeNode(
+			`printf 'Error: rejected \\033[32m%s\\033[39m and \\033[1;33mBearer %s\\033[0m\\n' '${jwt}' 'example-bearer-value' ${redirect}`
+		)
+			.plan()
+			.catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(Error);
+		const text = (failure as Error).message;
+		expect(text).toMatch(message);
+		expect(text).toContain('rejected [REDACTED JWT] and Bearer [REDACTED]');
+		// The sequences go whole, not only their escape characters.
+		expect(text).not.toMatch(/eyJ|example-bearer-value|\[\d+(?:;\d+)*m/);
+	});
+
 	it('never quotes the line its output bound cut through', async () => {
 		// The plan keeps the newest 256 KiB of stdout. Fill it so the window
 		// kept starts inside a secret, past its name, where no redactor could
