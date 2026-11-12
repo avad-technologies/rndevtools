@@ -276,6 +276,8 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 		"`rndevtools lane --operation launch --lane-id <laneId> --url <full launch URL>`",
 		"`lane --operation up` takes no URL",
 		"Terminating an app that is not running counts as success",
+		// A start parked for a device completes, with the request to poll.
+		"When nothing is free the result has `completed: true`, no `lane`, a `deviceRequest`",
 		// The device choice stays with RN Devtools unless the user named one.
 		"Leave `--udid` out unless the user named a device",
 		"a booted Simulator nobody holds can still be one a person is using",
@@ -291,7 +293,7 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 	}
 	// A lane started with --launch=false restarts the app at its first
 	// dev-client launch too, so no relaunch is "without terminating" as such.
-	for _, stale := range []string{"new lane's first launch", "A new lane does this", "relaunches without terminating the app"} {
+	for _, stale := range []string{"new lane's first launch", "A new lane does this", "relaunches without terminating the app", "`completed: false`"} {
 		if strings.Contains(flat, stale) {
 			t.Errorf("the lanes skill still says %q", stale)
 		}

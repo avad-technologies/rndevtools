@@ -90,8 +90,8 @@ var toolMeta = map[protocol.Command]meta{
 			"collide on port 8081 or a shared device. Use it whenever asked to run a branch, open the " +
 			"simulator, start the app for a worktree, or fix a Metro port clash. operation \"up\" needs the " +
 			"absolute worktree path; udid is optional (omit it and RN Devtools picks a free iPhone, booted first; " +
-			"when none is free the result has completed=false and a deviceRequest for the user to settle in the app: poll " +
-			"ls until it is fulfilled with a laneId). It boots the device, starts Metro, and opens the dev client; if it is " +
+			"when none is free the result has completed=true, no lane, and a deviceRequest for the user to settle in the app: poll " +
+			"ls until it is fulfilled with a laneId, or dismissed). It boots the device, starts Metro, and opens the dev client; if it is " +
 			"not installed, call the native tool (operation plan) before building, as the error says. " +
 			"up again for the same worktree returns its lane and relaunches. " +
 			"A lane's first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's " +

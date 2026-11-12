@@ -161,13 +161,14 @@ be one a person is using, so pass `--udid` when the user named a device or is
 using one. To choose yourself, run `rndevtools simulators`, pick a device with
 no hold, and pass `--udid <UDID>`.
 
-When nothing is free the result has `completed: false`, no `lane`, and a
-`deviceRequest` with its `id` and the reason; RN Devtools asks the user to
-start your lane on an existing Simulator or a new clone (you cannot create
-Simulators). Tell the user, then poll `rndevtools lane --operation ls` every
-~10 s: the entry in `deviceRequests` with your `id` ends `fulfilled` with a
-`laneId`, or `dismissed`. Do not retry `lane --operation up` in a loop; a
-retry replaces the request and resets the user's card.
+When nothing is free the result has `completed: true`, no `lane`, a
+`deviceRequest` with its `id`, its `status` and the reason (`message`), and
+a `next` that names the poll; RN Devtools asks the user to start your lane
+on an existing Simulator or a new clone (you cannot create Simulators).
+Tell the user, then poll `rndevtools lane --operation ls` every ~10 s: the
+entry in `deviceRequests` with your `id` ends `fulfilled` with a `laneId`,
+or `dismissed`. Do not retry `lane --operation up` in a loop; a retry
+replaces the request and resets the user's card.
 
 `--worktree` is wherever you are working: a checkout root, or the app's
 directory inside a monorepo checkout. The lane is keyed on the containing git

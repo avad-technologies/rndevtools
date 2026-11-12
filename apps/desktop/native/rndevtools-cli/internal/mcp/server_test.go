@@ -394,7 +394,13 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 	}
 	// A lane's first dev-client launch restarts the app by itself, as far as
 	// app.json names the app and the Simulator lets it.
-	for _, phrase := range []string{"first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's warnings say when it could not, " + heldBack + ")", "pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)"} {
+	for _, phrase := range []string{
+		"first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's warnings say when it could not, " + heldBack + ")",
+		"pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)",
+		// A parked lane up completes: the desktop parks the start as a
+		// receipt with a deviceRequest and no lane.
+		"when none is free the result has completed=true, no lane, and a deviceRequest",
+	} {
 		if !strings.Contains(lane.Description, phrase) {
 			t.Fatalf("lane description lacks %q", phrase)
 		}
@@ -410,7 +416,7 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 		}
 	}
 	for _, text := range []string{lane.Description, usage, instructions} {
-		for _, stale := range []string{"new lane's first launch", "new lane does that", "new lane restarts"} {
+		for _, stale := range []string{"new lane's first launch", "new lane does that", "new lane restarts", "completed=false"} {
 			if strings.Contains(text, stale) {
 				t.Errorf("%q is stale in %s", stale, text)
 			}
