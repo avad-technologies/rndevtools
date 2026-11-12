@@ -2218,6 +2218,47 @@ describe('LaneService', () => {
 			}
 		);
 
+		it.each([
+			{ failures: 1, code: 60, completed: true },
+			{ failures: 1, code: 61, completed: false },
+			{ failures: 2, code: 60, completed: false },
+		])(
+			'notes in the lane log what each open could not do, the failed ones included: $code / $failures',
+			async ({ failures, code, completed }) => {
+				const started = await startLane();
+				const warning = (attempt: number) =>
+					`The exampleapp URL scheme could not be approved for com.example.app (attempt ${attempt}), so iOS may ask "Open in …?" before the app opens.`;
+				const run = simulator.runAction;
+				let opens = 0;
+				simulator.runAction = (action) => {
+					if (action.kind === 'url.open') {
+						opens += 1;
+						// Each failed attempt warns of something of its own; a retry
+						// that opens warns of nothing.
+						simulator.openWarnings =
+							opens <= failures ? [warning(opens), warning(opens)] : undefined;
+						if (opens <= failures) {
+							simulator.failNext = `xcrun failed with exit code ${code}.`;
+						}
+					}
+					return run(action);
+				};
+				const result = await service.runOperation({
+					actionId: 'note-open-warnings',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(result.completed).toBe(completed);
+				// Each warning once, from every attempt that ran.
+				expect(metro.notes).toEqual(
+					Array.from({ length: Math.min(opens, failures) }, (_, index) => ({
+						logPath: started.lane?.logPath,
+						note: warning(index + 1),
+					}))
+				);
+			}
+		);
+
 		it.each(['stop', 'cancel'] as const)(
 			'does not retry a timed-out launch after %s',
 			async (operation) => {

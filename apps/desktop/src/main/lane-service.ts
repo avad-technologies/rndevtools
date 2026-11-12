@@ -35,12 +35,13 @@ import {
 	MAX_RECEIPT_WARNINGS,
 	opensLaneDevClient,
 } from '../shared/lane-protocol';
-import type {
-	SimulatorAction,
-	SimulatorActionReceipt,
-	SimulatorDevice,
-	SimulatorJob,
-	SimulatorState,
+import {
+	MAX_SIMULATOR_JOB_WARNINGS,
+	type SimulatorAction,
+	type SimulatorActionReceipt,
+	type SimulatorDevice,
+	type SimulatorJob,
+	type SimulatorState,
 } from '../shared/simulator-protocol';
 import {
 	SLIMMING_CONFIRMATIONS,
@@ -258,6 +259,19 @@ class LaneLaunchError extends Error {
 	constructor(laneId: string, cause: unknown) {
 		super(cause instanceof Error ? cause.message : String(cause), { cause });
 		this.laneId = laneId;
+	}
+}
+
+/**
+ * A Simulator job that did not complete, with its own message and what its
+ * best-effort steps warned of before it failed.
+ */
+class SimulatorJobError extends Error {
+	readonly warnings: readonly string[];
+
+	constructor(job: SimulatorJob) {
+		super(job.message);
+		this.warnings = job.warnings ?? [];
 	}
 }
 
@@ -2324,53 +2338,67 @@ export class LaneService {
 			lane.bundleIdentifier && lane.scheme && hasScheme(target, lane.scheme)
 				? { bundleIdentifier: lane.bundleIdentifier }
 				: {};
-		let opened: SimulatorJob | undefined;
-		for (let attempt = 0; attempt < 2; attempt++) {
-			this.#assertLaunchTarget(lane, signal);
-			this.#assertRequiredBackendReady(lane);
-			try {
-				opened = await this.#runSimulatorAction(
-					{
-						actionId: `lane-launch-${randomUUID()}`,
-						kind: 'url.open',
-						udid: lane.simulatorUdid,
-						url: target,
-						...ownApp,
-					},
-					signal
-				);
-				break;
-			} catch (error) {
-				// CoreSimulator can time out immediately after a native install.
-				// Reopening a dev-client URL is safe; an arbitrary app deep link
-				// could repeat a user action, so never retry it.
-				if (
-					attempt !== 0 ||
-					!devClient ||
-					!(error instanceof Error) ||
-					error.message !== 'xcrun failed with exit code 60.'
-				) {
-					throw error;
-				}
-				if (signal.aborted) throw new Error(OPERATION_CANCELLED);
-				await sleep(DEV_CLIENT_OPEN_RETRY_DELAY_MS, signal);
-				const current = this.#store.get(laneId);
-				if (
-					!current ||
-					current.metroPid !== lane.metroPid ||
-					current.simulatorUdid !== lane.simulatorUdid ||
-					current.port !== lane.port
-				) {
-					throw new Error(
-						'The lane changed before its dev-client launch retry.'
+		// What each open could not do of its best-effort steps, whether or not
+		// it then opened: with its scheme unapproved, iOS may ask "Open in …?"
+		// first. The lane's agent reads the lane log, so each warning goes
+		// there once, an attempt that failed or was retried included.
+		const openWarnings = new Set<string>();
+		try {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				this.#assertLaunchTarget(lane, signal);
+				this.#assertRequiredBackendReady(lane);
+				try {
+					const opened = await this.#runSimulatorAction(
+						{
+							actionId: `lane-launch-${randomUUID()}`,
+							kind: 'url.open',
+							udid: lane.simulatorUdid,
+							url: target,
+							...ownApp,
+						},
+						signal
 					);
+					for (const warning of opened.warnings ?? []) {
+						openWarnings.add(warning);
+					}
+					break;
+				} catch (error) {
+					if (error instanceof SimulatorJobError) {
+						for (const warning of error.warnings) openWarnings.add(warning);
+					}
+					// CoreSimulator can time out immediately after a native install.
+					// Reopening a dev-client URL is safe; an arbitrary app deep link
+					// could repeat a user action, so never retry it.
+					if (
+						attempt !== 0 ||
+						!devClient ||
+						!(error instanceof Error) ||
+						error.message !== 'xcrun failed with exit code 60.'
+					) {
+						throw error;
+					}
+					if (signal.aborted) throw new Error(OPERATION_CANCELLED);
+					await sleep(DEV_CLIENT_OPEN_RETRY_DELAY_MS, signal);
+					const current = this.#store.get(laneId);
+					if (
+						!current ||
+						current.metroPid !== lane.metroPid ||
+						current.simulatorUdid !== lane.simulatorUdid ||
+						current.port !== lane.port
+					) {
+						throw new Error(
+							'The lane changed before its dev-client launch retry.'
+						);
+					}
 				}
 			}
+		} finally {
+			// As many as one job keeps, each cut to a log note's length.
+			await this.#noteInLog(
+				lane,
+				[...openWarnings].slice(0, MAX_SIMULATOR_JOB_WARNINGS)
+			);
 		}
-		// The URL opened, but a best-effort step before it may not have: with
-		// its scheme unapproved, iOS may ask "Open in …?" first. The lane's
-		// agent reads the lane log, so each warning goes there.
-		await this.#noteInLog(lane, opened?.warnings ?? []);
 		// The checks and the open awaited, and a stop or a Metro restart may
 		// have run meanwhile: write onto the lane as it is now. A lane stopped
 		// mid-launch stays stopped, and a Metro that replaced the one that was
@@ -3852,7 +3880,7 @@ export class LaneService {
 			cancel: true,
 			abortError: () => new Error(OPERATION_CANCELLED),
 		});
-		if (job.status !== 'complete') throw new Error(job.message);
+		if (job.status !== 'complete') throw new SimulatorJobError(job);
 		return job;
 	}
 
