@@ -462,13 +462,19 @@ func namesPackageManager(source string) bool {
 
 // quotable reports whether a reason may quote character from text that the
 // repository or the command line controls: a graphic character (a letter,
-// mark, number, punctuation, symbol, or space), except the backtick that
-// quotes it there. Controls, format characters (bidi controls, zero-width
-// marks, tag characters), line and paragraph separators, and private-use or
-// unassigned characters can make quoted text read as something else, to the
-// model and to a person.
+// mark, number, punctuation, symbol, or space) that shows, except the
+// backtick that quotes it there. Controls, format characters (bidi controls,
+// zero-width marks, tag characters), line and paragraph separators, and
+// private-use or unassigned characters can make quoted text read as
+// something else, to the model and to a person. So can the graphic
+// characters Unicode says to show as nothing, which with the format
+// characters make up its Default_Ignorable_Code_Point: variation selectors,
+// which carry hidden text one byte at a time, and the combining grapheme
+// joiner, the Khmer inherent vowels, and the Hangul fillers.
 func quotable(character rune) bool {
-	return character != '`' && unicode.IsGraphic(character)
+	return character != '`' && unicode.IsGraphic(character) &&
+		!unicode.Is(unicode.Variation_Selector, character) &&
+		!unicode.Is(unicode.Other_Default_Ignorable_Code_Point, character)
 }
 
 // displayText bounds text to limit bytes for a reason, at a whole character,

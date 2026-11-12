@@ -793,8 +793,9 @@ var literalShellWord = regexp.MustCompile(`^[A-Za-z0-9_./@%+=:,-]+$`)
 // directory's name, which the checkout controls, and in double quotes the
 // shell would run the `$(…)` it spells.
 // ok is false for a path that displayPath would strip or cut (one with a
-// backtick, a control or format character, or longer than its bound): a
-// command naming what is left would name another directory.
+// backtick, a control or format character, a character that shows as
+// nothing, or longer than its bound): a command naming what is left would
+// name another directory.
 func pathWord(path string) (word string, ok bool) {
 	if path == "" || displayPath(path) != path {
 		return "", false

@@ -332,8 +332,10 @@ It declines a Bash line when any of these holds:
    rules above and by these rules again (a script that runs another), within
    the same depth and script limits, and the reason quotes it (at most 160
    bytes, keeping only letters, marks, numbers, punctuation, symbols and
-   spaces other than the backtick, so no control, bidi or zero-width character
-   of the repository's reaches the model). The commands the reason gives
+   spaces other than the backtick, and none of those Unicode says to show as
+   nothing, such as variation selectors and Hangul fillers, so no control,
+   bidi, zero-width or other invisible character of the repository's reaches
+   the model). The commands the reason gives
    instead name the directory the script runs the declined command in, from
    the package's directory and after the script's own `cd`s (`cd apps/mobile
    && expo run:ios` names `apps/mobile`), as one word the shell reads as it

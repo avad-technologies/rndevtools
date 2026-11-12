@@ -192,13 +192,21 @@ func TestReasonsQuoteOnlyTheRepositoryTextThatShows(t *testing.T) {
 	// repository controls. Bidi controls, zero-width and other format
 	// characters, tag characters, line separators, and C1 controls can make
 	// the quoted text read as something else to the model and to a person, so
-	// they go with the C0 controls and the backticks.
+	// they go with the C0 controls and the backticks. So do the marks and
+	// letters Unicode says to show as nothing (Default_Ignorable_Code_Point):
+	// variation selectors, which carry hidden text one byte at a time, the
+	// combining grapheme joiner, the Khmer inherent vowels, and the Hangul
+	// fillers.
 	hidden := "\u202e\u2066\u2069\u200b\u200d\u200e\ufeff\u00ad\U000e0041\u0085\u009b\u2028\u2029\t\x00\x7f`"
-	if got := displayText("expo"+hidden+" start", 160); got != "expo start" {
+	ignorable := "\ufe00\ufe0f\U000e0100\U000e01ef\u180b\u180f\u034f\u17b4\u17b5\u115f\u1160\u3164\uffa0"
+	if got := displayText("expo"+hidden+ignorable+" start", 160); got != "expo start" {
 		t.Errorf("displayText kept %q", got)
 	}
-	if got := displayPath("/Users/example/app" + hidden + "/package.json"); got != "/Users/example/app/package.json" {
+	if got := displayPath("/Users/example/app" + hidden + ignorable + "/package.json"); got != "/Users/example/app/package.json" {
 		t.Errorf("displayPath kept %q", got)
+	}
+	if word, ok := pathWord("/Users/example/app\u3164"); ok {
+		t.Errorf("pathWord quoted a path it shows without its filler: %q", word)
 	}
 	// Letters of any script, combining marks, and symbols stay, and the
 	// bound still ends at a whole character.
@@ -215,10 +223,10 @@ func TestReasonsQuoteOnlyTheRepositoryTextThatShows(t *testing.T) {
 		}
 	}
 	app := t.TempDir()
-	write(t, filepath.Join(app, "package.json"), `{"scripts":{"start":"expo start \u202e\u200b# trats opxe ton"}}`)
+	write(t, filepath.Join(app, "package.json"), `{"scripts":{"start":"expo start \u202e\u200b# trats opxe ton\ufe0f\udb40\udd01\u3164"}}`)
 	decision := judgeIn(app, "npm start")
-	if !decision.Block || !strings.Contains(decision.Reason, "`expo start # trats opxe ton`") || strings.ContainsAny(decision.Reason, "\u202e\u200b") {
-		t.Fatalf("the reason must quote the script without its format characters: %+v", decision)
+	if !decision.Block || !strings.Contains(decision.Reason, "`expo start # trats opxe ton`") || strings.ContainsAny(decision.Reason, "\u202e\u200b\ufe0f\U000e0101\u3164") {
+		t.Fatalf("the reason must quote the script without its format or ignorable characters: %+v", decision)
 	}
 }
 
