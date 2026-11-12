@@ -108,6 +108,10 @@ func TestAgentTextsAgreeOnTheSimctlCommandsAndTheUDIDCaveat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	hooks, err := installHooks(filepath.Join(t.TempDir(), "settings.json"), "/example/rndevtools", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, row := range []struct {
 		name, text string
 		phrases    []string
@@ -119,6 +123,7 @@ func TestAgentTextsAgreeOnTheSimctlCommandsAndTheUDIDCaveat(t *testing.T) {
 		{"the routing block", flat(healthRoutingBlock()), []string{"`launch`, `terminate`, or `io`", "named a device or is using one"}},
 		{"the Metro reason", flat(metroDecision().Reason), []string{"Leave out `--udid` unless the user named a device or is using one"}},
 		{"the lanes skill", flat(string(skill)), []string{"xcrun simctl boot/shutdown/openurl/install/launch/terminate/io"}},
+		{"setup's hook change", flat(hooks.Detail), []string{"simctl boot/shutdown/openurl/install/launch/terminate/io"}},
 	} {
 		for _, phrase := range row.phrases {
 			if !strings.Contains(row.text, phrase) {

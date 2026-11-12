@@ -542,6 +542,14 @@ func TestHookUsageDescribesTheSupabaseRules(t *testing.T) {
 	if flat := strings.Join(strings.Fields(stdout.String()), " "); !strings.Contains(flat, "simctl boot/shutdown/openurl/ install/launch/terminate/io") {
 		t.Fatalf("hook usage must name terminate with the other simctl commands:\n%s", stdout.String())
 	}
+	// So does setup's, where it describes the hook it installs.
+	stdout.Reset()
+	if Run(Config{Arguments: []string{"setup", "--help"}, Stdout: &stdout, Stderr: &stderr}) != ExitSuccess {
+		t.Fatal("setup --help should succeed")
+	}
+	if flat := strings.Join(strings.Fields(stdout.String()), " "); !strings.Contains(flat, "PreToolUse redirects simctl boot/shutdown/openurl/ install/launch/terminate/io") {
+		t.Fatalf("setup usage must name terminate with the other simctl commands:\n%s", stdout.String())
+	}
 }
 
 func TestSessionEndReleaseCommandForwardsOnlyAnAbsoluteCwd(t *testing.T) {

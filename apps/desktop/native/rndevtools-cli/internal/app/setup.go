@@ -30,11 +30,11 @@ for Simulators instead of raw simctl:
     agent discovers skills
   * adds hooks for Claude Code (~/.claude/settings.json) and Codex
     (~/.codex/hooks.json): PreToolUse redirects simctl boot/shutdown/openurl/
-    install/launch/io and hand-started Metro to rndevtools and, while local
-    Supabase is turned on in RN Devtools, keeps hand-run supabase commands
-    native and off other agents' stacks; SessionEnd releases the session's
-    lanes, claims, and stacks. Codex runs new hooks only after you trust them
-    once with /hooks
+    install/launch/terminate/io and hand-started Metro to rndevtools and,
+    while local Supabase is turned on in RN Devtools, keeps hand-run supabase
+    commands native and off other agents' stacks; SessionEnd releases the
+    session's lanes, claims, and stacks. Codex runs new hooks only after you
+    trust them once with /hooks
   * with --project, also installs the skills into that repository and adds an
     "iOS Simulators" block to its AGENTS.md, plus a "Local Supabase"
     paragraph when the project has supabase/config.toml, and for Claude Code,

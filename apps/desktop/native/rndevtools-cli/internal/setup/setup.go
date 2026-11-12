@@ -497,7 +497,7 @@ func installHooks(path string, executable string, write bool) (Change, error) {
 		change.Detail = "rndevtools hooks already installed"
 		return change, nil
 	}
-	change.Detail = "add a PreToolUse hook that redirects simctl boot/shutdown/openurl/install/launch/io and hand-started Metro to rndevtools and, while local Supabase is turned on in RN Devtools, keeps hand-run supabase commands native and off other agents' stacks, and a SessionEnd hook that releases the session's lanes, claims, and stacks"
+	change.Detail = "add a PreToolUse hook that redirects simctl boot/shutdown/openurl/install/launch/terminate/io and hand-started Metro to rndevtools and, while local Supabase is turned on in RN Devtools, keeps hand-run supabase commands native and off other agents' stacks, and a SessionEnd hook that releases the session's lanes, claims, and stacks"
 	document["hooks"] = hooks
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
