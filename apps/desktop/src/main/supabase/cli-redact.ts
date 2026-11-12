@@ -91,10 +91,10 @@ function isInvisible(code: number): boolean {
 }
 
 /**
- * Stands where the shown text leaves an escape sequence out, in the text the
- * redaction rules read. They read a tab as white space, which ends a token
- * and starts a word, and no other tab is there: the input's own are shown,
- * and read, as spaces.
+ * Stands where the shown text leaves an escape sequence or an invisible
+ * character out, in the text the redaction rules read. They read a tab as
+ * white space, which ends a token and starts a word, and no other tab is
+ * there: the input's own are shown, and read, as spaces.
  */
 const SEPARATOR = '\t';
 /** At least as long as any marker the redaction rules leave. */
@@ -105,15 +105,17 @@ const MARKER_AT_END = /\[REDACTED(?: [A-Z]+)*\]$/;
 /**
  * `value` without terminal escape sequences and invisible characters,
  * redacted by the core rules. The JWT and Bearer rules start at a word
- * boundary, so removing a sequence must not join what it kept apart: in
- * colored output a token can follow a sequence's final letter with a word
- * right before the sequence, as in `fetching\x1b[32meyJ…`, and the token
- * has a boundary neither before the sequence goes nor after. So the rules
- * read the text with a separator where each sequence was, which is then
- * removed, and what is left is redacted again for a token that a sequence
- * split. The raw text is never redacted: a rule can stop inside a sequence,
- * at the `;` of `\x1b[1;32m`, and leave the rest of it on the token. A
- * marker that a removed sequence parts from the marker before it joins
+ * boundary, and Bearer and an Authorization scheme take their token after
+ * white space, so removing a sequence or a character must not join what it
+ * kept apart: in colored output a token can follow a sequence's final
+ * letter with a word right before the sequence, as in
+ * `fetching\x1b[32meyJ…`, and a carriage return, a backspace or a
+ * zero-width space can part `Bearer` from its token. So the rules read the
+ * text with a separator where each sequence or character was, which is
+ * then removed, and what is left is redacted again for a token that one
+ * split. The raw text is never redacted: a rule can stop inside a
+ * sequence, at the `;` of `\x1b[1;32m`, and leave the rest of it on the
+ * token. A marker that a separator parts from the marker before it joins
  * that one, so a value and a token glued to it stay one marker.
  */
 export function redactTerminalText(
@@ -126,8 +128,9 @@ export function redactTerminalText(
 }
 
 /**
- * `value` with one SEPARATOR for each run of escape sequences, and its tabs
- * and, unless they are kept, its line breaks as spaces.
+ * `value` with one SEPARATOR for each run of escape sequences and invisible
+ * characters, and its tabs and, unless they are kept, its line breaks as
+ * spaces.
  */
 function separatedText(value: string, keepNewlines: boolean): string {
 	let output = '';
@@ -135,24 +138,29 @@ function separatedText(value: string, keepNewlines: boolean): string {
 	let index = 0;
 	while (index < value.length) {
 		const code = value.charCodeAt(index);
+		let next = index + 1;
+		let shown: string | undefined;
 		if (code === 0x1b || code === 0x9b) {
-			index = skipEscapeSequence(value, index);
-			if (!separated) output += SEPARATOR;
-			separated = true;
-			continue;
+			next = skipEscapeSequence(value, index);
+		} else if (code === 0x09 || (code === 0x0a && !keepNewlines)) {
+			shown = ' ';
+		} else if (code === 0x0a || !isInvisible(code)) {
+			shown = value[index];
 		}
-		output +=
-			code === 0x09 || (code === 0x0a && !keepNewlines) ? ' ' : value[index];
-		separated = false;
-		index += 1;
+		if (shown !== undefined) {
+			output += shown;
+		} else if (!separated) {
+			output += SEPARATOR;
+		}
+		separated = shown === undefined;
+		index = next;
 	}
 	return output;
 }
 
 /**
- * The redacted `view` as it is shown: without its separators and invisible
- * characters, and without a marker that a separator parts from the marker
- * before it.
+ * The redacted `view` as it is shown: without its separators, and without
+ * a marker that a separator parts from the marker before it.
  */
 function shownText(view: string): string {
 	const parts: string[] = [];
@@ -162,7 +170,7 @@ function shownText(view: string): string {
 		const separator = view.indexOf(SEPARATOR, start);
 		const end = separator === -1 ? view.length : separator;
 		const from = afterMarker ? pastMarkers(view, start, end) : start;
-		const part = stripTerminalControls(view.slice(from, end), true);
+		const part = view.slice(from, end);
 		if (part) {
 			parts.push(part);
 			afterMarker = MARKER_AT_END.test(part.slice(-MARKER_WINDOW));

@@ -118,9 +118,34 @@ describe('bounded simulator diagnostics', () => {
 		for (const [raw, redacted] of [
 			[`Error: fetching\r${jwt}`, 'Error: fetching[REDACTED JWT]'],
 			[`Error: fetching\u000b${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u0008${jwt}`, 'Error: fetching[REDACTED JWT]'],
 			[`Error: fetching\u200b${jwt}`, 'Error: fetching[REDACTED JWT]'],
 			['Error: Bearer\rsecret-value', 'Error: Bearer [REDACTED]'],
 			['Error: Bearer\u000bsecret-value', 'Error: Bearer [REDACTED]'],
+		] as const) {
+			expect(failureText(raw)).toBe(redacted);
+		}
+	});
+	it('redacts a Bearer token after a format character or a backspace, which is not white space', () => {
+		// Bearer and an Authorization scheme take the token after white space,
+		// so the rules have to read such a character as a separator before it
+		// is removed.
+		for (const [raw, redacted] of [
+			// A zero-width space, a zero-width joiner, a word joiner, a
+			// left-to-right mark, and a backspace.
+			['Error: Bearer\u200bsecret-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u200dsecret-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u2060secret-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u200esecret-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u0008secret-value', 'Error: Bearer [REDACTED]'],
+			[
+				'Error: Authorization:\u200bBearer secret-value',
+				'Error: Authorization:[REDACTED]',
+			],
+			[
+				'Authorization: Digest\u200busername="example", response="secret-value"',
+				'Authorization: [REDACTED]',
+			],
 		] as const) {
 			expect(failureText(raw)).toBe(redacted);
 		}

@@ -317,6 +317,7 @@ describe('runNativePlan', () => {
 	it.each([
 		['a JWT after a carriage return', 'fetching\\r', 'fetching[REDACTED JWT]'],
 		['a JWT after a vertical tab', 'fetching\\v', 'fetching[REDACTED JWT]'],
+		['a JWT after a backspace', 'fetching\\b', 'fetching[REDACTED JWT]'],
 		[
 			'a JWT after a zero-width space',
 			'fetching\\342\\200\\213',
@@ -350,6 +351,41 @@ describe('runNativePlan', () => {
 				expect(text).toMatch(message);
 				expect(text).toContain(`Error: ${redacted}`);
 				expect(text).not.toMatch(/eyJ|example-bearer-value/);
+			}
+		}
+	);
+
+	it.each([
+		['a zero-width space', 'Bearer\\342\\200\\213', 'Bearer [REDACTED]'],
+		['a zero-width joiner', 'Bearer\\342\\200\\215', 'Bearer [REDACTED]'],
+		['a word joiner', 'Bearer\\342\\201\\240', 'Bearer [REDACTED]'],
+		['a left-to-right mark', 'Bearer\\342\\200\\216', 'Bearer [REDACTED]'],
+		['a backspace', 'Bearer\\b', 'Bearer [REDACTED]'],
+		[
+			'a zero-width space after an Authorization name',
+			'Authorization:\\342\\200\\213Bearer ',
+			'Authorization:[REDACTED]',
+		],
+	])(
+		'redacts a Bearer token after %s, which is not white space',
+		async (_, before, redacted) => {
+			// Bearer and an Authorization scheme take the token after white
+			// space, and a format character or a backspace is none, so the rules
+			// have to read one as a separator before it is removed.
+			for (const [redirect, message] of [
+				['>&2\nexit 2', /failed: Error: /],
+				['', /exited without reporting a plan; it printed: Error: /],
+			] as const) {
+				const failure: unknown = await fakeNode(
+					`printf 'Error: ${before}%s\\n' 'example-bearer-value' ${redirect}`
+				)
+					.plan()
+					.catch((error: unknown) => error);
+				expect(failure).toBeInstanceOf(Error);
+				const text = (failure as Error).message;
+				expect(text).toMatch(message);
+				expect(text).toContain(`Error: ${redacted}`);
+				expect(text).not.toMatch(/example-bearer-value/);
 			}
 		}
 	);
