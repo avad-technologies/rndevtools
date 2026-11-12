@@ -84,12 +84,20 @@ rndevtools native --operation plan --worktree /absolute/lane-a/app --udid DEVICE
 
 Follow `recommendation`: install a cache hit with `native --operation install`,
 or, for a cache miss, start the requested lane with `launch=false` and run the
-two commands the plan gives once the lane's Metro is ready. The build,
-`npx expo run:ios --device DEVICE_UDID --no-bundler`, runs once and names no
-port: Expo CLI refuses `--port` with `--no-bundler`, and it opens the app it
-installs against port 8081. Then
-`rndevtools lane --operation launch --lane-id LANE_ID --restart` starts the app
-fresh with the lane's Metro alone. A matching bundle ID only proves that an
+two commands the plan gives once the lane's Metro is ready, exactly as it
+quotes them. The build, `npx expo run:ios --device DEVICE_UDID --no-bundler`,
+runs once and names no port: Expo CLI refuses `--port` with `--no-bundler`,
+and it opens the app it installs against port 8081. Then the launch reopens
+the app with the lane's Metro. For a lane whose `app.json` declared both a
+`scheme` and an `ios.bundleIdentifier` when it started, the plan quotes
+`rndevtools lane --operation launch --lane-id LANE_ID --restart`, which starts
+the app fresh with the lane's Metro alone. It gives `--restart` only to a lane
+with a bundle identifier, and for one without says how to quit the app before
+the launch. For a lane without a scheme, the launch also carries the dev
+client's full URL,
+`--url '<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>&disableOnboarding=1&disableAutoLaunch=1'`
+with the lane's Metro port, filled in from the project's Expo config when it
+names a scheme. A matching bundle ID only proves that an
 app is installed, not that its native fingerprint is current. An explicit
 cached install refreshes that binary. RN Devtools owns Metro.
 

@@ -147,10 +147,11 @@ func runIOSStartsMetro(arguments []string) bool {
 
 // runIOSDecision steers an `expo run:ios` that would start Metro to the
 // native plan, which says whether a build is needed at all and gives the
-// build command for the lane, and to a restart on the lane afterward, or the
-// plan's launch without one for a lane that cannot restart the app: the build
-// names no port, since Expo CLI refuses --port with --no-bundler, and opens
-// the app against 8081 as soon as it installs it.
+// build command for the lane, and to the launch the plan quotes after it: a
+// restart on the lane, without the restart for a lane that cannot restart
+// the app, and with the dev client's full URL for a lane that has no scheme.
+// The build names no port, since Expo CLI refuses --port with --no-bundler,
+// and opens the app against 8081 as soon as it installs it.
 func runIOSDecision() HookDecision {
 	return HookDecision{
 		Block: true,
@@ -161,8 +162,11 @@ func runIOSDecision() HookDecision {
 			"When it must be built, reserve the lane with `rndevtools lane --operation up --worktree " + appDirectory + " --launch=false` " +
 			"and run `rndevtools native --operation plan --worktree " + appDirectory + " --udid <UDID>` again: once the lane's Metro is ready it gives the build, `npx expo run:ios --device <UDID> --no-bundler` " +
 			"(add no `--port`: Expo CLI refuses it with `--no-bundler`; and leave out `--configuration Debug`: Debug is the default). " +
-			"The build opens the app against port 8081, so after it run `rndevtools lane --operation launch --worktree " + appDirectory + " --restart`, " +
-			"which starts the app fresh with the lane's Metro alone. A lane started without an `ios.bundleIdentifier` in `app.json` refuses a restart: " +
-			"for it the plan leaves out `--restart`, so run its launch as the plan quotes it.",
+			"The build opens the app against port 8081, so after it run the launch the plan quotes, exactly as quoted: " +
+			"`rndevtools lane --operation launch --worktree " + appDirectory + " --restart` starts the app fresh with the lane's Metro alone. " +
+			"Only a lane started with an `ios.bundleIdentifier` in `app.json` takes `--restart`: for one without, the plan leaves the flag out and says how to quit the app first. " +
+			"A lane started without a `scheme` in `app.json` opens its dev client only by its full URL, so for it the launch also carries " +
+			"`--url '<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>&disableOnboarding=1&disableAutoLaunch=1'`, " +
+			"with the URL scheme the app registers and the lane's Metro port.",
 	}
 }

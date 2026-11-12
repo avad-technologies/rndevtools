@@ -150,10 +150,15 @@ func TestHookBlocksExpoRunIOSThatStartsItsOwnMetro(t *testing.T) {
 			// --port with --no-bundler, and the restart re-points the app.
 			"`npx expo run:ios --device <UDID> --no-bundler`",
 			"add no `--port`: Expo CLI refuses it with `--no-bundler`",
+			// The launch after the build is the one the plan quotes: with
+			// restart only for a lane that has a bundle identifier, and with
+			// the dev client's full URL for a lane that has no scheme.
+			"run the launch the plan quotes, exactly as quoted",
 			"`rndevtools lane --operation launch --worktree <app directory> --restart`",
-			// A lane that cannot restart the app is given the launch without
-			// the flag, which it would refuse.
-			"the plan leaves out `--restart`",
+			"Only a lane started with an `ios.bundleIdentifier` in `app.json` takes `--restart`",
+			"the plan leaves the flag out and says how to quit the app first",
+			"A lane started without a `scheme` in `app.json` opens its dev client only by its full URL",
+			"`--url '<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>&disableOnboarding=1&disableAutoLaunch=1'`",
 		} {
 			if !decision.Block || !strings.Contains(decision.Reason, want) {
 				t.Errorf("%q should be blocked with %q, got %+v", line, want, decision)

@@ -133,8 +133,11 @@ Follow each recommendation. Install a cache hit with
 `native --operation install`. For a cache miss, run the build each plan gives
 once its lane's Metro is ready, `npx expo run:ios --device <udid> --no-bundler`,
 as given: it names no port, because Expo CLI refuses `--port` with
-`--no-bundler`, and it opens the app against port 8081. Then restart each app
-through its lane, so it runs with that lane's Metro.
+`--no-bundler`, and it opens the app against port 8081. Then run the launch
+each plan quotes after the build, which reopens the app with that lane's
+Metro. The demo's `app.json` declares both a `scheme` and an
+`ios.bundleIdentifier`, so that launch restarts the app and needs no `--url`.
+The plan names the lane by `--lane-id`; `--worktree` reaches the same lane.
 
 ```sh
 rndevtools lane --operation launch --worktree "$app_a" --restart
