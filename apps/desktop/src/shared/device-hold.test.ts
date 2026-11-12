@@ -177,6 +177,32 @@ describe('decideDeviceAccess', () => {
 			decideDeviceAccess(abandoned, codex, since + DEVICE_HOLD_GRACE_MS)
 		).toEqual({ allowed: true });
 	});
+
+	it('says a hold whose session nothing can see is retained, not released soon', () => {
+		// Nothing discovers sessions known only by RNDEVTOOLS_AGENT_SESSION_ID,
+		// so no clock ever starts for them: their holds stay until released.
+		const other = { kind: 'other', sessionId: 'harness-1' } as const;
+		for (const elapsed of [0, 40 * 60_000, 24 * 60 * 60_000]) {
+			const at = now + elapsed;
+			const hold = resolveDeviceHolds({
+				lanes: [lane(A, other)],
+				claims: [],
+				liveSessionKeys: new Set(['claude:s1']),
+				missingSince: new Map([['other:harness-1', now - 60_000]]),
+				now: at,
+			}).get(A);
+			expect(hold).toMatchObject({ holderLive: false });
+			expect(hold?.releaseAt).toBeUndefined();
+			const refused = decideDeviceAccess(hold, claude, at);
+			expect(refused.allowed).toBe(false);
+			if (!refused.allowed) {
+				expect(refused.reason).toContain(
+					'held by other session harness-1 through lane lane-1 (session activity is unconfirmed; the hold is retained)'
+				);
+				expect(refused.reason).not.toMatch(/releases/);
+			}
+		}
+	});
 });
 
 describe('freeDevices', () => {
