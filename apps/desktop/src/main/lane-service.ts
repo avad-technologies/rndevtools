@@ -56,6 +56,7 @@ import {
 	sanitizeSupabaseDisplayText,
 } from '../shared/supabase-protocol';
 import { waitForJob } from './job-wait';
+import { shellWord } from './lane-agent-text';
 import {
 	laneEnvProblem,
 	METRO_OWNERSHIP_PROOF_TIMEOUT_MS,
@@ -3850,8 +3851,14 @@ export class LaneService {
 		if (apps.some((app) => app.bundleIdentifier.toLowerCase() === wanted)) {
 			return;
 		}
+		// Only a lane with a bundle identifier is checked, so the launch after
+		// the build can restart the app. A lane with no scheme names its dev
+		// client's full URL in that launch, as native plan quotes it.
+		const url = lane.scheme
+			? ''
+			: ` --url ${shellWord(laneDevClientLaunchUrl('<scheme>', lane.port))}`;
 		throw new Error(
-			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call \`rndevtools native --operation plan --worktree <app directory> --udid ${lane.simulatorUdid}\` first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${lane.id} --restart\`: the build opens the app against port 8081, and the restart reopens it with this lane's Metro. Metro on port ${lane.port} is still running.`
+			`${lane.bundleIdentifier} is not installed on this Simulator, so there is no dev client to open. Call \`rndevtools native --operation plan --worktree ${shellWord(laneAppDirectory(lane))} --udid ${lane.simulatorUdid}\` first. If it requires a build, run \`npx expo run:ios --device ${lane.simulatorUdid} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${lane.id}${url} --restart\`${url ? ', with <scheme> the URL scheme the app registers' : ''}: the build opens the app against port 8081, and the restart reopens it with this lane's Metro. Metro on port ${lane.port} is still running.`
 		);
 	}
 

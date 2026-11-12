@@ -6017,6 +6017,19 @@ describe('LaneService', () => {
 				expect(opened.receipt.lane?.lastLaunchedAt).toBeDefined();
 			});
 
+			it('names its dev client full URL in the launch after a build when the app is not installed', async () => {
+				const launch = await startSchemeless({
+					bundleIdentifier: 'com.example.app',
+				});
+				simulator.installedApps = [];
+				const missing = await launch('op-dev-client-missing', DEV_CLIENT_URL);
+				expect(missing.receipt.completed).toBe(false);
+				const laneId = missing.receipt.lane?.id;
+				expect(missing.receipt.error).toContain(
+					`then \`rndevtools lane --operation launch --lane-id ${laneId} --url '<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1' --restart\`, with <scheme> the URL scheme the app registers: the build opens the app against port 8081, and the restart reopens it with this lane's Metro.`
+				);
+			});
+
 			it('restarts its Metro without reopening a dev client it opened by URL', async () => {
 				const launch = await startSchemeless({
 					bundleIdentifier: 'com.example.app',
@@ -6053,6 +6066,10 @@ describe('LaneService', () => {
 			);
 			expect(receipt.error).not.toMatch(/`npx expo run:ios[^`]*--port/);
 			expect(receipt.error).toMatch(/Metro on port 8100 is still running/);
+			// The plan it asks for names this lane's app directory and Simulator.
+			expect(receipt.error).toContain(
+				`Call \`rndevtools native --operation plan --worktree ${WORKTREE} --udid ${UDID}\` first.`
+			);
 			expect(simulator.actions.map((action) => action.kind)).toEqual([
 				'device.boot',
 				'app.list',
