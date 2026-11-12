@@ -400,6 +400,9 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 		// A parked lane up completes: the desktop parks the start as a
 		// receipt with a deviceRequest and no lane.
 		"when none is free the result has completed=true, no lane, and a deviceRequest",
+		// A request the user settled is fulfilled with its lane even when
+		// that lane's launch failed; only its message says so.
+		"fulfilled with a laneId, or dismissed; its message says if the launch failed, and how to retry",
 	} {
 		if !strings.Contains(lane.Description, phrase) {
 			t.Fatalf("lane description lacks %q", phrase)

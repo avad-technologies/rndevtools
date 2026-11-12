@@ -167,8 +167,13 @@ a `next` that names the poll; RN Devtools asks the user to start your lane
 on an existing Simulator or a new clone (you cannot create Simulators).
 Tell the user, then poll `rndevtools lane --operation ls` every ~10 s: the
 entry in `deviceRequests` with your `id` ends `fulfilled` with a `laneId`,
-or `dismissed`. Do not retry `lane --operation up` in a loop; a retry
-replaces the request and resets the user's card.
+or `dismissed`. A `fulfilled` request whose lane did not launch says so in
+its `message` (`Started lane <laneId> on <UDID>, but its launch failed: …`),
+which ends with the command that launches it again once the cause is fixed,
+usually `rndevtools lane --operation up --worktree "$PWD"`; read it before
+driving the app. Do not retry `lane --operation up` in a loop while the
+request is pending; a retry replaces the request and resets the user's
+card.
 
 `--worktree` is wherever you are working: a checkout root, or the app's
 directory inside a monorepo checkout. The lane is keyed on the containing git

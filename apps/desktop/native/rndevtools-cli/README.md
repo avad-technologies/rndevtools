@@ -481,7 +481,9 @@ dev client only through `launch --url` with a full launch URL, which the
 error's `recovery` gives. Without `--udid` the desktop picks a free iPhone
 (nobody's lane, nobody's claim), booted ones first; when none is free it parks
 a device request for the user and `lane --operation ls` reports how it was
-settled. Pass `--udid` when the user named a device or is using one: a booted
+settled. A request fulfilled with a lane whose launch then failed says so in
+its `message`, which ends with the command that launches the lane again.
+Pass `--udid` when the user named a device or is using one: a booted
 Simulator nobody holds can still be in a person's hands.
 
 `down`, `launch`, and `log` take exactly one of `--lane-id` or `--worktree`. Lane creation fails rather than

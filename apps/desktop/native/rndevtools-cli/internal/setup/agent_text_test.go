@@ -276,8 +276,10 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 		"`rndevtools lane --operation launch --lane-id <laneId> --url <full launch URL>`",
 		"`lane --operation up` takes no URL",
 		"Terminating an app that is not running counts as success",
-		// A start parked for a device completes, with the request to poll.
+		// A start parked for a device completes, with the request to poll,
+		// and a request fulfilled with a lane that did not launch says so.
 		"When nothing is free the result has `completed: true`, no `lane`, a `deviceRequest`",
+		"A `fulfilled` request whose lane did not launch says so in its `message`",
 		// The device choice stays with RN Devtools unless the user named one.
 		"Leave `--udid` out unless the user named a device",
 		"a booted Simulator nobody holds can still be one a person is using",
