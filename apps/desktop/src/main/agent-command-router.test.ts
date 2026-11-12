@@ -2093,11 +2093,11 @@ describe('agent command router', () => {
 			}
 		});
 
-		it('gives a lane with no bundle identifier the launch without restart, and says to restart the app by hand', async () => {
+		it('gives a lane with no bundle identifier the launch without restart, and what quits the app before it', async () => {
 			// The lane service refuses a restart for a lane whose app.json named
 			// no ios.bundleIdentifier when it started: it has nothing to
 			// terminate the app by.
-			const afterward = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID}\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler. Lane ${BUILD_LANE_ID} cannot restart the app, as the worktree's app.json declared no ios.bundleIdentifier when the lane started, so restart it by hand: quit it on the Simulator before that launch, which then opens it with lane ${BUILD_LANE_ID}'s Metro on port 8107`;
+			const afterward = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID}\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler. Lane ${BUILD_LANE_ID} cannot restart the app, as the worktree's app.json declared no ios.bundleIdentifier when the lane started, so quit the app before that launch with \`rndevtools simulator --operation shutdown --udid ${UDID}\`, then \`rndevtools simulator --operation boot --udid ${UDID}\`, which keep the lane, its Metro and the Simulator's data; the launch then opens it with lane ${BUILD_LANE_ID}'s Metro on port 8107. Or declare ios.bundleIdentifier in app.json and replace the lane with \`rndevtools lane --operation down --lane-id ${BUILD_LANE_ID}\` and \`rndevtools lane --operation up --worktree /Users/dev/app\`, whose first launch restarts the app, or ask the user to quit the app before that launch`;
 			const build = `npx expo run:ios --device ${UDID} --no-bundler`;
 			const { dependencies } = fixture();
 			const { port } = simulatorWithApps([]);

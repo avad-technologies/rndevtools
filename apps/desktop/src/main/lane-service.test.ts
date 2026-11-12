@@ -6397,8 +6397,7 @@ describe('LaneService', () => {
 
 		it('says on the receipt when a first launch had no bundle identifier to restart the app by', async () => {
 			worktrees.identity = { scheme: 'exampleapp' };
-			const note =
-				"The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from.";
+			const note = `The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from. To start it fresh, run \`rndevtools simulator --operation shutdown --udid ${UDID}\`, then \`rndevtools simulator --operation boot --udid ${UDID}\`, which keep the lane, its Metro and the Simulator's data, and launch the lane again; or declare ios.bundleIdentifier in app.json and replace the lane; or ask the user to quit the app.`;
 			const started = await start();
 			expect(started.completed).toBe(true);
 			expect(kinds()).toEqual(['device.boot', 'url.open']);
@@ -6541,7 +6540,7 @@ describe('LaneService', () => {
 			]) {
 				expect(refusedAgain.completed).toBe(false);
 				expect(refusedAgain.error).toBe(
-					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${laneId}\` and \`rndevtools lane --operation up --worktree <app directory>\`: a new lane's first dev-client launch restarts the app. Or run this without restart.`
+					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. To start the app fresh anyway, run \`rndevtools simulator --operation shutdown --udid ${UDID}\`, then \`rndevtools simulator --operation boot --udid ${UDID}\`, which keep the lane, its Metro and the Simulator's data, and then this without restart. Or declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${laneId}\` and \`rndevtools lane --operation up --worktree <app directory>\`: a new lane's first dev-client launch restarts the app. Or ask the user to quit the app, and run this without restart.`
 				);
 				// Not a failed launch: retrying it as one would fail again.
 				expect(refusedAgain.lane).toBeUndefined();

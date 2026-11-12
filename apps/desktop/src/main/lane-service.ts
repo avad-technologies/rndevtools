@@ -266,14 +266,26 @@ class LaneLaunchError extends Error {
 const LANE_UP = '`rndevtools lane --operation up --worktree <app directory>`';
 
 /**
+ * What quits the app of a lane that cannot terminate it, with what that
+ * keeps: a shutdown and boot of the lane's Simulator, which the session that
+ * holds the lane may run.
+ */
+function quitBySimulatorRestart(lane: Pick<Lane, 'simulatorUdid'>): string {
+	return `\`rndevtools simulator --operation shutdown --udid ${lane.simulatorUdid}\`, then \`rndevtools simulator --operation boot --udid ${lane.simulatorUdid}\`, which keep the lane, its Metro and the Simulator's data`;
+}
+
+/**
  * A restart terminates the app by its bundle identifier, which a lane reads
  * from the worktree's app.json only when it starts; without it nothing names
- * the app. A lane that started without one keeps having none.
+ * the app. A lane that started without one keeps having none, but its app
+ * still quits with its Simulator.
  */
-function restartWithoutBundleIdentifier(laneId?: string): Error {
+function restartWithoutBundleIdentifier(
+	lane?: Pick<Lane, 'id' | 'simulatorUdid'>
+): Error {
 	return new Error(
-		laneId
-			? `A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. Declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${laneId}\` and ${LANE_UP}: a new lane's first dev-client launch restarts the app. Or run this without restart.`
+		lane
+			? `A restart terminates the app by its bundle identifier, and lane ${lane.id} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. To start the app fresh anyway, run ${quitBySimulatorRestart(lane)}, and then this without restart. Or declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${lane.id}\` and ${LANE_UP}: a new lane's first dev-client launch restarts the app. Or ask the user to quit the app, and run this without restart.`
 			: "A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart."
 	);
 }
@@ -291,8 +303,9 @@ export type LaneStartOutcome =
  * terminate: a lane reads its bundle identifier from app.json only when it
  * starts.
  */
-const FIRST_LAUNCH_UNNAMED =
-	"The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from.";
+function firstLaunchUnnamed(lane: Pick<Lane, 'simulatorUdid'>): string {
+	return `The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from. To start it fresh, run ${quitBySimulatorRestart(lane)}, and launch the lane again; or declare ios.bundleIdentifier in app.json and replace the lane; or ask the user to quit the app.`;
+}
 
 /**
  * Whether a Metro restart opens the lane's dev client again: it was open
@@ -1891,7 +1904,7 @@ export class LaneService {
 		// none to name refuses it before anything boots or respawns.
 		const restart = input.launch && input.restart === true;
 		if (restart && !existing.bundleIdentifier) {
-			throw restartWithoutBundleIdentifier(existing.id);
+			throw restartWithoutBundleIdentifier(existing);
 		}
 		// Past the lane lookup and the restart check the lane exists, so
 		// whatever stops this lane up names it: a boot, a slim, a backend or a
@@ -2190,7 +2203,7 @@ export class LaneService {
 	): Promise<Lane> {
 		const lane = this.#requireLane(laneId);
 		if (restart && !lane.bundleIdentifier) {
-			throw restartWithoutBundleIdentifier(lane.id);
+			throw restartWithoutBundleIdentifier(lane);
 		}
 		try {
 			return await this.#launch(lane, url, agent, restart, signal, warnings);
@@ -2397,7 +2410,7 @@ export class LaneService {
 		const bundleIdentifier = lane.bundleIdentifier;
 		if (!bundleIdentifier) {
 			if (!asked)
-				await this.#noteFirstLaunch(lane, warnings, FIRST_LAUNCH_UNNAMED);
+				await this.#noteFirstLaunch(lane, warnings, firstLaunchUnnamed(lane));
 			return;
 		}
 		try {
