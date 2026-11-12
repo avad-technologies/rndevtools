@@ -110,13 +110,14 @@ const METRO_STOP_GRACE_MS = 5_000;
 /** How long a stop waits for a killed Metro to be gone. */
 const METRO_KILL_GRACE_MS = 2_000;
 /**
- * How long stopping the lanes, as the app quits, waits for a Metro spawn or
- * the cleanup of a Metro no lane keeps: that cleanup's SIGTERM grace and
- * SIGKILL wait, and the ownership proof before each signal at its probes'
- * timeouts (METRO_OWNERSHIP_PROOF_TIMEOUT_MS, 8 s), with a second to spare
- * for the waits' polls. A spawn that has yet to return when the quit starts
- * uses part of it. Probes that answer, as they normally do within
- * milliseconds, end the wait far sooner.
+ * How long stopping the lanes, as the app quits, waits for the lane stops
+ * under way, and then for a Metro spawn or the cleanup of a Metro no lane
+ * keeps: a stop's or that cleanup's SIGTERM grace and SIGKILL wait, and the
+ * ownership proof before each signal at its probes' timeouts
+ * (METRO_OWNERSHIP_PROOF_TIMEOUT_MS, 8 s), with a second to spare for the
+ * waits' polls. A spawn that has yet to return when the quit starts uses
+ * part of it. Probes that answer, as they normally do within milliseconds,
+ * end the wait far sooner.
  */
 const METRO_SHUTDOWN_GRACE_MS =
 	METRO_STOP_GRACE_MS +
@@ -623,18 +624,36 @@ export class LaneService {
 		// already started a write or an expired hold's release, and for every
 		// lane stop under way: release --all answers before a slow Metro has
 		// exited, and its stop must still finish that Metro off and drop the
-		// lane. Each stop is bounded by its exit waits and by the timeouts of
-		// the probes that prove the PID before each signal.
-		await Promise.allSettled([
-			...this.#maintenanceWrites,
-			...this.#stoppingLanes.values(),
-		]);
+		// lane. A stop's exit waits and the probes that prove the PID before
+		// each signal have timeouts, which METRO_SHUTDOWN_GRACE_MS covers, but
+		// the proof's file system calls have none (the app directory of a
+		// worktree on a volume that stopped answering, say). So a stop still
+		// running when the grace runs out is left behind: its lane stays in
+		// lanes.json, and the next start reconciles it.
+		await this.#settleBy(
+			[...this.#maintenanceWrites, ...this.#stoppingLanes.values()],
+			this.#now() + METRO_SHUTDOWN_GRACE_MS
+		);
 		// A Metro spawning now has no lane to keep it and is cleaned up once
 		// its spawn returns; give that cleanup time to prove it, signal it and
 		// kill it if it outlives SIGTERM, even with probes that run slow.
 		await this.#drainMetroWork(this.#now() + METRO_SHUTDOWN_GRACE_MS);
 		// Metro processes are detached on purpose; they keep serving the agents
 		// that started them after the desktop app quits.
+	}
+
+	/** Waits for `work` to settle, until `deadline` on the injected clock. */
+	async #settleBy(
+		work: readonly Promise<unknown>[],
+		deadline: number
+	): Promise<void> {
+		let settled = false;
+		const all = Promise.allSettled(work).then(() => {
+			settled = true;
+		});
+		while (!settled && this.#now() < deadline) {
+			await Promise.race([all, sleep(CLOCK_POLL_INTERVAL_MS)]);
+		}
 	}
 
 	/** Waits for Metro spawns and cleanups under way, until `deadline`. */

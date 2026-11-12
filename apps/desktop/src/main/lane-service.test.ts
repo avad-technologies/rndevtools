@@ -1956,6 +1956,34 @@ describe('LaneService', () => {
 			expect(reopened.lanes()).toEqual([]);
 		});
 
+		it('lets quit go on once a stop stuck past the shutdown grace is left running', async () => {
+			// Stuck in its proof on a call with no timeout, as the stat of an app
+			// directory on a volume that stopped answering can be.
+			const stuck = deferred<void>();
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				await stuck.promise;
+			};
+			let settled = false;
+			const pending = stop().then((receipt) => {
+				settled = true;
+				return receipt;
+			});
+			await vi.waitFor(() => expect(signals).toHaveLength(1));
+			try {
+				await expect(
+					Promise.race([
+						service.stop().then(() => 'quit'),
+						wait(2_000).then(() => 'still waiting'),
+					])
+				).resolves.toBe('quit');
+				expect(settled).toBe(false);
+			} finally {
+				stuck.resolve();
+				await pending;
+			}
+		});
+
 		it('keeps the lane when it outlives SIGKILL too, so a later stop can finish it', async () => {
 			const original = metro.stop;
 			metro.stop = async (target, _port, _directory, options) => {
