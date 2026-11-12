@@ -1047,6 +1047,61 @@ func TestAgentHealthAcceptsGuidanceSetupInstalledInTheProject(t *testing.T) {
 	}
 }
 
+func TestAgentHealthReadsAProjectClaudeMDAsSetupDoes(t *testing.T) {
+	// Claude Code reads a block in the project's CLAUDE.md as well as the
+	// AGENTS.md the file imports, so setup keeps such a block current, also
+	// beside the import, and leaves markers that do not pair up alone. The
+	// check reads the file the same way: a block, or markers, route Claude
+	// only when the block is current, whatever the import says.
+	options := healthFixture(t)
+	options.Project = filepath.Join(options.Home, "code", "example-app")
+	apply := func() {
+		t.Helper()
+		if _, err := Apply(Options{Home: options.Home, Executable: options.Executable, Project: options.Project, Agents: []Agent{AgentClaude, AgentCodex}, SkipLink: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routed := func() bool {
+		t.Helper()
+		report, err := CheckAgents(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range report.Findings {
+			if f.Client == "claude" && f.Rule == "routing" {
+				return false
+			}
+		}
+		return true
+	}
+	apply()
+	claude := filepath.Join(options.Project, "CLAUDE.md")
+	stale := "<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n"
+	for _, row := range []struct {
+		name, content string
+		routed        bool
+	}{
+		{"an import", "# Example app\n\n@AGENTS.md\n", true},
+		{"an import and a current block", "# Example app\n\n@AGENTS.md\n\n" + AgentsBlock(options.Project), true},
+		{"an import and a stale block", "# Example app\n\n@AGENTS.md\n\n" + stale, false},
+		{"an import and unpaired markers", "# Example app\n\n@AGENTS.md\n\n<!-- rndevtools:start -->\nold\n", false},
+		{"a current block", "# Example app\n\n" + AgentsBlock(options.Project), true},
+		{"a stale block", "# Example app\n\n" + stale, false},
+	} {
+		healthPut(t, claude, row.content)
+		if got := routed(); got != row.routed {
+			t.Errorf("%s: Claude routed %v, want %v", row.name, got, row.routed)
+		}
+	}
+	// Setup brings a stale block beside the import up to date, and the check
+	// then agrees with it.
+	healthPut(t, claude, "# Example app\n\n@AGENTS.md\n\n"+stale)
+	apply()
+	if !routed() {
+		t.Fatalf("setup updated the block, yet Claude reads as not routed:\n%s", mustRead(t, claude))
+	}
+}
+
 func TestAgentHealthScopesUseTheClientsDisplayNames(t *testing.T) {
 	// A finding without an explicit scope applies to the user configuration
 	// of its client, named as the desktop names it.

@@ -729,7 +729,11 @@ func (s *healthScanner) peek(file string) ([]byte, bool) {
 
 // projectRouting reports whether the selected project carries this client's
 // routing as setup --project writes it, current: Codex reads the project's
-// AGENTS.md, and Claude Code its CLAUDE.md, which may import AGENTS.md.
+// AGENTS.md, and Claude Code its CLAUDE.md, which may import AGENTS.md. A
+// CLAUDE.md with marker lines routes Claude only when its own block is
+// current, as setup reads it (installClaudeImport): Claude Code reads that
+// block beside the one it imports, so a stale block, or markers that do not
+// pair up, are not made good by an import of AGENTS.md.
 func (s *healthScanner) projectRouting(client string) bool {
 	if s.options.Project == "" {
 		return false
@@ -742,10 +746,10 @@ func (s *healthScanner) projectRouting(client string) bool {
 	if client == "codex" {
 		return current("AGENTS.md")
 	}
-	if current("CLAUDE.md") {
-		return true
-	}
 	claude, _ := s.peek(filepath.Join(s.options.Project, "CLAUDE.md"))
+	if _, _, found, paired := agentsBlockSpan(string(claude)); found || !paired {
+		return current("CLAUDE.md")
+	}
 	return importsAgentsFile(claude) && current("AGENTS.md")
 }
 
