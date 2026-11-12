@@ -49,15 +49,19 @@ dotfiles directory requires a new preview. JSON numbers retain their precision,
 and selective TOML undo recovers value types from the original source snapshot.
 Private previews and original bytes are stored under
 `~/Library/Application Support/RN Devtools/agent-check`, with directory mode
-0700 and file mode 0600. Reports never include environment values or credentials.
-They are kept only while undo can use them, and only a preview, a repair or an
-undo deletes the rest: the check itself, here, in `rndevtools doctor` and
-around `rndevtools setup` (`--dry-run` included), only reads. A preview that
-is not applied within its five minutes, because it was cancelled or never
-confirmed, is deleted with its copy of the file by the next preview, repair or
-undo. Undoing a repair deletes its record. Each scope keeps its 32 most recent
-repairs for undo, listed newest first; the records past that go as well, along
-with any record an earlier build kept for a repair it had undone.
+0700 and file mode 0600. Reports never include environment values or
+credentials, but each stored record holds full copies of the client file it
+covers, from before and after its repair, with any environment values or
+credentials that file holds. Records are deleted only by a preview, a repair
+or an undo: the check itself, here, in `rndevtools doctor` and around
+`rndevtools setup` (`--dry-run` included), only reads. A preview that is not
+applied within its five minutes, because it was cancelled or never confirmed,
+therefore stays in that directory with its copies of the file until the next
+preview, repair or undo, however late that comes. Undoing a repair deletes its
+record. Each scope keeps its 32 most recent repairs for undo, listed newest
+first; the next preview, repair or undo in that scope deletes the records past
+that, and any of them deletes a record an earlier build kept for a repair it
+had undone.
 
 Reload the affected client after a change. In Codex, review new hooks with
 `/hooks`. **Test RN Devtools connection** performs MCP initialize, tools/list,
