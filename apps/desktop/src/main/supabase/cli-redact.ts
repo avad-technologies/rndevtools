@@ -101,6 +101,8 @@ const SEPARATOR = '\t';
 const MARKER_WINDOW = 32;
 const MARKER_AT_START = /^\[REDACTED(?: [A-Z]+)*\]/;
 const MARKER_AT_END = /\[REDACTED(?: [A-Z]+)*\]$/;
+/** What the core rules leave in an email address's place. */
+const EMAIL_MARKER = '[REDACTED EMAIL]';
 
 /**
  * `value` without terminal escape sequences and invisible characters,
@@ -115,8 +117,11 @@ const MARKER_AT_END = /\[REDACTED(?: [A-Z]+)*\]$/;
  * then removed, and what is left is redacted again for a token that one
  * split. The raw text is never redacted: a rule can stop inside a
  * sequence, at the `;` of `\x1b[1;32m`, and leave the rest of it on the
- * token. A marker that a separator parts from the marker before it joins
- * that one, so a value and a token glued to it stay one marker.
+ * token. Once the separators go, what one parts from a marker is shown as
+ * redacting the joined text would show it: the token characters and the
+ * markers after the marker go with it, as the rest of a token the
+ * separator split, and so do the address characters before an email
+ * marker, whose rule can start inside a word.
  */
 export function redactTerminalText(
 	value: string,
@@ -159,8 +164,8 @@ function separatedText(value: string, keepNewlines: boolean): string {
 }
 
 /**
- * The redacted `view` as it is shown: without its separators, and without
- * a marker that a separator parts from the marker before it.
+ * The redacted `view` as it is shown: without its separators, nor what a
+ * separator parts from a marker as the rest of what the marker hides.
  */
 function shownText(view: string): string {
 	const parts: string[] = [];
@@ -169,7 +174,20 @@ function shownText(view: string): string {
 	for (;;) {
 		const separator = view.indexOf(SEPARATOR, start);
 		const end = separator === -1 ? view.length : separator;
-		const from = afterMarker ? pastMarkers(view, start, end) : start;
+		let from = start;
+		if (afterMarker) {
+			from = pastTokenAndMarkers(view, start, end);
+		} else if (start > 0) {
+			// An address's rule starts after any character that cannot be in
+			// one, a separator too, and keeps the punctuation that leads it.
+			let lead = start;
+			while (lead < end && isAddressPunctuation(view.charCodeAt(lead))) {
+				lead += 1;
+			}
+			if (view.startsWith(EMAIL_MARKER, lead) && trimAddressEnd(parts)) {
+				from = lead;
+			}
+		}
 		const part = view.slice(from, end);
 		if (part) {
 			parts.push(part);
@@ -180,16 +198,67 @@ function shownText(view: string): string {
 	}
 }
 
-/** Where the markers that start `view` at `index`, before `end`, end. */
-function pastMarkers(view: string, index: number, end: number): number {
+/**
+ * Where the token characters and markers that start `view` at `index`,
+ * before `end`, end, short of the full stops that end them: a sentence's
+ * more often than a token's.
+ */
+function pastTokenAndMarkers(view: string, index: number, end: number): number {
 	let at = index;
 	for (;;) {
+		while (at < end && isTokenCharacter(view.charCodeAt(at))) at += 1;
 		const marker = MARKER_AT_START.exec(
 			view.slice(at, Math.min(end, at + MARKER_WINDOW))
 		);
-		if (!marker) return at;
+		if (!marker) break;
 		at += marker[0].length;
 	}
+	while (at > index && view.charCodeAt(at - 1) === 0x2e) at -= 1;
+	return at;
+}
+
+/**
+ * Takes the address characters that end `parts` off it, across parts, and
+ * says whether there were any.
+ */
+function trimAddressEnd(parts: string[]): boolean {
+	let trimmed = false;
+	for (;;) {
+		const last = parts[parts.length - 1];
+		if (last === undefined) break;
+		let end = last.length;
+		while (end > 0 && isAddressCharacter(last.charCodeAt(end - 1))) end -= 1;
+		if (end === last.length) break;
+		trimmed = true;
+		if (end > 0) {
+			parts[parts.length - 1] = last.slice(0, end);
+			break;
+		}
+		parts.pop();
+	}
+	return trimmed;
+}
+
+/** Bearer's token characters, which hold a JWT's and a secret key's. */
+function isTokenCharacter(code: number): boolean {
+	return (
+		isWordCharacter(code) ||
+		code === 0x2b ||
+		code === 0x2d ||
+		code === 0x2e ||
+		code === 0x2f ||
+		code === 0x3d ||
+		code === 0x7e
+	);
+}
+
+/** The characters of an email address before its `@`. */
+function isAddressCharacter(code: number): boolean {
+	return isWordCharacter(code) || isAddressPunctuation(code);
+}
+
+function isAddressPunctuation(code: number): boolean {
+	return code === 0x25 || code === 0x2b || code === 0x2d || code === 0x2e;
 }
 
 /**

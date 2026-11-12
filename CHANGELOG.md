@@ -247,12 +247,13 @@
   again once it is gone, so colored output no longer shields a token, not
   even one that a sequence glues to the word before it, and neither does a
   carriage return, a backspace or a zero-width character between a word,
-  or `Bearer`, and a token. The failure handoff's confirmation defaults to
-  Cancel and lists the evidence it sends and to which vendor, and Codex fix
-  mode asks before each edit (`--ask-for-approval untrusted`). Failure
-  history no longer reports a Metro RN Devtools stopped on purpose as no
-  longer running, records one whose PID came to name another process, and
-  scans crash reports after startup, reusing the ones it already parsed.
+  or `Bearer`, and a token. A token that one of them splits is hidden
+  whole. The failure handoff's confirmation defaults to Cancel and lists
+  the evidence it sends and to which vendor, and Codex fix mode asks before
+  each edit (`--ask-for-approval untrusted`). Failure history no longer
+  reports a Metro RN Devtools stopped on purpose as no longer running,
+  records one whose PID came to name another process, and scans crash
+  reports after startup, reusing the ones it already parsed.
 
 ### `rndevtools` CLI
 

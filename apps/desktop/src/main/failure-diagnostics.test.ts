@@ -150,6 +150,29 @@ describe('bounded simulator diagnostics', () => {
 			expect(failureText(raw)).toBe(redacted);
 		}
 	});
+	it('hides all of a token that a removed sequence or character splits', () => {
+		// The rules read a token split this way as two words, and know only one
+		// of them. Removing the character joins them again, so the shown text
+		// hides what was parted from the marker, as redacting the joined text
+		// would.
+		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
+		for (const [raw, redacted] of [
+			['Bearer example-\u001b[1mbearer-value', 'Bearer [REDACTED]'],
+			['key sb_secret_example\u200b-key-value', 'key [REDACTED SECRET KEY]'],
+			[
+				`token ${jwt.slice(0, -4)}\u001b[0m${jwt.slice(-4)}`,
+				'token [REDACTED JWT]',
+			],
+			['mail us\u200ber@example.com', 'mail [REDACTED EMAIL]'],
+			['mail us\u001b[0m.er@example.com', 'mail [REDACTED EMAIL]'],
+			// A word that ends where the token starts stays, and so does a full
+			// stop after the token.
+			[`fetching\u001b[32m${jwt}\u001b[0m.`, 'fetching[REDACTED JWT].'],
+			['mail \u001b[1muser@example.com\u001b[0m.', 'mail [REDACTED EMAIL].'],
+		] as const) {
+			expect(failureText(raw)).toBe(redacted);
+		}
+	});
 	it('distinguishes SpringBoard crashes from CoreSimulator resource diagnostics', () => {
 		expect(
 			parseDiagnosticReport(

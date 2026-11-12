@@ -391,6 +391,56 @@ describe('runNativePlan', () => {
 	);
 
 	it.each([
+		[
+			'a Bearer token',
+			'Bearer example-\\033[1mbearer-value',
+			'Bearer [REDACTED]',
+			/bearer-value/,
+		],
+		[
+			'a secret key',
+			'key sb_secret_example\\342\\200\\213-key-value',
+			'key [REDACTED SECRET KEY]',
+			/key-value/,
+		],
+		[
+			"a JWT's signature",
+			'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.ZXhhbXBsZS1zaWdu\\033[0mYXR1cmU',
+			'token [REDACTED JWT]',
+			/YXR1cmU/,
+		],
+		[
+			'an address',
+			'mail us\\342\\200\\213er@example.com',
+			'mail [REDACTED EMAIL]',
+			/us\[|er@/,
+		],
+	])(
+		'hides all of %s that a removed sequence or character splits',
+		async (_, shape, redacted, leak) => {
+			// The rules read a token split this way as two words, and know only
+			// one of them. Removing the character joins them again, so the shown
+			// text hides what was parted from the marker, as redacting the
+			// joined text would.
+			for (const [redirect, message] of [
+				['>&2\nexit 2', /failed: Error: /],
+				['', /exited without reporting a plan; it printed: Error: /],
+			] as const) {
+				const failure: unknown = await fakeNode(
+					`printf 'Error: ${shape}\\n' ${redirect}`
+				)
+					.plan()
+					.catch((error: unknown) => error);
+				expect(failure).toBeInstanceOf(Error);
+				const text = (failure as Error).message;
+				expect(text).toMatch(message);
+				expect(text).toContain(`Error: ${redacted}`);
+				expect(text).not.toMatch(leak);
+			}
+		}
+	);
+
+	it.each([
 		['nothing after it', ''],
 		['one newline after it', '\n'],
 	])(
