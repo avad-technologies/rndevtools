@@ -5229,6 +5229,59 @@ describe('LaneService', () => {
 			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
 		});
 
+		it("fulfils a schemeless lane's held-back launch, and takes its restart, with the dev client's full URL", async () => {
+			worktrees.identity = { bundleIdentifier: 'com.example.app' };
+			const started = await up({ backend: 'off', launch: false });
+			const laneId = started.lane?.id as string;
+			expect(started.lane?.port).toBe(8_100);
+			// A lane with no URL scheme opens its dev client only by its full URL.
+			const devClient =
+				'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1';
+			const first = await lanes.runOperation({
+				actionId: 'op-held-url-first',
+				kind: 'lane.launch',
+				laneId,
+				url: devClient,
+			});
+			expect(first.completed).toBe(true);
+			const mark = kinds().length;
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const resumed = await up({ backend: 'auto', restart: true });
+			expect(resumed.completed).toBe(true);
+			expect(resumed.backend).toMatchObject({ launch: 'deferred' });
+			expect(kinds()).toHaveLength(mark);
+
+			// That launch is the held-back one: it takes the restart held back
+			// with it, though it is not the lane's first, and nothing is left
+			// held back.
+			const opened = await lanes.runOperation({
+				actionId: 'op-held-url',
+				kind: 'lane.launch',
+				laneId,
+				url: devClient,
+			});
+			expect(opened.completed).toBe(true);
+			expect(kinds().slice(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(opened.lane?.backend).not.toHaveProperty('launch');
+
+			// Once the backend is ready, Metro restarts with it and nothing
+			// opens the dev client again, which no URL the lane keeps could do.
+			late.resolve(ready());
+			await eventually(() =>
+				expect(lanes.getState().lanes[0]?.backend).toEqual({
+					...readySummary(),
+					metro: 'restarted',
+				})
+			);
+			expect(metro.started).toHaveLength(2);
+			expect(kinds()).toHaveLength(mark + 3);
+		});
+
 		it.each([false, true])(
 			"keeps a new lane's held-back first launch through a deep link, so its dev client still opens on the lane's Metro once the backend attaches (deep link restart %s)",
 			async (restart) => {
@@ -6225,6 +6278,54 @@ describe('LaneService', () => {
 				const again = await launch('op-dev-client-again', DEV_CLIENT_URL);
 				expect(again.kinds).toEqual(['app.list', 'url.open']);
 			});
+
+			it.each([
+				{ opens: 'its dev client', url: DEV_CLIENT_URL, attempts: 2 },
+				{
+					// The dev client pointed at another Metro is a deep link.
+					opens: 'the dev client on another Metro',
+					url: 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8101',
+					attempts: 1,
+				},
+			])(
+				'retries a launch by full URL once after exit 60 only when it opens its dev client: $opens',
+				async ({ url, attempts }) => {
+					const launch = await startSchemeless({
+						bundleIdentifier: 'com.example.app',
+					});
+					const run = simulator.runAction;
+					let opens = 0;
+					simulator.runAction = (action) => {
+						// CoreSimulator can time out at once after a native install.
+						if (action.kind === 'url.open' && opens++ === 0) {
+							simulator.failNext = 'xcrun failed with exit code 60.';
+						}
+						return run(action);
+					};
+					const opened = await launch('op-dev-client-exit-60', url);
+					expect(opens).toBe(attempts);
+					if (attempts === 2) {
+						expect(opened.receipt.completed).toBe(true);
+						expect(opened.kinds).toEqual([
+							'app.list',
+							'app.terminate',
+							'url.open',
+							'url.open',
+						]);
+					} else {
+						expect(opened.receipt.completed).toBe(false);
+						expect(opened.receipt.error).toBe(
+							'xcrun failed with exit code 60.'
+						);
+						expect(opened.kinds).toEqual(['app.list', 'url.open']);
+					}
+					expect(
+						simulator.actions
+							.filter((action) => action.kind === 'url.open')
+							.map((action) => action.url)
+					).toEqual(Array.from({ length: attempts }, () => url));
+				}
+			);
 
 			it('says on the receipt and in the lane log when no bundle identifier names the app to restart', async () => {
 				const launch = await startSchemeless({});
