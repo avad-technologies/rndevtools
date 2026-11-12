@@ -12,6 +12,7 @@ import {
 	laneSchema,
 	laneSlimSummary,
 	laneStateSchema,
+	opensLaneDevClient,
 } from './lane-protocol';
 
 const UDID = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
@@ -273,6 +274,40 @@ describe('laneDevClientLaunchUrl', () => {
 		expect(url).toBe(
 			'exampleapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8123&disableOnboarding=1&disableAutoLaunch=1'
 		);
+	});
+});
+
+describe('opensLaneDevClient', () => {
+	it("reads a dev-client URL in any scheme that points at the lane's Metro", () => {
+		expect(
+			opensLaneDevClient(laneDevClientLaunchUrl('exp+example', 8_100), 8_100)
+		).toBe(true);
+		expect(
+			opensLaneDevClient(
+				'exp+example://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8100',
+				8_100
+			)
+		).toBe(true);
+		expect(
+			opensLaneDevClient(
+				'EXP+Example://Expo-Development-Client/?url=http://127.0.0.1:8100',
+				8_100
+			)
+		).toBe(true);
+	});
+
+	it("reads anything else as a deep link, another Metro's dev-client URL included", () => {
+		for (const url of [
+			laneDevClientLaunchUrl('exp+example', 8_101),
+			'exp+example://expo-development-client/?url=http%3A%2F%2F192.168.1.5%3A8100',
+			'exp+example://expo-development-client/',
+			'exp+example://expo-development-client/?url=not%20a%20url',
+			'exampleapp://checkout?url=http%3A%2F%2F127.0.0.1%3A8100',
+			'https://example.com/expo-development-client/?url=http://127.0.0.1:8100',
+			'not a url',
+		]) {
+			expect(opensLaneDevClient(url, 8_100)).toBe(false);
+		}
 	});
 });
 

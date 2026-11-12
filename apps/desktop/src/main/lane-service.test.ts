@@ -5948,6 +5948,91 @@ describe('LaneService', () => {
 			expect(opened.completed).toBe(true);
 		});
 
+		describe('a lane with no URL scheme', () => {
+			const DEV_CLIENT_URL =
+				'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1';
+
+			async function startSchemeless(identity: { bundleIdentifier?: string }) {
+				worktrees.identity = identity;
+				metro.healthyPorts.add(8_100);
+				const started = await service.runOperation({
+					actionId: 'op-schemeless-start',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: false,
+				});
+				const laneId = started.lane?.id as string;
+				return (actionId: string, url: string) => {
+					const before = simulator.actions.length;
+					return service
+						.runOperation({ actionId, kind: 'lane.launch', laneId, url })
+						.then((receipt) => ({
+							receipt,
+							kinds: simulator.actions.slice(before).map(({ kind }) => kind),
+						}));
+				};
+			}
+
+			it('takes its fresh start on the launch that opens its dev client by its full URL', async () => {
+				const launch = await startSchemeless({
+					bundleIdentifier: 'com.example.app',
+				});
+				// A deep link, or the dev client pointed at another Metro, opens the
+				// app as it is and is not the lane's launch.
+				for (const url of [
+					'otherapp://home',
+					'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8101',
+				]) {
+					const linked = await launch(`op-link-${url.length}`, url);
+					expect(linked.receipt.completed).toBe(true);
+					expect(linked.kinds).toEqual(['app.list', 'url.open']);
+					expect(linked.receipt.lane).not.toHaveProperty('lastLaunchedAt');
+				}
+				now += 1_000;
+				const opened = await launch('op-dev-client', DEV_CLIENT_URL);
+				expect(opened.receipt.completed).toBe(true);
+				expect(opened.kinds).toEqual(['app.list', 'app.terminate', 'url.open']);
+				expect(opened.receipt).not.toHaveProperty('warnings');
+				expect(opened.receipt.lane).toMatchObject({ lastLaunchedAt: now });
+				// Later ones restart the app only when asked to.
+				const again = await launch('op-dev-client-again', DEV_CLIENT_URL);
+				expect(again.kinds).toEqual(['app.list', 'url.open']);
+			});
+
+			it('says on the receipt and in the lane log when no bundle identifier names the app to restart', async () => {
+				const launch = await startSchemeless({});
+				const opened = await launch('op-dev-client-unnamed', DEV_CLIENT_URL);
+				expect(opened.receipt.completed).toBe(true);
+				expect(opened.kinds).toEqual(['url.open']);
+				expect(opened.receipt.warnings).toEqual([
+					expect.stringMatching(
+						/^The lane's first launch did not restart the app: the worktree's app\.json declared no ios\.bundleIdentifier/
+					),
+				]);
+				expect(metro.notes.map(({ note }) => note)).toEqual(
+					opened.receipt.warnings
+				);
+				expect(opened.receipt.lane?.lastLaunchedAt).toBeDefined();
+			});
+
+			it('restarts its Metro without reopening a dev client it opened by URL', async () => {
+				const launch = await startSchemeless({
+					bundleIdentifier: 'com.example.app',
+				});
+				await launch('op-dev-client', DEV_CLIENT_URL);
+				const laneId = service.getState().lanes[0]?.id as string;
+				const before = simulator.actions.length;
+				// Its URL is never kept, so a Metro restart has none to open it with.
+				await expect(
+					service.restartMetro(laneId, 'operator')
+				).resolves.toBeUndefined();
+				expect(simulator.actions.slice(before)).toEqual([]);
+				expect(service.getState().lanes[0]?.metroPid).not.toBe(1_001);
+			});
+		});
+
 		it('refuses to launch when the worktree bundle is not installed and says what to build', async () => {
 			healthyMetro();
 			simulator.installedApps = ['com.apple.mobilesafari'];

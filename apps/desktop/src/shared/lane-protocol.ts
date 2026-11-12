@@ -473,6 +473,36 @@ export function laneDevClientLaunchUrl(
 	return `${scheme}://expo-development-client/?${params.toString()}`;
 }
 
+/** The hosts a dev client reaches a lane's loopback-only Metro at. */
+const LANE_METRO_HOSTS: ReadonlySet<string> = new Set([
+	'127.0.0.1',
+	'localhost',
+]);
+
+/**
+ * Whether `url` opens a dev client against the lane Metro on `port`: an
+ * `expo-development-client` URL, in any scheme, whose `url` parameter is that
+ * Metro, as laneDevClientLaunchUrl builds one. A lane that started without a
+ * URL scheme opens its dev client only through such a URL, given in full.
+ * Anything else, another Metro's dev-client URL included, is a deep link.
+ */
+export function opensLaneDevClient(url: string, port: number): boolean {
+	try {
+		const parsed = new URL(url);
+		if (parsed.hostname.toLowerCase() !== 'expo-development-client') {
+			return false;
+		}
+		const metro = new URL(parsed.searchParams.get('url') ?? '');
+		return (
+			metro.protocol === 'http:' &&
+			LANE_METRO_HOSTS.has(metro.hostname) &&
+			metro.port === String(port)
+		);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Resolves what an agent or operator typed into a URL the Simulator can open.
  * Anything with a scheme passes through untouched; a bare path is prefixed with

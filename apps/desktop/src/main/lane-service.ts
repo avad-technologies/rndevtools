@@ -33,6 +33,7 @@ import {
 	MAX_DEVICE_REQUESTS,
 	MAX_RECEIPT_WARNING_LENGTH,
 	MAX_RECEIPT_WARNINGS,
+	opensLaneDevClient,
 } from '../shared/lane-protocol';
 import type {
 	SimulatorAction,
@@ -292,6 +293,16 @@ export type LaneStartOutcome =
  */
 const FIRST_LAUNCH_UNNAMED =
 	"The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from.";
+
+/**
+ * Whether a Metro restart opens the lane's dev client again: it was open
+ * against the lane's Metro, and the lane has a scheme to open it with. A
+ * lane without one was opened through its dev client's full URL, which is
+ * never kept.
+ */
+function reopensDevClient(lane: Lane): boolean {
+	return lane.lastLaunchedAt !== undefined && lane.scheme !== undefined;
+}
 
 /** Adds `warning` to what a receipt says, within the receipt's bounds. */
 function warn(warnings: string[] | undefined, warning: string): void {
@@ -2145,11 +2156,14 @@ export class LaneService {
 
 	/**
 	 * Opens the lane's dev client, or `url`, once the lane's own Metro
-	 * answers. The app is terminated first when `restart` asks, and, for a
-	 * dev-client launch, when the held-back launch this one fulfils asked or
-	 * when this is the lane's first dev-client launch: a deep link opens the
-	 * app as it is, pointed wherever it was, so it neither counts as the
-	 * lane's launch nor uses up that fresh start. React Native keeps one
+	 * answers. A `url` that opens the dev client against this lane's Metro
+	 * (opensLaneDevClient), the only launch that opens a lane without a URL
+	 * scheme, is a dev-client launch too. The app is terminated first when
+	 * `restart` asks, and, for a dev-client launch, when the held-back launch
+	 * this one fulfils asked or when this is the lane's first dev-client
+	 * launch: a deep link opens the app as it is, pointed wherever it was,
+	 * so it neither counts as the lane's launch nor uses up that fresh
+	 * start. React Native keeps one
 	 * debugger (inspector) connection per bundler host and port for as long
 	 * as the app's process lives, and retries it whatever Metro answers there
 	 * later, so a dev client another lane or a person started, only pointed
@@ -2228,6 +2242,11 @@ export class LaneService {
 				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`; the up operation takes no URL.`
 			);
 		}
+		// A URL that opens the dev client against this lane's Metro, as a lane
+		// without a scheme must be opened, is a dev-client launch as much as
+		// one with no URL. Any other URL is a deep link.
+		const devClient =
+			url === undefined || opensLaneDevClient(target, lane.port);
 		// Opening a scheme the Simulator has no app for fails with an opaque
 		// FBSOpenApplicationServiceErrorDomain error; check first and say what to
 		// build. The check only runs when the worktree told us its bundle id.
@@ -2238,16 +2257,15 @@ export class LaneService {
 		this.#assertRequiredBackendReady(lane);
 		const asked =
 			restart ||
-			(url === undefined &&
-				this.#backendRecords.get(laneId)?.deferredRestart === true);
+			(devClient && this.#backendRecords.get(laneId)?.deferredRestart === true);
 		// The lane's first dev-client launch, read as the lane is now: one that
 		// finished during the waits above makes this one no longer the first.
 		// A deep link never counts, since it never points the app at this
 		// lane's Metro, so one that came first leaves the fresh start to this.
-		if (asked || (url === undefined && checked.lastLaunchedAt === undefined)) {
+		if (asked || (devClient && checked.lastLaunchedAt === undefined)) {
 			await this.#terminateApp(lane, signal, {
 				asked,
-				opening: url === undefined ? 'its dev client' : 'the URL',
+				opening: devClient ? 'its dev client' : 'the URL',
 				warnings,
 			});
 		}
@@ -2276,11 +2294,11 @@ export class LaneService {
 				break;
 			} catch (error) {
 				// CoreSimulator can time out immediately after a native install.
-				// Reopening our generated dev-client URL is safe; an arbitrary
-				// app deep link could repeat a user action, so never retry it.
+				// Reopening a dev-client URL is safe; an arbitrary app deep link
+				// could repeat a user action, so never retry it.
 				if (
 					attempt !== 0 ||
-					url !== undefined ||
+					!devClient ||
 					!(error instanceof Error) ||
 					error.message !== 'xcrun failed with exit code 60.'
 				) {
@@ -2333,8 +2351,8 @@ export class LaneService {
 				? { metro: 'ready' as const }
 				: {}),
 			// When the dev client last opened against this lane's Metro, which a
-			// Metro restart then opens it against again.
-			...(url === undefined ? { lastLaunchedAt: this.#now() } : {}),
+			// Metro restart then opens it against again (reopensDevClient).
+			...(devClient ? { lastLaunchedAt: this.#now() } : {}),
 			...(holder ? { agent: holder } : {}),
 		};
 		// A launch held back for the backend opens the dev client, so only a
@@ -2343,7 +2361,7 @@ export class LaneService {
 		// the app as it is, pointed wherever it was: the held-back launch stays,
 		// its restart with it, for the dev client to open on this lane's Metro.
 		const record = this.#backendRecords.get(laneId);
-		if (record && url === undefined) {
+		if (record && devClient) {
 			record.deferredLaunch = false;
 			record.deferredRestart = false;
 		}
@@ -2599,7 +2617,7 @@ export class LaneService {
 		const policy = previous?.policy ?? lane.backendPolicy ?? 'auto';
 		if (policy === 'off') {
 			const restarted = await this.#respawnMetro(lane, environment, undefined);
-			if (restarted.lastLaunchedAt !== undefined) {
+			if (reopensDevClient(restarted)) {
 				await this.launchLane(laneId, undefined, undefined, signal);
 			}
 			return;
@@ -2642,7 +2660,7 @@ export class LaneService {
 		record.env = decision.env;
 		record.metro = 'restarted';
 		this.#touch();
-		if (restarted.lastLaunchedAt !== undefined && !record.deferredLaunch) {
+		if (reopensDevClient(restarted) && !record.deferredLaunch) {
 			await this.#launchInBackground(laneId, record, signal);
 		}
 	}
@@ -3620,7 +3638,7 @@ export class LaneService {
 			if (
 				record.metro !== 'needs-restart' &&
 				(record.deferredLaunch ||
-					(record.metro === 'restarted' && lane.lastLaunchedAt !== undefined))
+					(record.metro === 'restarted' && reopensDevClient(lane)))
 			) {
 				await this.#launchInBackground(laneId, record, signal);
 			}
