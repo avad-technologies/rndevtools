@@ -741,8 +741,9 @@ func installAgentsBlock(project string, write bool) (Change, error) {
 // project has is its own: it is left as it is when it is AGENTS.md through a
 // link; a block it carries between the rndevtools markers is kept current as
 // AGENTS.md's is, also beside an import of AGENTS.md, since Claude Code reads
-// both; without a block it is left as it is when it imports AGENTS.md;
-// otherwise the change says what to add rather than editing it.
+// both, unless a link takes the file outside the project (projectEscape);
+// without a block it is left as it is when it imports AGENTS.md; otherwise
+// the change says what to add rather than editing it.
 func installClaudeImport(project string, write bool) (Change, error) {
 	path := filepath.Join(project, "CLAUDE.md")
 	change := Change{Path: path}
@@ -769,6 +770,11 @@ func installClaudeImport(project string, write bool) (Change, error) {
 		// Marker lines: a block to keep current, or markers installBlock
 		// reports as not pairing up. An import of AGENTS.md beside them does
 		// not make them current: Claude Code reads this block too.
+		if target, escapes := projectEscape(project, path); escapes {
+			change.Action = "skip"
+			change.Detail = "CLAUDE.md resolves to " + target + ", outside the project, so its block would reach every project that reads that file; keep the block current there, or make CLAUDE.md a file of the project's own with a line `@AGENTS.md`, then rerun setup"
+			return change, nil
+		}
 		return installBlock(path, AgentsBlock(project), write)
 	}
 	if importsAgentsFile(raw) {
@@ -779,6 +785,27 @@ func installClaudeImport(project string, write bool) (Change, error) {
 	change.Action = "skip"
 	change.Detail = "Claude Code reads CLAUDE.md, which neither imports AGENTS.md nor carries the RN Devtools block; add a line `@AGENTS.md` to it, then rerun setup"
 	return change, nil
+}
+
+// projectEscape names the file an edit of path, a file of project, would
+// write when that file is outside the project, through a link the
+// repository committed (a CLAUDE.md that points at the user's own): the
+// edit would change every project that reads it, so setup leaves the file
+// alone, as agent-check does for its project repairs (healthEscapesProject).
+// The project is compared as resolved, since the target is. A path setup
+// cannot write through at all is commit's to report.
+func projectEscape(project string, path string) (target string, escapes bool) {
+	target, reason := writeTarget(path)
+	if reason != "" {
+		return "", false
+	}
+	if real, err := filepath.EvalSymlinks(project); err == nil {
+		project = real
+	}
+	if healthInside(project, target) {
+		return "", false
+	}
+	return target, true
 }
 
 // installBlock puts block, the text setup owns between the rndevtools

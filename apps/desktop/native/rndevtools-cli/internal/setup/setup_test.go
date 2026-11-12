@@ -400,6 +400,68 @@ func TestProjectModeRoutesClaudeCodeToTheAgentsBlock(t *testing.T) {
 	}
 }
 
+func TestProjectModeLeavesAClaudeMDThatLinksOutsideTheProject(t *testing.T) {
+	// A project's CLAUDE.md may be a link the repository committed. One that
+	// resolves outside the project, such as to the user's own
+	// ~/.claude/CLAUDE.md, would carry this project's block into every
+	// project that reads that file, so setup leaves it and names the file,
+	// as agent-check refuses its project repairs there. A link inside the
+	// project is written through, as before.
+	home := t.TempDir()
+	run := func(project string, write bool) Change {
+		t.Helper()
+		options := Options{Home: home, Executable: "/x/rndevtools", Project: project, Agents: []Agent{AgentClaude}, SkipLink: true, SkipHook: true}
+		report, err := Plan(options)
+		if write {
+			report, err = Apply(options)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range report.Changes {
+			if change.Path == filepath.Join(project, "CLAUDE.md") {
+				return change
+			}
+		}
+		return Change{}
+	}
+	stale := "<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n"
+	user := filepath.Join(home, ".claude", "CLAUDE.md")
+	write(t, user, "# Mine\n\n"+stale)
+	project := filepath.Join(home, "code", "example-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(user, filepath.Join(project, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	for _, write := range []bool{false, true} {
+		change := run(project, write)
+		if change.Action != "skip" || !strings.Contains(change.Detail, "outside the project") || !strings.Contains(change.Detail, "CLAUDE.md") {
+			t.Errorf("write %v: a CLAUDE.md that resolves outside the project must be left: %+v", write, change)
+		}
+		if got := string(mustRead(t, user)); got != "# Mine\n\n"+stale {
+			t.Fatalf("write %v: the file outside the project was rewritten:\n%s", write, got)
+		}
+	}
+	if !exists(filepath.Join(project, "AGENTS.md")) {
+		t.Fatal("the project's own AGENTS.md block is still written")
+	}
+	// A link inside the project, even under a temporary directory that is
+	// itself reached through a link, is the project's own file.
+	inside := filepath.Join(home, "code", "linked-app")
+	write(t, filepath.Join(inside, "docs", "CLAUDE.md"), "# Example app\n\n"+stale)
+	if err := os.Symlink(filepath.Join("docs", "CLAUDE.md"), filepath.Join(inside, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	if change := run(inside, true); change.Action != "update" {
+		t.Fatalf("a CLAUDE.md linked inside the project is kept current: %+v", change)
+	}
+	if got := string(mustRead(t, filepath.Join(inside, "docs", "CLAUDE.md"))); got != "# Example app\n\n"+AgentsBlock(inside) {
+		t.Fatalf("the block must be written through the link:\n%s", got)
+	}
+}
+
 func TestEveryEmbeddedSkillIsInstalled(t *testing.T) {
 	names := skillNames()
 	if len(names) != 2 || names[0] != "rndevtools-lanes" || names[1] != "rndevtools-supabase" {
