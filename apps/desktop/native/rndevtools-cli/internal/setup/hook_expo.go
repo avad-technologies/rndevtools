@@ -147,9 +147,10 @@ func runIOSStartsMetro(arguments []string) bool {
 
 // runIOSDecision steers an `expo run:ios` that would start Metro to the
 // native plan, which says whether a build is needed at all and gives the
-// build command for the lane, and to a restart on the lane afterward: the
-// build names no port, since Expo CLI refuses --port with --no-bundler, and
-// opens the app against 8081 as soon as it installs it.
+// build command for the lane, and to a restart on the lane afterward, or the
+// plan's launch without one for a lane that cannot restart the app: the build
+// names no port, since Expo CLI refuses --port with --no-bundler, and opens
+// the app against 8081 as soon as it installs it.
 func runIOSDecision() HookDecision {
 	return HookDecision{
 		Block: true,
@@ -161,6 +162,7 @@ func runIOSDecision() HookDecision {
 			"and run `rndevtools native --operation plan --worktree " + appDirectory + " --udid <UDID>` again: once the lane's Metro is ready it gives the build, `npx expo run:ios --device <UDID> --no-bundler` " +
 			"(add no `--port`: Expo CLI refuses it with `--no-bundler`; and leave out `--configuration Debug`: Debug is the default). " +
 			"The build opens the app against port 8081, so after it run `rndevtools lane --operation launch --worktree " + appDirectory + " --restart`, " +
-			"which starts the app fresh with the lane's Metro alone.",
+			"which starts the app fresh with the lane's Metro alone. A lane started without an `ios.bundleIdentifier` in `app.json` refuses a restart: " +
+			"for it the plan leaves out `--restart`, so run its launch as the plan quotes it.",
 	}
 }
