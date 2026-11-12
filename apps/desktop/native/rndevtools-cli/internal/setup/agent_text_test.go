@@ -233,13 +233,17 @@ func TestTheLanesSkillGivesTheBuildAsNativePlanDoes(t *testing.T) {
 		"`rndevtools lane --operation launch --lane-id <laneId> --restart`",
 		"only once the lane's Metro is ready",
 		"the plan quotes the launch without `--restart`",
+		// How to quit the app of a lane that cannot restart it, as the plan
+		// says: no agent can quit an app "by hand".
+		"`rndevtools simulator --operation shutdown --udid <UDID>`, then `rndevtools simulator --operation boot --udid <UDID>`, which keep the lane, its Metro and the Simulator's data",
+		"or ask the user to quit the app",
 		"`--url` with the dev client's full launch URL",
 	} {
 		if !strings.Contains(flat, phrase) {
 			t.Errorf("the lanes skill lacks %q", phrase)
 		}
 	}
-	for _, stale := range []string{"lane port", "--port <", "keep its --port", "keep the exact"} {
+	for _, stale := range []string{"lane port", "--port <", "keep its --port", "keep the exact", "by hand first"} {
 		if strings.Contains(flat, stale) {
 			t.Errorf("the lanes skill still says %q", stale)
 		}
