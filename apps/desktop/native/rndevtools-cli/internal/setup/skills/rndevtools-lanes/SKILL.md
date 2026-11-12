@@ -21,8 +21,9 @@ description: >
 > `capture`, `input`, …) are the same commands as the CLI below with the same
 > arguments; prefer them, and read this skill for the workflow. The CLI remains
 > the fallback when no MCP server is registered. On the command line an
-> operation is always the `--operation` flag (`rndevtools lane --operation up`);
-> the CLI rejects an operation written as a positional word. A command given
+> operation is always the `--operation` flag
+> (`rndevtools lane --operation up --worktree "$PWD"`); the CLI rejects an
+> operation written as a positional word. A command given
 > any field flag never reads stdin, and neither does one complete without any,
 > such as a bare `rndevtools simulators`, so an input that stays open cannot
 > hang them. One that needs fields and is given none, such as a bare
@@ -275,8 +276,8 @@ rndevtools lane --operation launch --worktree "$PWD" --url checkout/cart   # dee
 
 ## Restart the app
 
-`--restart` on `rndevtools lane --operation up` (resuming an existing lane) or
-on `rndevtools lane --operation launch` terminates any running copy of the
+`--restart` on `lane --operation up` (resuming an existing lane) or on
+`lane --operation launch` terminates any running copy of the
 lane's app (its bundle identifier) on the lane's Simulator before the dev
 client opens, so the app starts fresh with only this lane's Metro. A lane does
 this on its first dev-client launch without the flag, as far as it can (see

@@ -1756,7 +1756,7 @@ func TestSupabaseManagedModeRedirectsToRNDevtools(t *testing.T) {
 		"supabase start", "supabase start --runtime native", "pnpm exec supabase start", "supabase stack start",
 		"supabase stack restart", "supabase stack prepare --runtime native", "supabase local start", "supabase dev",
 	} {
-		fixture.expect(t, in, command, "RN Devtools runs this worktree's local Supabase", up, "`rndevtools lane --operation up`", "`pnpm exec supabase … --local`")
+		fixture.expect(t, in, command, "RN Devtools runs this worktree's local Supabase", up, "`rndevtools lane --operation up --worktree <app directory>` does it for a lane", "`pnpm exec supabase … --local`")
 	}
 	for _, command := range []string{"supabase stop", "pnpm exec supabase stop", "supabase stack stop", "supabase local stop"} {
 		fixture.expect(t, in, command, down, "data is kept")

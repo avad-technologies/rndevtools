@@ -51,11 +51,12 @@ func TestAgentTextsSpellOperationsAsTheCLIParsesThem(t *testing.T) {
 	}
 }
 
-func TestNoStringOfTheCLISpellsAnOperationAsAWord(t *testing.T) {
-	// Every string of the CLI's sources can reach an agent: an argument
-	// error, a flag's usage, an MCP tool's description, the MCP
-	// instructions, a hook's reason. The desktop's agent-text test reads its
-	// own sources with the same pattern.
+// eachCLIString calls visit with each string literal of the CLI's sources,
+// tests aside, and where it is. Every one can reach an agent: an argument
+// error, a flag's usage, an MCP tool's description, the MCP instructions, a
+// hook's reason.
+func eachCLIString(t *testing.T, visit func(position string, text string)) {
+	t.Helper()
 	fileSet := token.NewFileSet()
 	for _, root := range []string{"..", filepath.Join("..", "..", "cmd")} {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -76,9 +77,7 @@ func TestNoStringOfTheCLISpellsAnOperationAsAWord(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s: %v", fileSet.Position(literal.Pos()), err)
 				}
-				if match := positionalOperation.FindString(text); match != "" {
-					t.Errorf("%s spells an operation as a positional word, which the CLI rejects: %q", fileSet.Position(literal.Pos()), match)
-				}
+				visit(fileSet.Position(literal.Pos()).String(), text)
 				return true
 			})
 			return nil
@@ -87,6 +86,16 @@ func TestNoStringOfTheCLISpellsAnOperationAsAWord(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestNoStringOfTheCLISpellsAnOperationAsAWord(t *testing.T) {
+	// The desktop's agent-text test reads its own sources with the same
+	// pattern.
+	eachCLIString(t, func(position string, text string) {
+		if match := positionalOperation.FindString(text); match != "" {
+			t.Errorf("%s spells an operation as a positional word, which the CLI rejects: %q", position, match)
+		}
+	})
 }
 
 func TestAgentTextsAgreeOnTheSimctlCommandsAndTheUDIDCaveat(t *testing.T) {
@@ -123,22 +132,43 @@ func TestAgentTextsAgreeOnTheSimctlCommandsAndTheUDIDCaveat(t *testing.T) {
 // span, its line, or a shell comment.
 var laneCommand = regexp.MustCompile("(?:rndevtools )?lane --operation (?:up|launch|down|log)\\b([^`\\n#]*)")
 
-func TestTheSkillsGiveEveryLaneCommandTheLaneItActsOn(t *testing.T) {
+func TestAgentTextsGiveEveryLaneCommandTheLaneItActsOn(t *testing.T) {
 	// up takes --worktree, and launch, down, and log exactly one of
 	// --lane-id or --worktree: a command written out with its flags but
 	// without its lane is refused as written.
-	for _, name := range skillNames() {
-		content, err := skillFiles.ReadFile("skills/" + name + "/SKILL.md")
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, match := range laneCommand.FindAllStringSubmatch(string(content), -1) {
+	for name, text := range agentTexts(t) {
+		for _, match := range laneCommand.FindAllStringSubmatch(text, -1) {
 			flags := match[1]
 			if strings.Contains(flags, "--") && !strings.Contains(flags, "--lane-id") && !strings.Contains(flags, "--worktree") {
-				t.Errorf("the %s skill writes %q without the lane it acts on", name, strings.TrimSpace(match[0]))
+				t.Errorf("%s writes %q without the lane it acts on", name, strings.TrimSpace(match[0]))
 			}
 		}
 	}
+}
+
+// laneUp is a lane up a text gives as a command to run, the rndevtools that
+// runs it included, up to the end of its code span, its line, or a shell
+// comment. Without the rndevtools, `lane --operation up` names the operation.
+var laneUp = regexp.MustCompile("rndevtools lane --operation up\\b([^`\\n#]*)")
+
+func TestAgentTextsGiveEveryLaneUpItsWorktree(t *testing.T) {
+	// up refuses a command without its worktreePath ("the up operation
+	// requires worktreePath", exit 2), so a lane up an agent is told to run
+	// names --worktree, other flags or none: in the AGENTS.md and routing
+	// blocks, the skills, the hook's reasons, and every other string of the
+	// CLI's sources, such as the reasons a worktree RN Devtools runs gets
+	// from the Supabase rules.
+	check := func(where string, text string) {
+		for _, match := range laneUp.FindAllStringSubmatch(text, -1) {
+			if !strings.Contains(match[1], "--worktree") {
+				t.Errorf("%s writes %q without the worktree it runs", where, strings.TrimSpace(match[0]))
+			}
+		}
+	}
+	for name, text := range agentTexts(t) {
+		check(name, text)
+	}
+	eachCLIString(t, check)
 }
 
 // nativeCommand is a native command a text tells an agent to run, up to the

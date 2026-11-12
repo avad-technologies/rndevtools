@@ -876,7 +876,7 @@ func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind sup
 	upHint := fmt.Sprintf("the rndevtools `supabase` tool (operation up, worktree %s) or `rndevtools supabase --operation up --worktree %s`", worktree, word)
 	switch kind {
 	case supabaseStart, supabaseRestart, supabasePrepare, supabaseDev:
-		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; `rndevtools lane --operation up` does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, root.runner))
+		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; `rndevtools lane --operation up --worktree %s` does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, appDirectory, root.runner))
 	case supabaseStop:
 		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Release it with the rndevtools `supabase` tool (operation down, worktree %s) or `rndevtools supabase --operation down --worktree %s`; it stops once nobody else uses it, and its data is kept.", command, worktree, word))
 	case supabaseDatabaseStart:

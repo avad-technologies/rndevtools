@@ -671,8 +671,8 @@ agents share these devices and the desktop app owns their ports and claims.
 
 Each worktree gets its own local Supabase stack (native runtime, loopback
 only). When RN Devtools manages this worktree, use the ` + "`rndevtools`" + ` ` + "`supabase`" + `
-tool (operation up) or ` + "`rndevtools lane --operation up`" + `, which connects the
-app; otherwise start it yourself from the worktree with
+tool (operation up) or ` + "`rndevtools lane --operation up --worktree <app directory>`" + `,
+which connects the app; otherwise start it yourself from the worktree with
 ` + "`" + projectRunner(project) + ` start --runtime native` + "`" + `
 (never without ` + "`--runtime native`" + `). Use ` + "`supabase … --local`" + ` for migrations,
 ` + "`db reset`" + `, and ` + "`gen types`" + `, against your local stack rather than a hosted

@@ -524,8 +524,9 @@ func TestAgentsBlockAddsLocalSupabaseOnlyForSupabaseProjects(t *testing.T) {
 		}
 		agents, _ := os.ReadFile(filepath.Join(project, "AGENTS.md"))
 		block := string(agents)
-		for _, phrase := range []string{"## iOS Simulators", "## Local Supabase", "`" + runner + " start --runtime native`", "`supabase stop --all`", "`supabase status --env`", "`rndevtools lane --operation up`"} {
-			if !strings.Contains(block, phrase) {
+		flat := strings.Join(strings.Fields(block), " ")
+		for _, phrase := range []string{"## iOS Simulators", "## Local Supabase", "`" + runner + " start --runtime native`", "`supabase stop --all`", "`supabase status --env`", "or `rndevtools lane --operation up --worktree <app directory>`, which connects the app"} {
+			if !strings.Contains(flat, phrase) {
 				t.Fatalf("%s: AGENTS.md lacks %q:\n%s", lockfile, phrase, block)
 			}
 		}
