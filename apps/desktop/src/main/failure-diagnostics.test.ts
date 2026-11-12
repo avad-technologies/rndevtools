@@ -85,6 +85,20 @@ describe('bounded simulator diagnostics', () => {
 			'Error: example failure\n  at exampleFrame'
 		);
 	});
+	it('redacts a token that a removed control character would join to the word before it', () => {
+		// The JWT and Bearer rules start at a word boundary, and a removed
+		// control leaves none between the word and the token it parted.
+		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
+		for (const [raw, redacted] of [
+			[`Error: fetching\r${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u000b${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u200b${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			['Error: Bearer\rsecret-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u000bsecret-value', 'Error: Bearer [REDACTED]'],
+		] as const) {
+			expect(failureText(raw)).toBe(redacted);
+		}
+	});
 	it('distinguishes SpringBoard crashes from CoreSimulator resource diagnostics', () => {
 		expect(
 			parseDiagnosticReport(

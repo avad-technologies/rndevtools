@@ -3,9 +3,8 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { redactDiagnosticText } from '@rndevtools/core/redact';
 import type { FailureRecord } from '../shared/failure-protocol';
-import { stripTerminalControls } from './supabase/cli-redact';
+import { redactTerminalText } from './supabase/cli-redact';
 
 const UUID = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
 const HOST_PROCESS =
@@ -19,10 +18,12 @@ export function failureId(key: string): string {
 }
 
 export function failureText(value: string, limit = 16_384): string {
-	// Whole escape sequences and control characters go before redaction: in
-	// colored output a credential follows `\x1b[32m` directly, with no word
-	// boundary for the redaction rules to start at.
-	return redactDiagnosticText(stripTerminalControls(value, true))
+	// Redacted before its escape sequences and control characters go, and
+	// after: in colored output a credential follows `\x1b[32m` directly, with
+	// no word boundary for the redaction rules to start at until the sequence
+	// is gone, and removing a carriage return joins the token after it to the
+	// word before it.
+	return redactTerminalText(value, true)
 		.replaceAll(os.homedir(), '~')
 		.slice(0, limit);
 }

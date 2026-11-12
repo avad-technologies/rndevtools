@@ -1,12 +1,11 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { redactDiagnosticText } from '@rndevtools/core/redact';
 import { z } from 'zod';
 import { childEnvironmentStrip } from './agent-harness-env';
 import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
 import { sanitizeDialogText } from './security';
-import { stripTerminalControls } from './supabase/cli-redact';
+import { redactTerminalText } from './supabase/cli-redact';
 
 /**
  * Native build planning for a worktree: what Expo's fingerprint says, whether
@@ -265,26 +264,27 @@ function runProjectNode(
 
 /**
  * Child output as one line an error may quote: without escape sequences and
- * control characters, redacted, then bounded. The sequences go first, whole,
- * as failureText does: in colored output a credential follows `\x1b[32m`
- * directly, with no word boundary for the redaction rules to start at.
+ * control characters, redacted both before they go and after, as failureText
+ * is, then bounded. In colored output a credential follows `\x1b[32m`
+ * directly, with no word boundary for the redaction rules to start at until
+ * the sequence is gone, and removing a carriage return joins the token after
+ * it to the word before it.
  */
 function outputDetail(output: string): string {
-	return sanitizeDialogText(
-		redactDiagnosticText(stripTerminalControls(output, false)),
-		{ maxLength: MAX_PLAN_DETAIL_LENGTH }
-	);
+	return sanitizeDialogText(redactTerminalText(output, false), {
+		maxLength: MAX_PLAN_DETAIL_LENGTH,
+	});
 }
 
 /**
  * The newest whole lines of the script's stdout as one line an error may
- * quote, without escape sequences and control characters, redacted, then
- * bounded, after an ellipsis when older output is left out. When the output
- * outgrew its bound (`cut`), the window kept starts inside a line, and a line
- * cut at its head can begin inside a secret whose name was cut off, which no
- * redactor can recognise afterwards (as readLogTail says of lane logs). That
- * line is never quoted, and the rest is redacted whole before any of it is
- * left out.
+ * quote, without escape sequences and control characters, redacted as
+ * outputDetail redacts, then bounded, after an ellipsis when older output is
+ * left out. When the output outgrew its bound (`cut`), the window kept
+ * starts inside a line, and a line cut at its head can begin inside a secret
+ * whose name was cut off, which no redactor can recognise afterwards (as
+ * readLogTail says of lane logs). That line is never quoted, and the rest is
+ * redacted whole before any of it is left out.
  */
 function stdoutDetail(stdout: string, cut: boolean): string {
 	let whole = stdout;
@@ -292,9 +292,7 @@ function stdoutDetail(stdout: string, cut: boolean): string {
 		const newline = stdout.indexOf('\n');
 		whole = newline === -1 ? '' : stdout.slice(newline + 1);
 	}
-	const lines = redactDiagnosticText(stripTerminalControls(whole, true)).split(
-		'\n'
-	);
+	const lines = redactTerminalText(whole, true).split('\n');
 	const quoted: string[] = [];
 	let length = 0;
 	let index = lines.length - 1;

@@ -91,14 +91,30 @@ function isInvisible(code: number): boolean {
 }
 
 /**
+ * `value` without terminal escape sequences and invisible characters, and
+ * redacted by the core rules both before they go and after. Removing a
+ * character joins what it kept apart, and the JWT and Bearer rules start at
+ * a word boundary: a token that a carriage return, a vertical tab or a
+ * zero-width space parted from the word before it is redacted only while
+ * that character is there. One in colored output, after an escape
+ * sequence's final letter, gets a boundary only once the sequence is gone.
+ * The rules leave their own markers as they are.
+ */
+export function redactTerminalText(
+	value: string,
+	keepNewlines: boolean
+): string {
+	return redactDiagnosticText(
+		stripTerminalControls(redactDiagnosticText(value), keepNewlines)
+	);
+}
+
+/**
  * Removes ANSI/VT escape sequences (CSI, OSC, DCS and two-byte escapes), C0
  * and C1 controls, bidirectional overrides and zero-width characters. Written
  * as a scanner so no control character ever appears in a regular expression.
  */
-export function stripTerminalControls(
-	value: string,
-	keepNewlines: boolean
-): string {
+function stripTerminalControls(value: string, keepNewlines: boolean): string {
 	let output = '';
 	let index = 0;
 	while (index < value.length) {

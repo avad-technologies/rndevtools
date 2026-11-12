@@ -275,6 +275,46 @@ describe('runNativePlan', () => {
 	});
 
 	it.each([
+		['a JWT after a carriage return', 'fetching\\r', 'fetching[REDACTED JWT]'],
+		['a JWT after a vertical tab', 'fetching\\v', 'fetching[REDACTED JWT]'],
+		[
+			'a JWT after a zero-width space',
+			'fetching\\342\\200\\213',
+			'fetching[REDACTED JWT]',
+		],
+		[
+			'a Bearer token after a carriage return',
+			'Bearer\\r',
+			'Bearer [REDACTED]',
+		],
+		['a Bearer token after a vertical tab', 'Bearer\\v', 'Bearer [REDACTED]'],
+	])(
+		'redacts %s, which removing that character joins to the word before it',
+		async (_, before, redacted) => {
+			// The JWT and Bearer rules start at a word boundary, and a removed
+			// control leaves none between the word and the token it parted.
+			const token = before.startsWith('Bearer')
+				? 'example-bearer-value'
+				: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.ZXhhbXBsZS1zaWduYXR1cmU';
+			for (const [redirect, message] of [
+				['>&2\nexit 2', /failed: Error: /],
+				['', /exited without reporting a plan; it printed: Error: /],
+			] as const) {
+				const failure: unknown = await fakeNode(
+					`printf 'Error: ${before}%s\\n' '${token}' ${redirect}`
+				)
+					.plan()
+					.catch((error: unknown) => error);
+				expect(failure).toBeInstanceOf(Error);
+				const text = (failure as Error).message;
+				expect(text).toMatch(message);
+				expect(text).toContain(`Error: ${redacted}`);
+				expect(text).not.toMatch(/eyJ|example-bearer-value/);
+			}
+		}
+	);
+
+	it.each([
 		['nothing after it', ''],
 		['one newline after it', '\n'],
 	])(
