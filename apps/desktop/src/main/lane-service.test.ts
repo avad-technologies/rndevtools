@@ -5745,10 +5745,15 @@ describe('LaneService', () => {
 				.getState()
 				.deviceRequests.find((candidate) => candidate.id === requestId);
 			expect(request).toMatchObject({ status: 'fulfilled', laneId });
+			// Its message says the launch failed, and how to launch it again, as
+			// a lane up that failed on that lane would.
 			expect(request?.message).toMatch(
 				new RegExp(
-					`^Started on ${CLONE_UDID}, but its launch failed: com\\.example\\.app is not installed`
+					`^Started lane ${laneId} on ${CLONE_UDID}, but its launch failed: com\\.example\\.app is not installed`
 				)
+			);
+			expect(request?.message).toContain(
+				` Metro on port ${settled.lane?.port} is still running. The lane keeps its Simulator and port ${settled.lane?.port}. Once the cause is fixed, run \`rndevtools lane --operation up --worktree ${THIRD_WORKTREE}\` to launch it again; it starts Metro again first if Metro exited. \`rndevtools lane --operation log --lane-id ${laneId}\` shows Metro's output.`
 			);
 			// Settled once, it cannot be settled again into a second lane.
 			const again = await service.runOperation({
@@ -5759,6 +5764,54 @@ describe('LaneService', () => {
 				simulatorUdid: UDID,
 			});
 			expect(again.error).toBe(`Device request ${requestId} is fulfilled.`);
+		});
+
+		it('keeps the retry in the message of a request whose launch failed at length', async () => {
+			for (const port of [8_100, 8_101, 8_102]) metro.healthyPorts.add(port);
+			// Both Simulators run other apps' lanes, so the third start parks.
+			await up({ simulatorUdid: UDID });
+			await service.runOperation({
+				actionId: 'op-long-failure-other',
+				kind: 'lane.start',
+				worktreePath: OTHER_WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const parked = await service.runOperation({
+				actionId: 'op-long-failure-park',
+				kind: 'lane.start',
+				worktreePath: THIRD_WORKTREE,
+				environment: 'development',
+				launch: true,
+				restart: true,
+			});
+			const requestId = parked.deviceRequest?.id ?? '';
+			simulator.failKinds['url.open'] =
+				`CoreSimulator refused: ${'x'.repeat(8_000)}`;
+			const settled = await service.runOperation({
+				actionId: 'op-long-failure-clone',
+				kind: 'lane.provide-device',
+				requestId,
+				decision: 'clone',
+				simulatorUdid: OTHER_UDID,
+			});
+			expect(settled.completed).toBe(false);
+			const message =
+				service
+					.getState()
+					.deviceRequests.find((candidate) => candidate.id === requestId)
+					?.message ?? '';
+			expect(message.length).toBeLessThanOrEqual(4_096);
+			expect(message).toMatch(
+				/^Started lane \S+ on \S+, but its launch failed: CoreSimulator refused: x+…/
+			);
+			// The restart the start asked for goes with its retry.
+			expect(message).toMatch(
+				new RegExp(
+					`run \`rndevtools lane --operation up --worktree ${THIRD_WORKTREE} --restart\` to launch it again; it starts Metro again first if Metro exited\\. \`rndevtools lane --operation log --lane-id ${settled.lane?.id}\` shows Metro's output\\.$`
+				)
+			);
 		});
 	});
 

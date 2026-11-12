@@ -64,7 +64,11 @@ function redactSupabaseCredentials(value: string): string {
 	);
 }
 
-function boundText(value: string, maxChars: number): string {
+/**
+ * `value` cut to at most `maxChars` UTF-16 code units, the cut marked with an
+ * ellipsis and never through a surrogate pair.
+ */
+export function boundText(value: string, maxChars: number): string {
 	const limit = Math.max(1, Math.floor(maxChars));
 	if (value.length <= limit) return value;
 	let end = limit - ELLIPSIS.length;

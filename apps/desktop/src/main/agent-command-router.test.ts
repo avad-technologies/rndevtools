@@ -3922,7 +3922,11 @@ describe('agent command router', () => {
 			id: 'device-request-1',
 			status: 'pending',
 		});
-		expect(result.next).toMatch(/Poll lane --operation ls/);
+		expect(result.next).toContain('Poll `rndevtools lane --operation ls`');
+		// A request can be fulfilled by a lane whose launch then failed.
+		expect(result.next).toContain(
+			'reports fulfilled with a laneId, or dismissed. A fulfilled request whose lane did not launch says so in its message, with the command that launches it again.'
+		);
 		expect(result.next).toContain('device-request-1');
 
 		// `ls` carries the requests so the agent can follow the outcome.

@@ -2566,7 +2566,7 @@ function createRoutes({
 						if (receipt.completed && receipt.deviceRequest) {
 							return {
 								...laneReceiptResult(receipt),
-								next: `No free Simulator: ${receipt.deviceRequest.message} RN Devtools is asking the user to start this lane on an existing Simulator or a new clone. Poll lane --operation ls; the deviceRequests entry with id ${receipt.deviceRequest.id} reports fulfilled with a laneId, or dismissed.`,
+								next: `No free Simulator: ${receipt.deviceRequest.message} RN Devtools is asking the user to start this lane on an existing Simulator or a new clone. Poll \`rndevtools lane --operation ls\`; the deviceRequests entry with id ${receipt.deviceRequest.id} reports fulfilled with a laneId, or dismissed. A fulfilled request whose lane did not launch says so in its message, with the command that launches it again.`,
 							};
 						}
 						return laneUpResult(receipt, {

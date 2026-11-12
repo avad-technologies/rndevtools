@@ -56,7 +56,7 @@ import {
 	sanitizeSupabaseDisplayText,
 } from '../shared/supabase-protocol';
 import { waitForJob } from './job-wait';
-import { shellWord } from './lane-agent-text';
+import { laneRetryRecovery, shellWord } from './lane-agent-text';
 import {
 	laneEnvProblem,
 	METRO_OWNERSHIP_PROOF_TIMEOUT_MS,
@@ -76,6 +76,7 @@ import type {
 	SimulatorMutationCoordinatorPort,
 	SimulatorMutationLease,
 } from './simulator-mutation-coordinator';
+import { boundText } from './supabase/cli-redact';
 import {
 	LANE_BACKEND_DEFAULT_WAIT_MS,
 	type LaneBackendEnsureInput,
@@ -289,6 +290,39 @@ function restartWithoutBundleIdentifier(
 			? `A restart terminates the app by its bundle identifier, and lane ${lane.id} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. To start the app fresh anyway, run ${quitBySimulatorRestart(lane)}, and then this without restart. Or declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${lane.id}\` and ${LANE_UP}: a new lane's first dev-client launch restarts the app. Or ask the user to quit the app, and run this without restart.`
 			: "A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart."
 	);
+}
+
+/** The longest message a device request carries. */
+const MAX_DEVICE_REQUEST_MESSAGE_LENGTH = 4_096;
+
+/**
+ * What a device request says once the start it settled stored its lane and
+ * then failed to launch it: the lane, that its launch failed and why, and
+ * the retry a lane up that failed on that lane gets (laneRetryRecovery).
+ * The cause gives way to the bound, so the retry is never cut off.
+ */
+function launchFailedMessage(
+	lane: Lane,
+	request: Pick<LaneDeviceRequest, 'launch' | 'restart'>,
+	error: unknown,
+	{ interrupted }: { interrupted: boolean }
+): string {
+	const cause = error instanceof LaneLaunchError ? error.cause : error;
+	const retry = laneRetryRecovery(
+		lane,
+		{ operation: 'up', launch: request.launch, restart: request.restart },
+		{
+			interrupted,
+			backendFailed:
+				cause instanceof LaneBackendError &&
+				cause.summary.policy === 'required',
+		}
+	);
+	const head = `Started lane ${lane.id} on ${lane.simulatorUdid}, but its launch failed: `;
+	return `${head}${boundText(
+		safeErrorText(error),
+		MAX_DEVICE_REQUEST_MESSAGE_LENGTH - head.length - retry.length - 1
+	)} ${retry}`;
 }
 
 /**
@@ -1808,7 +1842,9 @@ export class LaneService {
 		} catch (error) {
 			// A start that stored its lane before its launch failed settled the
 			// request with that lane: the agent polling for it finds its lane,
-			// and nobody starts a second one on another device or clone.
+			// and nobody starts a second one on another device or clone. Its
+			// message says the launch failed, and gives the retry a lane up that
+			// failed on that lane would.
 			const stored =
 				error instanceof LaneLaunchError &&
 				!this.#stoppingLanes.has(error.laneId)
@@ -1820,11 +1856,9 @@ export class LaneService {
 					? {
 							status: 'fulfilled',
 							laneId: stored.id,
-							message:
-								`Started on ${stored.simulatorUdid}, but its launch failed: ${safeErrorText(error)}`.slice(
-									0,
-									4_096
-								),
+							message: launchFailedMessage(stored, current, error, {
+								interrupted: signal.aborted,
+							}),
 						}
 					: { status: 'pending', message: safeErrorText(error) }
 			);
