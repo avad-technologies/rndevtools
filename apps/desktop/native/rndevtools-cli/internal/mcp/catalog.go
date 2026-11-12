@@ -186,7 +186,8 @@ var toolMeta = map[protocol.Command]meta{
 			"client is missing, and before running expo run:ios yourself. operation \"install\" puts a cached " +
 			"build on the Simulator (udid), refreshing an older copy of the same bundle. Reserve a lane first when asked (lane with operation up and launch=false). " +
 			"The build command names no port, because Expo CLI refuses --port with --no-bundler, and the build opens the app against port 8081: " +
-			"after it, call lane with operation launch, the lane-id, and restart, so the app starts with the lane's Metro. worktree is the absolute app directory; configuration Debug (default) " +
+			"after it, call lane with operation launch, the lane-id, and restart, so the app starts with the lane's Metro; the recommendation leaves restart out for a lane started without an ios.bundleIdentifier in app.json, which cannot restart the app, " +
+			"and gives a url for a lane started without a URL scheme. worktree is the absolute app directory; configuration Debug (default) " +
 			"or Release. A first native build takes 5-15 minutes; tell the user it is running rather than waiting " +
 			"silently, and do not restart it. If the user asked you not to build, report the command instead.",
 		readOnly: false,

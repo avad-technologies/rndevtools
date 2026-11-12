@@ -183,7 +183,10 @@ func TestTheLanesSkillGivesTheBuildAsNativePlanDoes(t *testing.T) {
 	// native plan's build is two steps once the lane's Metro is ready: an
 	// expo run:ios that names no port, since Expo CLI refuses --port with
 	// --no-bundler and opens the app against 8081, then a lane launch with
-	// restart that reopens it with the lane's Metro.
+	// restart that reopens it with the lane's Metro. A lane that cannot
+	// restart the app, having started without a bundle identifier, gets the
+	// launch without restart, and one that started without a scheme gets
+	// the dev client's full URL, as the plan quotes them.
 	content, err := skillFiles.ReadFile("skills/rndevtools-lanes/SKILL.md")
 	if err != nil {
 		t.Fatal(err)
@@ -194,6 +197,8 @@ func TestTheLanesSkillGivesTheBuildAsNativePlanDoes(t *testing.T) {
 		"Expo CLI refuses `--port` with `--no-bundler`",
 		"`rndevtools lane --operation launch --lane-id <laneId> --restart`",
 		"only once the lane's Metro is ready",
+		"the plan quotes the launch without `--restart`",
+		"`--url` with the dev client's full launch URL",
 	} {
 		if !strings.Contains(flat, phrase) {
 			t.Errorf("the lanes skill lacks %q", phrase)

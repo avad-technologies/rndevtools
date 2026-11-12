@@ -835,12 +835,16 @@ func TestDoctorAndNativeDescribeWhatTheirResultsMayLeaveOut(t *testing.T) {
 func TestNativeToolGivesTheBuildWithoutAPort(t *testing.T) {
 	// Expo CLI refuses --port with --no-bundler, so the build native plan
 	// gives names no port, and a lane launch with restart then reopens the
-	// app with the lane's Metro.
+	// app with the lane's Metro, except where the lane cannot restart it or
+	// has no scheme to open its dev client by.
 	for _, tool := range Tools() {
 		if tool.Name != "native" {
 			continue
 		}
-		for _, phrase := range []string{"names no port", "Expo CLI refuses --port with --no-bundler", "lane with operation launch, the lane-id, and restart"} {
+		for _, phrase := range []string{
+			"names no port", "Expo CLI refuses --port with --no-bundler", "lane with operation launch, the lane-id, and restart",
+			"leaves restart out for a lane started without an ios.bundleIdentifier", "a url for a lane started without a URL scheme",
+		} {
 			if !strings.Contains(tool.Description, phrase) {
 				t.Fatalf("native description lacks %q: %s", phrase, tool.Description)
 			}

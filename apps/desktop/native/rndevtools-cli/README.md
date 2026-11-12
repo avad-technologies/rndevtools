@@ -544,7 +544,13 @@ lane's Metro is ready (reserve the lane with `up --launch=false` first):
 `rndevtools lane --operation launch --lane-id <laneId> --restart`. The build
 names no port, because Expo CLI refuses `--port` with `--no-bundler`, and it
 opens the app it installs against port 8081; the restart reopens the app with
-the lane's Metro.
+the lane's Metro. A lane started without an `ios.bundleIdentifier` in
+`app.json` refuses `--restart`, so for it the plan gives the launch without
+the flag and says to quit the app on the Simulator by hand first. For a lane
+started without a scheme, the launch carries `--url` with the dev client's
+full launch URL, built from the scheme the plan reads from the worktree's
+evaluated Expo config, or with a `<scheme>` placeholder to fill in when that
+config names no URL scheme.
 
 `lane --operation up --backend auto|off|required` decides the worktree's local
 Supabase. `auto`, the default for the `development` environment, starts the
