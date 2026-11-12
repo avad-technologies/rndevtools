@@ -274,7 +274,35 @@ describe('runNativePlan', () => {
 		expect(text).not.toMatch(/eyJ|example-bearer-value|\[\d+(?:;\d+)*m/);
 	});
 
-	it('never quotes the line its output bound cut through', async () => {
+	it.each([
+		['nothing after it', ''],
+		['one newline after it', '\n'],
+	])(
+		'never quotes the line its output bound cut through, with %s',
+		async (_, end) => {
+			// The plan keeps the newest 256 KiB of stdout. One line longer than
+			// that leaves a window that starts inside it, past a secret's name,
+			// where no redactor could recognise what is left of it as one. Quoted
+			// from its head, that line would begin with the secret.
+			const kept = 256 * 1024;
+			const secret = 'DATABASE_PASSWORD=hunter2-example-secret-value';
+			const tail = secret.slice(secret.indexOf('hunter2'));
+			const output = path.join(root, 'output.txt');
+			writeFileSync(
+				output,
+				`${secret}${'x'.repeat(kept - tail.length - end.length)}${end}`
+			);
+			const failure: unknown = await fakeNode(`cat '${output}'`)
+				.plan()
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(Error);
+			const text = (failure as Error).message;
+			expect(text).toMatch(/exited without reporting a plan; it printed: …\.$/);
+			expect(text).not.toMatch(/secret|hunter2/);
+		}
+	);
+
+	it('quotes only the newest whole lines once its output outgrew the bound', async () => {
 		// The plan keeps the newest 256 KiB of stdout. Fill it so the window
 		// kept starts inside a secret, past its name, where no redactor could
 		// recognise what is left of it as one.
