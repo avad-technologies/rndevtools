@@ -2050,7 +2050,7 @@ function createRoutes({
 					let advice: string;
 					if (plan.cache === 'hit') {
 						advice = target
-							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
+							? `install: a cached binary matches this fingerprint; run \`rndevtools native --operation install --worktree ${shellWord(command.worktreePath)} --udid ${target.udid}\` to put it on the Simulator without building.`
 							: 'cached: a binary for this fingerprint exists; pass --udid to install it.';
 					} else {
 						const step = await buildStep();

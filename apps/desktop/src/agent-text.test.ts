@@ -35,6 +35,18 @@ const OPERATOR_ONLY = new Set([
  */
 const LANE_UP_COMMAND = /\blane --operation up\b([^`'"\n]*)/g;
 
+/**
+ * A native operation as a command, the word before it, and what follows it
+ * on its line up to the next backtick or quote. The CLI refuses a native
+ * command without an absolute worktree ("native requires an absolute
+ * worktreePath") and an install without its udid, and a plan without one
+ * cannot say whether the app is installed. So every native command an agent
+ * is told to run is a whole rndevtools command that names its operation, its
+ * app directory and its Simulator, as placeholders or values.
+ */
+const NATIVE_COMMAND =
+	/(\S*)\s+native --operation (?:plan|install)\b([^`'"\n]*)/g;
+
 function sourceFiles(directory: string): string[] {
 	return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
 		const entryPath = path.join(directory, entry.name);
@@ -76,6 +88,28 @@ describe('agent-facing desktop texts', () => {
 			const code = withoutComments(fs.readFileSync(file, 'utf8'));
 			for (const match of code.matchAll(LANE_UP_COMMAND)) {
 				if (/^\s*--worktree\b/.test(match[1] ?? '')) continue;
+				const line = code.slice(0, match.index).split('\n').length;
+				violations.push(
+					`${path.relative(desktopSource, file)}:${line}: ${match[0].trim()}`
+				);
+			}
+		}
+		expect(violations).toEqual([]);
+	});
+
+	it('give every native command its operation, app directory and Simulator', () => {
+		const violations: string[] = [];
+		for (const file of agentTextRoots.flatMap(sourceFiles)) {
+			const code = withoutComments(fs.readFileSync(file, 'utf8'));
+			for (const match of code.matchAll(NATIVE_COMMAND)) {
+				const flags = match[2] ?? '';
+				if (
+					/(?:^|[`'"])rndevtools$/.test(match[1] ?? '') &&
+					/\s--worktree\s/.test(flags) &&
+					/\s--udid\s/.test(flags)
+				) {
+					continue;
+				}
 				const line = code.slice(0, match.index).split('\n').length;
 				violations.push(
 					`${path.relative(desktopSource, file)}:${line}: ${match[0].trim()}`

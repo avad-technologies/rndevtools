@@ -2472,7 +2472,10 @@ describe('agent command router', () => {
 				context
 			)) as Record<string, unknown>;
 			expect(result).toMatchObject({ cache: 'hit', installed: false });
-			expect(String(result.recommendation)).toMatch(/^install: /);
+			// The install, as the CLI takes it: its worktree and its Simulator.
+			expect(result.recommendation).toBe(
+				`install: a cached binary matches this fingerprint; run \`rndevtools native --operation install --worktree /Users/dev/app --udid ${UDID}\` to put it on the Simulator without building.`
+			);
 		});
 
 		it.each([
