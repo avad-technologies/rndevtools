@@ -482,7 +482,7 @@ error's `recovery` gives. Without `--udid` the desktop picks a free iPhone
 (nobody's lane, nobody's claim), booted ones first; when none is free it parks
 a device request for the user and `lane --operation ls` reports how it was
 settled. A request fulfilled with a lane whose launch then failed says so in
-its `message`, which ends with the command that launches the lane again.
+its `message`, which gives the command that launches the lane again.
 Pass `--udid` when the user named a device or is using one: a booted
 Simulator nobody holds can still be in a person's hands.
 
