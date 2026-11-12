@@ -40,6 +40,21 @@ export function shellWord(value: string): string {
 }
 
 /**
+ * The lane up that brings `lane` back, or starts a new lane for its app once
+ * it is gone: its app directory and, unless it is the default, its
+ * environment.
+ */
+export function laneUpCommand(
+	lane: Pick<Lane, 'worktreePath' | 'appPath' | 'environment'>
+): string {
+	const environment =
+		lane.environment === 'development'
+			? ''
+			: ` --environment ${lane.environment}`;
+	return `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}`;
+}
+
+/**
  * What to run once the cause of a launch that failed on a stored lane is
  * fixed. Lane up is idempotent: it starts the lane's Metro again when it
  * exited and ensures its backend, then launches, so a lane up is retried as
@@ -64,13 +79,9 @@ export function laneRetryRecovery(
 	}
 ): string {
 	const restart = asked.restart ? ' --restart' : '';
-	const environment =
-		lane.environment === 'development'
-			? ''
-			: ` --environment ${lane.environment}`;
 	// A lane up that asked for no launch is retried without one.
 	const opens = laneVerb(asked) === 'launch';
-	const upBare = `rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}`;
+	const upBare = laneUpCommand(lane);
 	const up = `${upBare}${opens ? restart : ' --launch=false'}`;
 	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}`;
 	const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;

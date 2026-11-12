@@ -1819,6 +1819,49 @@ describe('LaneService', () => {
 		}
 	);
 
+	it('tells a lane up during its lane stop how to wait for that stop and start again', async () => {
+		const started = await service.runOperation({
+			actionId: 'op-up-during-stop-start',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: UDID,
+			environment: 'staging',
+			launch: false,
+		});
+		const laneId = started.lane?.id as string;
+		const stopping = deferred<void>();
+		const release = deferred<void>();
+		const stop = metro.stop;
+		metro.stop = async (pid, port, directory, options) => {
+			stopping.resolve();
+			await release.promise;
+			await stop(pid, port, directory, options);
+		};
+		const stopped = service.runOperation({
+			actionId: 'op-up-during-stop-stop',
+			kind: 'lane.stop',
+			laneId,
+		});
+		await stopping.promise;
+		try {
+			const up = await service.runOperation({
+				actionId: 'op-up-during-stop-up',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				environment: 'staging',
+				launch: true,
+			});
+			expect(up).toMatchObject({
+				completed: false,
+				error: `Lane ${laneId} is stopping. Wait for that stop to finish: \`rndevtools lane --operation down --lane-id ${laneId}\` waits for it and says how it ended. Then run \`rndevtools lane --operation up --worktree ${WORKTREE} --environment staging\` to start the app's lane again.`,
+			});
+			expect(up).not.toHaveProperty('lane');
+		} finally {
+			release.resolve();
+		}
+		expect((await stopped).completed).toBe(true);
+	});
+
 	describe('a Metro that outlives its SIGTERM', () => {
 		let laneId: string;
 		let pid: number;
@@ -2269,7 +2312,7 @@ describe('LaneService', () => {
 				// so the receipt names no lane for one.
 				expect(launched).toMatchObject({
 					completed: false,
-					error: `Lane ${laneId} is stopping.`,
+					error: `Lane ${laneId} is stopping. Wait for that stop to finish: \`rndevtools lane --operation down --lane-id ${laneId}\` waits for it and says how it ended. Then run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start the app's lane again.`,
 				});
 				expect(launched).not.toHaveProperty('lane');
 				expect(service.getState().lanes.map((lane) => lane.id)).toEqual([

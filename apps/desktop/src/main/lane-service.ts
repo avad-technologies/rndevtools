@@ -56,7 +56,7 @@ import {
 	sanitizeSupabaseDisplayText,
 } from '../shared/supabase-protocol';
 import { waitForJob } from './job-wait';
-import { laneRetryRecovery, shellWord } from './lane-agent-text';
+import { laneRetryRecovery, laneUpCommand, shellWord } from './lane-agent-text';
 import {
 	laneEnvProblem,
 	METRO_OWNERSHIP_PROOF_TIMEOUT_MS,
@@ -3850,7 +3850,12 @@ export class LaneService {
 
 	#requireLane(laneId: string): Lane {
 		if (this.#stoppingLanes.has(laneId)) {
-			throw new Error(`Lane ${laneId} is stopping.`);
+			// The stop keeps the lane stored until Metro is gone. A lane down on
+			// it waits for the stop under way and reports how it ended.
+			const stopping = this.#store.get(laneId);
+			throw new Error(
+				`Lane ${laneId} is stopping. Wait for that stop to finish: \`rndevtools lane --operation down --lane-id ${laneId}\` waits for it and says how it ended. Then run ${stopping ? `\`${laneUpCommand(stopping)}\`` : LANE_UP} to start the app's lane again.`
+			);
 		}
 		const lane = this.#store.get(laneId);
 		if (!lane) throw new Error(`Lane ${laneId} does not exist.`);
