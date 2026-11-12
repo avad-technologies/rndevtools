@@ -272,6 +272,9 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 		"opens after `lane --operation up` has returned, so then only the lane's log says so",
 		"without `--restart` never terminates the app",
 		"leaves that first restart to the dev-client launch after it",
+		// The dev client's full URL, how a lane without a scheme opens it,
+		// is that dev-client launch, not a deep link.
+		"is not a deep link: it is the lane's dev-client launch",
 		// A lane keeps the scheme it started with, and up takes no URL.
 		"`rndevtools lane --operation launch --lane-id <laneId> --url <full launch URL>`",
 		"`lane --operation up` takes no URL",

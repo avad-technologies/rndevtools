@@ -510,9 +510,13 @@ say so; a launch held back until the lane's local backend is ready opens
 after `up` has returned, and only the lane's log (`lane --operation log`) says
 so. Later launches restart the app only when asked. Terminating an app
 that is not running counts as success, and device holds apply as usual.
-`launch --url` without `--restart` never terminates the app, because a deep
-link keeps its state, and it leaves that first restart to the dev-client
-launch after it. React Native's dev client keeps an
+`launch --url` with a deep link and without `--restart` never terminates
+the app, because a deep link keeps its state, and it leaves that first
+restart to the dev-client launch after it. A `--url` that opens the dev
+client against the lane's own Metro (an `expo-development-client` URL
+whose `url` is `http://127.0.0.1:<port>` or `http://localhost:<port>`, as a
+lane started without a scheme opens it) is that dev-client launch instead.
+React Native's dev client keeps an
 inspector connection to every Metro it was pointed at for as long as it runs,
 so without a restart an app re-pointed to a new port stays listed as a debug
 target on whatever Metro later takes the old port.

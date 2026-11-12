@@ -387,7 +387,10 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 	// A launch held back for the local backend opens after up has returned,
 	// so only the lane's log can say it could not restart the app.
 	heldBack := "or, for a launch held back for the local backend, only the lane's log"
-	for _, phrase := range []string{"(up, launch)", "a terminate that fails fails the launch", "first dev-client launch", "warnings", heldBack, "another lane or a person", "debug target", "without restart keeps the app's state", "ios.bundleIdentifier"} {
+	// A url that opens the dev client against the lane's own Metro, as a lane
+	// without a scheme opens it, is the dev-client launch, not a deep link.
+	devClientURL := "a url that opens the dev client against this lane's Metro is that dev-client launch"
+	for _, phrase := range []string{"(up, launch)", "a terminate that fails fails the launch", "first dev-client launch", "warnings", heldBack, "another lane or a person", "debug target", "without restart keeps the app's state", devClientURL, "ios.bundleIdentifier"} {
 		if !strings.Contains(usage, phrase) {
 			t.Fatalf("restart description lacks %q: %s", phrase, usage)
 		}

@@ -309,7 +309,11 @@ Terminating an app that is not running counts as success, and device holds
 apply as they do to any `up` or `launch`.
 `rndevtools lane --operation launch --worktree "$PWD" --url <path>` without
 `--restart` never terminates the app: a deep link keeps its state, and it
-leaves that first restart to the dev-client launch after it.
+leaves that first restart to the dev-client launch after it. A `--url` that
+opens the dev client against the lane's own Metro
+(`<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>…`,
+as a lane started without a scheme opens it) is not a deep link: it is the
+lane's dev-client launch, so the first one restarts the app as above.
 
 ## Drive the app that is running in the lane
 
