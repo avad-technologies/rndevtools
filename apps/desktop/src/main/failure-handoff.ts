@@ -13,7 +13,10 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { FailureRecord, FailureRequest } from '../shared/failure-protocol';
-import { AGENT_SESSION_ENV_NAMES } from './agent-harness-env';
+import {
+	AGENT_SESSION_ENV_NAMES,
+	childEnvironmentStrip,
+} from './agent-harness-env';
 import { failureText, METRO_LOG_TAIL_HEADING } from './failure-diagnostics';
 import { readLoginShellPath, resolveToolPath } from './lane-tool-path';
 import { ensurePrivateDirectory, writeFileAtomic } from './private-files';
@@ -46,6 +49,7 @@ const CONFIG_ENVIRONMENT = [
 	'XDG_CONFIG_HOME',
 	'XDG_DATA_HOME',
 ] as const;
+const CONFIG_NAMES: ReadonlySet<string> = new Set(CONFIG_ENVIRONMENT);
 const CLAUDE_SUBSCRIPTION_SETTINGS = JSON.stringify({
 	forceLoginMethod: 'claudeai',
 	apiKeyHelper: '',
@@ -202,12 +206,27 @@ function handoffConfirmation(
 	};
 }
 
+/**
+ * The environment the agent CLI's login check runs with: the desktop's,
+ * without what STRIPPED names and without what no desktop child inherits
+ * (agent-harness-env.ts), the launching session's CLAUDE_* and CODEX_*
+ * variables and whatever RNDEVTOOLS_CHILD_ENV_STRIP names. The CLIs'
+ * configuration directories stay, CLAUDE_CONFIG_DIR and CODEX_HOME among
+ * them: the login the check verifies lives there, and the task script
+ * exports the same ones. Throws, as childEnvironmentStrip does, on a strip
+ * list it cannot read.
+ */
 export function subscriptionEnvironment(
 	inherited: NodeJS.ProcessEnv
 ): NodeJS.ProcessEnv {
-	return Object.fromEntries(
-		Object.entries(inherited).filter(([key]) => !STRIPPED.includes(key))
-	);
+	const stripped = childEnvironmentStrip(inherited);
+	const kept: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(inherited)) {
+		if (value === undefined || STRIPPED.includes(name)) continue;
+		if (stripped(name) && !CONFIG_NAMES.has(name)) continue;
+		kept[name] = value;
+	}
+	return kept;
 }
 
 async function pruneTasks(directory: string): Promise<void> {
@@ -254,6 +273,9 @@ export class FailureHandoff {
 				'Choose a repository or worktree registered in RN Devtools.'
 			);
 		const project = await realpath(request.project);
+		// A strip list that cannot be read fails the handoff before any agent
+		// CLI runs, rather than letting through what it names.
+		const inherited = subscriptionEnvironment(process.env);
 		let toolPath = await (this.dependencies.toolPath ?? resolveToolPath)(
 			process.env.PATH
 		);
@@ -288,10 +310,7 @@ export class FailureHandoff {
 			throw new Error(
 				`Install ${request.client === 'claude' ? 'Claude Code' : 'Codex CLI'} and sign in with your subscription, then retry.`
 			);
-		const env: NodeJS.ProcessEnv = {
-			...subscriptionEnvironment(process.env),
-			PATH: toolPath,
-		};
+		const env: NodeJS.ProcessEnv = { ...inherited, PATH: toolPath };
 		const checkLogin =
 			this.dependencies.checkLogin ??
 			(async (client, executable, environment) => {

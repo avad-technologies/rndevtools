@@ -4,8 +4,9 @@
  * say). An agent harness exports its variables into every process it starts,
  * and the desktop would hand them on to each lane's Metro, and through it to
  * app.config.js, the Babel workers and whatever Metro spawns, to the native
- * plan's Node, which evaluates app.config.js too, and to the rndevtools CLI
- * the desktop runs for agent setup and its checks. They carry that session's
+ * plan's Node, which evaluates app.config.js too, to the rndevtools CLI the
+ * desktop runs for agent setup and its checks, and to the agent CLI whose
+ * subscription login a failure handoff checks. They carry that session's
  * identity, which the rndevtools CLI reads to act as that session, and its
  * control channels and their tokens. That session is whichever one launched
  * the desktop, never a lane's own agent nor the operator, and none of it is

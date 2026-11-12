@@ -47,6 +47,8 @@ describe('local subscription handoff', () => {
 		project = path.join(root, "Project 'quoted' $(touch INJECTED)");
 		await mkdir(project);
 		await mkdir(path.join(root, 'bin'));
+		// Whatever list the shell running the tests exports is not this test's.
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', undefined);
 	});
 	afterEach(async () => {
 		vi.unstubAllEnvs();
@@ -353,6 +355,62 @@ describe('local subscription handoff', () => {
 			}
 		}
 	);
+	it("checks the login without the launching session's variables, but with the CLIs' configuration", async () => {
+		// Every CLAUDE_* and CODEX_* variable of the session the desktop was
+		// launched from, and what the desktop's own strip list names.
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', 'EXAMPLE_AGENT_*');
+		vi.stubEnv('EXAMPLE_AGENT_TOKEN', 'harness-token');
+		vi.stubEnv('CLAUDE_CODE_SSE_PORT', '4711');
+		vi.stubEnv('CLAUDE_AGENT_SDK_VERSION', '1.0.0');
+		vi.stubEnv('CODEX_SANDBOX', 'seatbelt');
+		vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'old-session');
+		// The subscription login the check verifies lives here.
+		vi.stubEnv('CODEX_HOME', path.join(root, 'codex-config'));
+		vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(root, 'claude-config'));
+		vi.stubEnv('XDG_CONFIG_HOME', path.join(root, 'xdg-config'));
+		vi.stubEnv('EXAMPLE_SETTING', 'kept');
+		const seen = path.join(root, 'login-env.json');
+		const binary = path.join(root, 'bin', 'codex');
+		await writeFile(
+			binary,
+			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env));\nprocess.stdout.write('Logged in using ChatGPT');\n`
+		);
+		await chmod(binary, 0o700);
+		await make({}, true).run(record, request('codex'));
+		const env = JSON.parse(await readFile(seen, 'utf8')) as Record<
+			string,
+			string
+		>;
+		for (const name of [
+			'EXAMPLE_AGENT_TOKEN',
+			'CLAUDE_CODE_SSE_PORT',
+			'CLAUDE_AGENT_SDK_VERSION',
+			'CODEX_SANDBOX',
+			'CLAUDE_CODE_SESSION_ID',
+		]) {
+			expect(env).not.toHaveProperty(name);
+		}
+		expect(env).toMatchObject({
+			CODEX_HOME: path.join(root, 'codex-config'),
+			CLAUDE_CONFIG_DIR: path.join(root, 'claude-config'),
+			XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
+			EXAMPLE_SETTING: 'kept',
+			PATH: path.join(root, 'bin'),
+		});
+	});
+	it('refuses a malformed RNDEVTOOLS_CHILD_ENV_STRIP before any agent CLI runs', async () => {
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', 'EXAMPLE TOKEN');
+		await fakeClient('codex');
+		const checkLogin = vi.fn(async () => true);
+		const confirm = vi.fn(async () => true);
+		await expect(
+			make({ checkLogin, confirm }).run(record, request())
+		).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 1 is not a variable name/
+		);
+		expect(checkLogin).not.toHaveBeenCalled();
+		expect(confirm).not.toHaveBeenCalled();
+	});
 	it('keeps normal CLI approval modes and only removes auth/session overrides', () => {
 		expect(
 			subscriptionEnvironment({
