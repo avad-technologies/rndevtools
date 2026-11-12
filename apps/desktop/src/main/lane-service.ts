@@ -2965,12 +2965,20 @@ export class LaneService {
 	): Promise<'ready' | 'exited' | 'timeout'> {
 		this.#assertLaunchTarget(lane, signal);
 		if (!(await this.#verifyRecordedMetro(lane, { fresh: true }))) {
-			// No PID to wait for, or one that turned out to be another process's:
-			// the lane has no Metro, and only lane up starts one.
+			// No PID to wait for, one that turned out to be another process's, or
+			// that of a Metro that had exited before this launch (the lane was
+			// past starting: ready once, or stopped, as after a reboot): the lane
+			// has no Metro, and only lane up starts one. A Metro that exits while
+			// it starts is reported below as one that exited before it was ready.
 			this.#assertOperationActive(signal);
-			if (this.#requireLane(lane.id).metroPid === undefined) {
+			const current = this.#requireLane(lane.id);
+			if (
+				current.metroPid === undefined ||
+				(lane.metro !== 'starting' &&
+					!this.#metro.isProcessRunning(current.metroPid))
+			) {
 				throw new Error(
-					`Metro isn't running for lane ${lane.id}. Run ${LANE_UP} to start it again.`
+					`Metro isn't running for lane ${lane.id}. Run \`${laneUpCommand(current)}\` to start it again.`
 				);
 			}
 		}

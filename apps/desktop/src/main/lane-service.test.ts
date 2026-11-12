@@ -3285,6 +3285,42 @@ describe('LaneService', () => {
 	});
 
 	describe('Metro health', () => {
+		it('says the Metro of a stopped lane whose dead PID is still recorded is not running', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-dead-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			const pid = started.lane?.metroPid as number;
+			// It exited long before this launch, as Metros do over a reboot, and
+			// the lane reads stopped with that PID still recorded.
+			metro.deadPids.add(pid);
+			await service.runOperation({
+				actionId: 'op-dead-refresh',
+				kind: 'lane.refresh',
+			});
+			expect(service.getState().lanes[0]).toMatchObject({
+				metro: 'stopped',
+				metroPid: pid,
+			});
+			const result = await service.runOperation({
+				actionId: 'op-dead-launch',
+				kind: 'lane.launch',
+				laneId,
+			});
+			expect(result.completed).toBe(false);
+			expect(result.error).toBe(
+				`Metro isn't running for lane ${laneId}. Run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start it again.`
+			);
+			expect(result.lane).toMatchObject({ id: laneId, metro: 'stopped' });
+			expect(simulator.actions).toEqual([]);
+		});
+
 		it('rechecks identity before a direct launch, and a cached PID that now belongs to another app reads as a stopped Metro', async () => {
 			const started = await service.runOperation({
 				actionId: 'op-recycled-start',
@@ -3307,7 +3343,7 @@ describe('LaneService', () => {
 			});
 			expect(result.completed).toBe(false);
 			expect(result.error).toBe(
-				`Metro isn't running for lane ${started.lane?.id}. Run \`rndevtools lane --operation up --worktree <app directory>\` to start it again.`
+				`Metro isn't running for lane ${started.lane?.id}. Run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start it again.`
 			);
 			expect(verify).toHaveBeenCalledWith(
 				started.lane?.metroPid,
