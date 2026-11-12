@@ -2274,9 +2274,10 @@ export class LaneService {
 		const metro = await this.#waitForMetro(lane, signal);
 		if (metro !== 'ready') {
 			// The wait awaited; write onto the lane as it is now, and not at all
-			// if it was stopped or got a new Metro meanwhile. A Metro that exited
-			// reads as stopped, which tells the caller that only lane up, which
-			// starts it again, can launch this lane now.
+			// if it was stopped or got a new Metro meanwhile. A Metro that is
+			// gone or exited reads as stopped, which tells the caller, and the
+			// retry the receipt's lane gets, that only lane up, which starts it
+			// again, can launch this lane now.
 			const current = this.#store.get(laneId);
 			if (current && current.metroPid === lane.metroPid) {
 				await this.#store.upsert({
@@ -2286,9 +2287,11 @@ export class LaneService {
 				this.#touch();
 			}
 			throw new Error(
-				metro === 'exited'
-					? `Metro for ${lane.branch} exited before it became ready. Read the lane's log for the bundler error.`
-					: `Metro on port ${lane.port} did not become ready within ${LANE_METRO_HEALTH_TIMEOUT_MS / 1_000}s. Read the lane's log for the bundler error.`
+				metro === 'gone'
+					? `Metro isn't running for lane ${laneId}. Run \`${laneUpCommand(current ?? lane)}\` to start it again.`
+					: metro === 'exited'
+						? `Metro for ${lane.branch} exited before it became ready. Read the lane's log for the bundler error.`
+						: `Metro on port ${lane.port} did not become ready within ${LANE_METRO_HEALTH_TIMEOUT_MS / 1_000}s. Read the lane's log for the bundler error.`
 			);
 		}
 		const target =
@@ -2983,14 +2986,15 @@ export class LaneService {
 
 	/**
 	 * Waits for the lane's own Metro to serve its port, and says how the wait
-	 * ended: ready, exited first, or timed out. Another packager answering
-	 * there does not count, so a lane can never be reported ready, or its dev
-	 * client launched, against another worktree's Metro.
+	 * ended: ready, gone before it began, exited first, or timed out. Another
+	 * packager answering there does not count, so a lane can never be
+	 * reported ready, or its dev client launched, against another worktree's
+	 * Metro.
 	 */
 	async #waitForMetro(
 		lane: Lane,
 		signal: AbortSignal
-	): Promise<'ready' | 'exited' | 'timeout'> {
+	): Promise<'ready' | 'gone' | 'exited' | 'timeout'> {
 		this.#assertLaunchTarget(lane, signal);
 		if (!(await this.#verifyRecordedMetro(lane, { fresh: true }))) {
 			// No PID to wait for, one that turned out to be another process's, or
@@ -3005,9 +3009,7 @@ export class LaneService {
 				(lane.metro !== 'starting' &&
 					!this.#metro.isProcessRunning(current.metroPid))
 			) {
-				throw new Error(
-					`Metro isn't running for lane ${lane.id}. Run \`${laneUpCommand(current)}\` to start it again.`
-				);
+				return 'gone';
 			}
 		}
 		const deadline = this.#now() + LANE_METRO_HEALTH_TIMEOUT_MS;

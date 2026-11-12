@@ -42,6 +42,7 @@ import type {
 	SupabaseState,
 } from '../shared/supabase-protocol';
 import { AgentService } from './agent-service';
+import { laneRetryRecovery } from './lane-agent-text';
 import {
 	createMetroSupervisor,
 	type MetroLaunchInput,
@@ -3360,6 +3361,57 @@ describe('LaneService', () => {
 			);
 			expect(result.lane).toMatchObject({ id: laneId, metro: 'stopped' });
 			expect(simulator.actions).toEqual([]);
+		});
+
+		it('reads a ready lane whose Metro exited as stopped once a launch finds it gone, so its retry is a lane up', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-gone-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			const pid = started.lane?.metroPid as number;
+			const launched = await service.runOperation({
+				actionId: 'op-gone-launch',
+				kind: 'lane.launch',
+				laneId,
+			});
+			expect(launched.lane).toMatchObject({ metro: 'ready', metroPid: pid });
+			// Its Metro exits, and no lane status pass reads the lane before
+			// the next launch does.
+			metro.deadPids.add(pid);
+			const opened = simulator.actions.length;
+			const result = await service.runOperation({
+				actionId: 'op-gone-relaunch',
+				kind: 'lane.launch',
+				laneId,
+			});
+			expect(result.completed).toBe(false);
+			expect(result.error).toBe(
+				`Metro isn't running for lane ${laneId}. Run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start it again.`
+			);
+			expect(simulator.actions).toHaveLength(opened);
+			// The receipt and the lane say so, so the retry an agent is given
+			// starts Metro again rather than launching the lane once more.
+			expect(result.lane).toMatchObject({
+				id: laneId,
+				metro: 'stopped',
+				metroPid: pid,
+			});
+			expect(service.getState().lanes[0]).toMatchObject({ metro: 'stopped' });
+			expect(
+				laneRetryRecovery(
+					result.lane as Lane,
+					{ operation: 'launch' },
+					{ interrupted: false, backendFailed: false }
+				)
+			).toContain(
+				`run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start Metro again and open the dev client.`
+			);
 		});
 
 		it('rechecks identity before a direct launch, and a cached PID that now belongs to another app reads as a stopped Metro', async () => {
