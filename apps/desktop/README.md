@@ -45,11 +45,16 @@ Local iOS Simulator tooling on macOS:
   worktree, Simulator, or port; Metro health, agent attribution, and the Metro
   log are visible on the fleet wall and in the Lanes panel
 
-  A lane's first dev-client launch, whether the Lanes panel or an agent starts
-  the lane, terminates a running copy of the lane's app on its Simulator
-  first, so the app starts fresh with the lane's Metro instead of staying
-  registered as a debug target on the Metro another lane or a person pointed
-  it at. That copy loses its in-memory state. The lane names the app by the
+  A lane's first dev-client launch, at its start or later, whoever runs it,
+  terminates a running copy of the lane's app on its Simulator first, so the
+  app starts fresh with the lane's Metro instead of staying registered as a
+  debug target on the Metro another lane or a person pointed it at. That
+  copy loses its in-memory state. A launch with the lane's full dev-client
+  URL, an `expo-development-client` URL in any scheme whose `url` is the
+  lane's Metro (`http://127.0.0.1:<port>` or `http://localhost:<port>`), as
+  a lane started without a URL scheme has to be opened, is a dev-client
+  launch too, so when it is the lane's first it restarts the app the same
+  way. The lane names the app by the
   `ios.bundleIdentifier` the worktree's static `app.json` declared when the
   lane started; without one, or when the Simulator cannot terminate the app,
   the launch goes ahead without the restart, and the lane's Metro log, which
@@ -58,9 +63,10 @@ Local iOS Simulator tooling on macOS:
   When the Lanes panel ran it (a waiting agent start the user gave a
   Simulator included), or the launch was held back for the lane's local
   backend and opened in the background, the log alone has the note: the
-  panel shows no receipt `warnings`. A deep link terminates nothing unless it
-  is asked to restart, and leaves that first restart to the dev-client launch
-  after it. Later launches restart the app only when asked to.
+  panel shows no receipt `warnings`. A deep link, another Metro's dev-client
+  URL included, terminates nothing unless it is asked to restart, and leaves
+  that first restart to the dev-client launch after it. Later launches
+  restart the app only when asked to.
 
   A lane's Metro and the native build plan inherit the desktop's environment
   without the variables of an agent session the desktop may have been started
