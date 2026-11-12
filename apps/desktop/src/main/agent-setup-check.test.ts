@@ -80,7 +80,7 @@ describe('agent setup checks', () => {
 		await service.run({ operation: 'apply', planId });
 		expect(confirm).toHaveBeenCalledWith({
 			title: plan.title,
-			detail: `${plan.scope}\n${plan.source}\nWrites ~/dotfiles/codex.toml, the file it links to.\n\n${plan.summary}`,
+			detail: `${plan.scope}\n${plan.source}\nWrites ~/dotfiles/codex.toml, the file it resolves to.\n\n${plan.summary}`,
 		});
 	});
 	it('cancel changes nothing; undo checks history and confirms separately', async () => {

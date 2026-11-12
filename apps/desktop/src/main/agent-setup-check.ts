@@ -158,9 +158,10 @@ export class AgentSetupCheckService {
 				throw new Error('Preview this fix again before applying it.');
 			}
 			title = entry.plan.title;
-			// A dotfiles link is edited where it points: name that file too.
+			// A config reached through a link, the file itself or a folder on
+			// its path, is edited where it resolves: name that file too.
 			const writes = entry.plan.target
-				? `\nWrites ${entry.plan.target}, the file it links to.`
+				? `\nWrites ${entry.plan.target}, the file it resolves to.`
 				: '';
 			detail = `${entry.plan.scope}\n${entry.plan.source}${writes}\n\n${entry.plan.summary}`;
 		} else {
