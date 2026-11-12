@@ -85,6 +85,32 @@ describe('bounded simulator diagnostics', () => {
 			'Error: example failure\n  at exampleFrame'
 		);
 	});
+	it('redacts a token that an escape sequence glues to the word before it', () => {
+		// The JWT and Bearer rules start at a word boundary, which neither the
+		// letter that ends a sequence nor the word left once it is removed has
+		// before the token.
+		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
+		for (const [raw, redacted] of [
+			[
+				`Error: fetching\u001b[32m${jwt}\u001b[0m done`,
+				'Error: fetching[REDACTED JWT] done',
+			],
+			['Error: Bearer\u001b[1msecret-value', 'Error: Bearer [REDACTED]'],
+			// A two-byte escape, the 8-bit CSI, and a lone ESC.
+			[`Error: fetching\u001b7${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u009b32m${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u001b${jwt}`, 'Error: fetching[REDACTED JWT]'],
+			// A secret's value and a token a sequence glues to it are one secret.
+			[`password=example\u001b[0m${jwt}`, 'password=[REDACTED]'],
+		] as const) {
+			expect(failureText(raw)).toBe(redacted);
+		}
+		// Redacting the raw text first cut this sequence at the `;` between its
+		// parameters, and left the rest of it, `32m`, on the token.
+		const text = failureText(`GET /callback?code=\u001b[1;32m${jwt}\u001b[0m`);
+		expect(text).toContain('GET /callback?code=[REDACTED');
+		expect(text).not.toMatch(/eyJ|32m/);
+	});
 	it('redacts a token that a removed control character would join to the word before it', () => {
 		// The JWT and Bearer rules start at a word boundary, and a removed
 		// control leaves none between the word and the token it parted.

@@ -275,6 +275,46 @@ describe('runNativePlan', () => {
 	});
 
 	it.each([
+		['an SGR sequence', 'fetching\\033[32m', 'fetching[REDACTED JWT]'],
+		['a two-byte escape', 'fetching\\0337', 'fetching[REDACTED JWT]'],
+		['the 8-bit CSI', 'fetching\\302\\23332m', 'fetching[REDACTED JWT]'],
+		['a lone ESC', 'fetching\\033', 'fetching[REDACTED JWT]'],
+		['an SGR sequence after Bearer', 'Bearer\\033[1m', 'Bearer [REDACTED]'],
+		// Redacting the raw text first cut this sequence at the `;` between
+		// its parameters, and left the rest of it, `32m`, on the token.
+		[
+			'a sequence of two parameters after a code parameter',
+			'GET /callback?code=\\033[1;32m',
+			'GET /callback?code=[REDACTED',
+		],
+	])(
+		'redacts a token that %s glues to the word before it',
+		async (_, before, redacted) => {
+			// The JWT and Bearer rules start at a word boundary, which neither
+			// the letter that ends a sequence nor the word left once it is
+			// removed has before the token.
+			const token = before.startsWith('Bearer')
+				? 'example-bearer-value'
+				: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.ZXhhbXBsZS1zaWduYXR1cmU';
+			for (const [redirect, message] of [
+				['>&2\nexit 2', /failed: Error: /],
+				['', /exited without reporting a plan; it printed: Error: /],
+			] as const) {
+				const failure: unknown = await fakeNode(
+					`printf 'Error: ${before}%s\\n' '${token}' ${redirect}`
+				)
+					.plan()
+					.catch((error: unknown) => error);
+				expect(failure).toBeInstanceOf(Error);
+				const text = (failure as Error).message;
+				expect(text).toMatch(message);
+				expect(text).toContain(`Error: ${redacted}`);
+				expect(text).not.toMatch(/eyJ|example-bearer-value|32m/);
+			}
+		}
+	);
+
+	it.each([
 		['a JWT after a carriage return', 'fetching\\r', 'fetching[REDACTED JWT]'],
 		['a JWT after a vertical tab', 'fetching\\v', 'fetching[REDACTED JWT]'],
 		[

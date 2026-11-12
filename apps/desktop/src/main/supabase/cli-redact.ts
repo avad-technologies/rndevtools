@@ -91,22 +91,97 @@ function isInvisible(code: number): boolean {
 }
 
 /**
- * `value` without terminal escape sequences and invisible characters, and
- * redacted by the core rules both before they go and after. Removing a
- * character joins what it kept apart, and the JWT and Bearer rules start at
- * a word boundary: a token that a carriage return, a vertical tab or a
- * zero-width space parted from the word before it is redacted only while
- * that character is there. One in colored output, after an escape
- * sequence's final letter, gets a boundary only once the sequence is gone.
- * The rules leave their own markers as they are.
+ * Stands where the shown text leaves an escape sequence out, in the text the
+ * redaction rules read. They read a tab as white space, which ends a token
+ * and starts a word, and no other tab is there: the input's own are shown,
+ * and read, as spaces.
+ */
+const SEPARATOR = '\t';
+/** At least as long as any marker the redaction rules leave. */
+const MARKER_WINDOW = 32;
+const MARKER_AT_START = /^\[REDACTED(?: [A-Z]+)*\]/;
+const MARKER_AT_END = /\[REDACTED(?: [A-Z]+)*\]$/;
+
+/**
+ * `value` without terminal escape sequences and invisible characters,
+ * redacted by the core rules. The JWT and Bearer rules start at a word
+ * boundary, so removing a sequence must not join what it kept apart: in
+ * colored output a token can follow a sequence's final letter with a word
+ * right before the sequence, as in `fetching\x1b[32meyJ…`, and the token
+ * has a boundary neither before the sequence goes nor after. So the rules
+ * read the text with a separator where each sequence was, which is then
+ * removed, and what is left is redacted again for a token that a sequence
+ * split. The raw text is never redacted: a rule can stop inside a sequence,
+ * at the `;` of `\x1b[1;32m`, and leave the rest of it on the token. A
+ * marker that a removed sequence parts from the marker before it joins
+ * that one, so a value and a token glued to it stay one marker.
  */
 export function redactTerminalText(
 	value: string,
 	keepNewlines: boolean
 ): string {
 	return redactDiagnosticText(
-		stripTerminalControls(redactDiagnosticText(value), keepNewlines)
+		shownText(redactDiagnosticText(separatedText(value, keepNewlines)))
 	);
+}
+
+/**
+ * `value` with one SEPARATOR for each run of escape sequences, and its tabs
+ * and, unless they are kept, its line breaks as spaces.
+ */
+function separatedText(value: string, keepNewlines: boolean): string {
+	let output = '';
+	let separated = false;
+	let index = 0;
+	while (index < value.length) {
+		const code = value.charCodeAt(index);
+		if (code === 0x1b || code === 0x9b) {
+			index = skipEscapeSequence(value, index);
+			if (!separated) output += SEPARATOR;
+			separated = true;
+			continue;
+		}
+		output +=
+			code === 0x09 || (code === 0x0a && !keepNewlines) ? ' ' : value[index];
+		separated = false;
+		index += 1;
+	}
+	return output;
+}
+
+/**
+ * The redacted `view` as it is shown: without its separators and invisible
+ * characters, and without a marker that a separator parts from the marker
+ * before it.
+ */
+function shownText(view: string): string {
+	const parts: string[] = [];
+	let afterMarker = false;
+	let start = 0;
+	for (;;) {
+		const separator = view.indexOf(SEPARATOR, start);
+		const end = separator === -1 ? view.length : separator;
+		const from = afterMarker ? pastMarkers(view, start, end) : start;
+		const part = stripTerminalControls(view.slice(from, end), true);
+		if (part) {
+			parts.push(part);
+			afterMarker = MARKER_AT_END.test(part.slice(-MARKER_WINDOW));
+		}
+		if (separator === -1) return parts.join('');
+		start = separator + 1;
+	}
+}
+
+/** Where the markers that start `view` at `index`, before `end`, end. */
+function pastMarkers(view: string, index: number, end: number): number {
+	let at = index;
+	for (;;) {
+		const marker = MARKER_AT_START.exec(
+			view.slice(at, Math.min(end, at + MARKER_WINDOW))
+		);
+		if (!marker) return at;
+		at += marker[0].length;
+	}
 }
 
 /**
@@ -158,7 +233,26 @@ function skipEscapeSequence(value: string, start: number): number {
 		index += 1;
 	}
 	const final = value.charCodeAt(index);
+	// A letter right after the ESC with a word character after it starts a
+	// word, as a lone ESC before a token's `eyJ` leaves it, more often than
+	// it ends a sequence: taking it would cut off the token's first letter,
+	// and no rule knows the rest. Such a sequence's letter is shown instead.
+	if (
+		index === start + 1 &&
+		isAsciiLetter(final) &&
+		isWordCharacter(value.charCodeAt(index + 1))
+	) {
+		return index;
+	}
 	return final >= 0x30 && final <= 0x7e ? index + 1 : index;
+}
+
+function isAsciiLetter(code: number): boolean {
+	return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
+
+function isWordCharacter(code: number): boolean {
+	return isAsciiLetter(code) || (code >= 0x30 && code <= 0x39) || code === 0x5f;
 }
 
 function skipControlSequence(value: string, start: number): number {

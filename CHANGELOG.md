@@ -242,15 +242,16 @@
   longer fails when the desktop was started with `DEBUG`.
 - Agent discovery keeps running while every window is hidden, so a session
   that ended without its session-end hook still has its holds released.
-- Failure text and native plan errors are redacted both before and after
-  they lose terminal escape sequences and control characters, so neither
-  colored output nor a carriage return between a word and a token shields
-  the token. The failure handoff's confirmation defaults to Cancel and lists
-  the evidence it sends and to which vendor, and Codex fix mode asks before
-  each edit (`--ask-for-approval untrusted`). Failure history no longer
-  reports a Metro RN Devtools stopped on purpose as no longer running,
-  records one whose PID came to name another process, and scans crash
-  reports after startup, reusing the ones it already parsed.
+- Failure text and native plan errors are redacted as if each terminal
+  escape sequence they lose were a space, and again once it is gone, so
+  colored output no longer shields a token, not even one that a sequence
+  glues to the word before it, and neither does a carriage return between
+  a word and a token. The failure handoff's confirmation defaults to Cancel
+  and lists the evidence it sends and to which vendor, and Codex fix mode
+  asks before each edit (`--ask-for-approval untrusted`). Failure history no
+  longer reports a Metro RN Devtools stopped on purpose as no longer
+  running, records one whose PID came to name another process, and scans
+  crash reports after startup, reusing the ones it already parsed.
 
 ### `rndevtools` CLI
 
