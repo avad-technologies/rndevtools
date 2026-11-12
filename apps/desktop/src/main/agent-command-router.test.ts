@@ -2631,6 +2631,9 @@ describe('agent command router', () => {
 				action: 'installed-from-cache',
 				installed: true,
 			});
+			// An install refreshes the binary whatever is there, so it lists
+			// nothing first, on a booted Simulator as on one that is not.
+			expect(actions.map(({ action }) => action.kind)).toEqual(['app.install']);
 			const install = actions.find(
 				({ action }) => action.kind === 'app.install'
 			);
