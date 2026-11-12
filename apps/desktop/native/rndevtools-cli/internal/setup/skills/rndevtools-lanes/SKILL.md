@@ -183,7 +183,10 @@ the lane's first dev-client launch it terminates any running copy of the app
 on that Simulator, so the app starts fresh with only this lane's Metro. It
 names the app by the `ios.bundleIdentifier` that `app.json` declared when the
 lane started; without one, or when the Simulator cannot terminate the app, the
-launch goes ahead, and the result's `warnings` and the lane's log say so. The
+launch goes ahead, and the result's `warnings` and the lane's log say so. A
+launch held back until the lane's local backend is ready (`lane.backend`
+`starting`) opens after `lane --operation up` has returned, so then only the
+lane's log says so (`rndevtools lane --operation log --lane-id <laneId>`). The
 result includes `lane.id`, `lane.port`, `lane.simulatorUdid`, and `lane.metro`
 (`starting` | `ready` | `stopped`). Pass `--launch=false` to lease and start
 Metro without opening the app.

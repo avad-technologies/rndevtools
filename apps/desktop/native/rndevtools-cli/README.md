@@ -504,7 +504,9 @@ first (a lane started with `--launch=false` included), as far as it can: it
 names the app by the `ios.bundleIdentifier` the worktree's `app.json`
 declared when the lane started, and when there is none, or the Simulator
 cannot terminate the app, the launch goes ahead and the receipt's `warnings`
-say so. Later launches restart the app only when asked. Terminating an app
+say so; a launch held back until the lane's local backend is ready opens
+after `up` has returned, and only the lane's log (`lane --operation log`) says
+so. Later launches restart the app only when asked. Terminating an app
 that is not running counts as success, and device holds apply as usual.
 `launch --url` without `--restart` never terminates the app, because a deep
 link keeps its state, and it leaves that first restart to the dev-client
@@ -518,11 +520,12 @@ strings of at most 4 KiB, each saying what the lane's first dev-client launch
 could not do of what it does unasked: terminate a copy of the app already
 running, or name the app at all when `app.json` declares no
 `ios.bundleIdentifier`. The launch went ahead, and the lane's log says the
-same. (A Simulator job, wherever one is returned, may carry `warnings` of its
-own: at most 8 redacted strings, each a best-effort step the job went on
-without.) A device request (`deviceRequest` in a `lane --operation up`
-result, `deviceRequests` in `ls`) carries `restart` when the parked start
-asked for one.
+same. A launch held back for the local backend, which opens after its `up`
+has returned, leaves that note in the log alone. (A Simulator job, wherever
+one is returned, may carry `warnings` of its own: at most 8 redacted
+strings, each a best-effort step the job went on without.) A device request
+(`deviceRequest` in a `lane --operation up` result, `deviceRequests` in
+`ls`) carries `restart` when the parked start asked for one.
 
 A `lane --operation up` or `launch` that the desktop stops at its own
 deadline for the command, 230 s, fails with the error code `timed_out`

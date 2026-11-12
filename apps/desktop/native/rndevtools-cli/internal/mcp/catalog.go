@@ -85,27 +85,28 @@ func ReadOnlyTools() []string {
 var toolMeta = map[protocol.Command]meta{
 	protocol.CommandLane: {
 		title: "Run a worktree on its own Simulator",
-		description: "Start, stop, list, launch, or read logs for a lane: one git worktree running on one iOS " +
-			"Simulator with its own Metro port leased by RN Devtools, so parallel branches and agents never " +
+		description: "Start, stop, list, launch, or read logs for a lane: one git worktree on one iOS " +
+			"Simulator with its own Metro port leased by RN Devtools, so parallel agents never " +
 			"collide on port 8081 or a shared device. Use it whenever asked to run a branch, open the " +
 			"simulator, start the app for a worktree, or fix a Metro port clash. operation \"up\" needs the " +
 			"absolute worktree path; udid is optional (omit it and RN Devtools picks a free iPhone, booted first; " +
-			"when none is free the result has completed=false and a deviceRequest the user settles in the app: poll " +
-			"ls until that request is fulfilled with a laneId). It boots the device, starts Metro, and opens the dev client; if the dev client is " +
-			"missing the error says so and names the build command; call the native tool (operation plan) " +
-			"before building. Calling up again for the same worktree and Simulator returns its lane and relaunches. " +
+			"when none is free the result has completed=false and a deviceRequest for the user to settle in the app: poll " +
+			"ls until it is fulfilled with a laneId). It boots the device, starts Metro, and opens the dev client; if it is " +
+			"not installed, call the native tool (operation plan) before building, as the error says. " +
+			"up again for the same worktree returns its lane and relaunches. " +
 			"A lane's first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's " +
-			"warnings say when it could not); pass restart to up or launch when another lane " +
-			"or a person started it. A failed launch names the lane and the command that retries it. " +
+			"warnings say when it could not, or, for a launch held back for the local backend, only the lane's log); " +
+			"pass restart to up or launch when another lane or a person started it. " +
+			"A failed launch names the lane and the command that retries it. " +
 			"\"down\" stops Metro and releases the port (lane-id). \"ls\" lists lanes. \"launch\" re-opens " +
 			"the dev client or a deep link (lane-id, url, restart). \"log\" tails Metro (lane-id, max-characters). Optional " +
-			"slim applies a SimSlim profile before Metro starts (when SimSlim is on in RN Devtools " +
-			"and the device is free or yours); lane.slim says applied, skipped (with why), or failed. " +
-			"Optional backend (auto, off, required): with auto, the development default, up also starts this " +
-			"worktree's local Supabase and passes its URL and publishable key to Metro, so never start Supabase by hand " +
-			"for a lane; lane.backend reports ready, starting (the app launches when it is ready; if the result has a " +
-			"jobId, call wait (condition job), and without one call up again in a few seconds), skipped, " +
-			"shadowed (the app's own .env files override the injected URL), refused, or failed, with the reason.",
+			"slim applies a SimSlim profile before Metro starts when SimSlim is on " +
+			"and the device is free or yours; lane.slim says applied, skipped (why), or failed. " +
+			"Optional backend (auto, off, required): auto, the development default, also starts this " +
+			"worktree's local Supabase and hands Metro its URL and publishable key, so never start Supabase by hand " +
+			"for a lane; lane.backend reports ready, starting (the app launches once it is ready; wait (condition job) on its " +
+			"jobId, or without one call up again in a few seconds), skipped, " +
+			"shadowed (the app's .env files override that URL), refused, or failed, and why.",
 	},
 	protocol.CommandSupabase: {
 		title: "Run this worktree's local Supabase",

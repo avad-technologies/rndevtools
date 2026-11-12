@@ -268,6 +268,8 @@ func TestTheLanesSkillDocumentsRestartAndTheDeviceChoice(t *testing.T) {
 		"started with `--launch=false`",
 		"`ios.bundleIdentifier`",
 		"the result's `warnings`",
+		// A launch held back for the local backend opens after up returns.
+		"opens after `lane --operation up` has returned, so then only the lane's log says so",
 		"without `--restart` never terminates the app",
 		"leaves that first restart to the dev-client launch after it",
 		// A lane keeps the scheme it started with, and up takes no URL.

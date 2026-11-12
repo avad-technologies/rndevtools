@@ -384,14 +384,17 @@ func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
 		t.Fatalf("lane restart parameter: %v", restart)
 	}
 	usage, _ := restart["description"].(string)
-	for _, phrase := range []string{"(up, launch)", "a terminate that fails fails the launch", "first dev-client launch", "warnings", "another lane or a person", "debug target", "without restart keeps the app's state", "ios.bundleIdentifier"} {
+	// A launch held back for the local backend opens after up has returned,
+	// so only the lane's log can say it could not restart the app.
+	heldBack := "or, for a launch held back for the local backend, only the lane's log"
+	for _, phrase := range []string{"(up, launch)", "a terminate that fails fails the launch", "first dev-client launch", "warnings", heldBack, "another lane or a person", "debug target", "without restart keeps the app's state", "ios.bundleIdentifier"} {
 		if !strings.Contains(usage, phrase) {
 			t.Fatalf("restart description lacks %q: %s", phrase, usage)
 		}
 	}
 	// A lane's first dev-client launch restarts the app by itself, as far as
 	// app.json names the app and the Simulator lets it.
-	for _, phrase := range []string{"first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's warnings say when it could not)", "pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)"} {
+	for _, phrase := range []string{"first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's warnings say when it could not, " + heldBack + ")", "pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)"} {
 		if !strings.Contains(lane.Description, phrase) {
 			t.Fatalf("lane description lacks %q", phrase)
 		}
