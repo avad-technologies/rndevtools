@@ -61,8 +61,7 @@ command complete without any field never reads it either: `doctor` and
 terminal, and waits for the input to end before it sends anything;
 `--request-timeout-ms` is no field flag. `--stdin` reads that object beside the
 flags, which may then add different fields (redefining a stdin field is
-rejected), and `--stdin=false` never reads standard input, for a command run
-with no field flag where the input may stay open.
+rejected).
 
 Piping part of a command and passing the rest as flags therefore needs
 `--stdin`: without it the flags are the whole command, and one that lacks a
