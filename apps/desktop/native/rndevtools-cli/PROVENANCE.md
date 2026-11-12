@@ -157,8 +157,9 @@ needs a CLI change, and an older CLI shows them unread:
   saying what a best-effort step of the job could not do, such as approving a
   URL scheme for its app before the URL opens. The job went on without it.
 - The error code `timed_out`: a `lane` `up` or `launch` that the desktop
-  stopped at its own deadline for the command (230 s by default) fails with
-  it rather than `cancelled` or `lane_failed`. As with those, when the operation had
+  stopped at its own deadline for the command (a fixed 230 s, which
+  `--request-timeout-ms` does not change) fails with it rather than
+  `cancelled` or `lane_failed`. As with those, when the operation had
   stored its lane, the message names the lane and the recovery gives the
   command that opens it again.
 
