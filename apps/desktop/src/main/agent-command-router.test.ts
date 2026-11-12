@@ -4628,6 +4628,73 @@ describe('agent command router', () => {
 			);
 		});
 
+		it('brings back the Metro of a lane with no URL scheme for a deep link without a lane up that opens nothing', async () => {
+			const { scheme: _scheme, ...bare } = lane;
+			const url =
+				"'<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'";
+			const deepLink = { ...launchCommand, url: 'exampleapp://checkout' };
+			// Lane up cannot open its dev client, so it starts Metro alone, and
+			// the dev client opens through its full URL before the deep link.
+			const stopped = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				deepLink
+			);
+			expect(stopped.recovery).toBe(
+				`Metro for lane ${lane.id} is not running, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain} --launch=false\` to start Metro again, then open its dev client with \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers, and then \`${launchAgain}\` with the same --url: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`
+			);
+			const restarted = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				{ ...deepLink, restart: true }
+			);
+			expect(restarted.recovery).toContain(
+				`then open its dev client with \`${launchAgain} --url ${url} --restart\``
+			);
+			// A launch that was itself the dev client's full URL is retried as
+			// itself once Metro is back.
+			const opening = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				{
+					...launchCommand,
+					url: 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100',
+				}
+			);
+			expect(opening.recovery).toBe(
+				`Metro for lane ${lane.id} is not running, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain} --launch=false\` to start Metro again, then \`${launchAgain}\` with the same --url to open its dev client: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`
+			);
+			const backend: NonNullable<LaneOperationReceipt['backend']> = {
+				policy: 'required',
+				status: 'failed',
+				reason: 'failed',
+				appEnvNames: [],
+				warnings: [],
+			};
+			const backendFailed = await failure(
+				{
+					completed: false,
+					error:
+						'This lane requires its local backend, which is failed (failed).',
+					lane: bare,
+					backend,
+				},
+				deepLink
+			);
+			expect(backendFailed.recovery).toBe(
+				`Lane ${lane.id} requires its local backend, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain} --launch=false\` to start the backend, then open its dev client with \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers, and then \`${launchAgain}\` with the same --url: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`
+			);
+		});
+
 		it('keeps a failure that names no lane as it was', async () => {
 			const refused = await failure(
 				{ completed: false, error: 'CoreSimulator refused to boot.' },

@@ -26,6 +26,7 @@ import {
 	laneAppDirectory,
 	laneDevClientLaunchUrl,
 	laneSchemeSchema,
+	opensLaneDevClient,
 } from '../shared/lane-protocol';
 import type {
 	DesktopAction,
@@ -1297,6 +1298,21 @@ function laneRetryRecovery(
 	}
 	if (asked.operation === 'up') {
 		return `The lane keeps its Simulator and port ${lane.port}. ${run} \`${up}\` to ${opens ? 'launch' : 'start'} it again; it starts Metro again first if Metro exited. ${log}`;
+	}
+	if ((lane.metro === 'stopped' || backendFailed) && !lane.scheme) {
+		// Only a launch with a URL gets here for a lane with no scheme. Lane up
+		// cannot open its dev client, so it starts what the launch needs and
+		// nothing more, and the dev client opens through its full URL: the
+		// asked one, when that was it, or else before the deep link.
+		const url = shellWord(laneDevClientLaunchUrl('<scheme>', lane.port));
+		const open = opensLaneDevClient(asked.url ?? '', lane.port)
+			? `then \`${launch}${restart}\` with the same --url to open its dev client`
+			: `then open its dev client with \`${launch} --url ${url}${restart}\`, with <scheme> the URL scheme the app registers, and then \`${launch}\` with the same --url`;
+		return `${
+			backendFailed
+				? `Lane ${lane.id} requires its local backend, and the launch operation does not start it.`
+				: `Metro for lane ${lane.id} is not running, and the launch operation does not start it.`
+		} ${run} \`${upBare} --launch=false\` to start ${backendFailed ? 'the backend' : 'Metro again'}, ${open}: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`;
 	}
 	if (lane.metro === 'stopped' || backendFailed) {
 		// lane up opens the dev client (restarting the app when asked), so
