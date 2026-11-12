@@ -82,6 +82,76 @@ describe('sanitizeSupabaseText', () => {
 		).toContain('127.0.0.1:30630/postgres');
 	});
 
+	it('redacts a token that a removed sequence or character would join to the word before it', () => {
+		// The JWT and Bearer rules start at a word boundary, and Bearer takes
+		// its token after white space. Removing what parted a word from a token
+		// before redacting left neither between them.
+		const { anonKey } = realisticSecrets();
+		for (const [raw, redacted] of [
+			[`Error: fetching\r${anonKey}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u000b${anonKey}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching\u0008${anonKey}`, 'Error: fetching[REDACTED JWT]'],
+			[`Error: fetching​${anonKey}`, 'Error: fetching[REDACTED JWT]'],
+			[
+				`Error: fetching${ESC}[32m${anonKey}${ESC}[0m`,
+				'Error: fetching[REDACTED JWT]',
+			],
+			['Error: Bearer\rexample-bearer-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u000bexample-bearer-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer\u0008example-bearer-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer​example-bearer-value', 'Error: Bearer [REDACTED]'],
+			['Error: Bearer⁠example-bearer-value', 'Error: Bearer [REDACTED]'],
+			[
+				`Error: Bearer${ESC}[1mexample-bearer-value`,
+				'Error: Bearer [REDACTED]',
+			],
+		] as const) {
+			expect({ raw, sanitized: line(raw) }).toEqual({
+				raw,
+				sanitized: redacted,
+			});
+		}
+		expect(
+			sanitizeSupabaseText(`Error: one\r\nfetching\r${anonKey}`, {
+				maxChars: 4096,
+				keepNewlines: true,
+			})
+		).toBe('Error: one\nfetching[REDACTED JWT]');
+	});
+
+	it('hides all of a key or token that a removed sequence or character splits', () => {
+		const { secretKey, publishableKey, anonKey } = realisticSecrets();
+		for (const [raw, redacted] of [
+			[
+				`key ${secretKey.slice(0, 14)}​${secretKey.slice(14)}`,
+				'key [REDACTED KEY]',
+			],
+			[
+				`key ${publishableKey.slice(0, 20)}${ESC}[0m${publishableKey.slice(20)}`,
+				'key [REDACTED KEY]',
+			],
+			[
+				`token ${anonKey.slice(0, -4)}${ESC}[0m${anonKey.slice(-4)}`,
+				'token [REDACTED JWT]',
+			],
+			[
+				`token ${anonKey.slice(0, 24)}​${anonKey.slice(24)}`,
+				'token [REDACTED JWT]',
+			],
+			['mail us​er@example.com', 'mail [REDACTED EMAIL]'],
+			// A parameter's value and the token a sequence glues to it are one.
+			[
+				`GET /rest/v1/notes?apikey=${ESC}[1;32m${anonKey}${ESC}[0m&select=id`,
+				'GET /rest/v1/notes?apikey=[REDACTED]&select=id',
+			],
+		] as const) {
+			expect({ raw, sanitized: line(raw) }).toEqual({
+				raw,
+				sanitized: redacted,
+			});
+		}
+	});
+
 	it('leaves stack ids, ports and ordinary text alone', () => {
 		const id =
 			'b2e7a5393a8054d7b4658b68c7c7bb12092465347f6e3fbb7afb6864534dd9e8';

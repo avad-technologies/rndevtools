@@ -6,8 +6,9 @@ import { redactDiagnosticText } from '@rndevtools/core/redact';
  * and service output is not redacted upstream: PostgREST logs full query
  * strings, database logs echo statements, and the CLI's own messages can name
  * credentials. Everything this module returns is safe to show in the renderer
- * or send to an agent: control sequences and invisible formatting characters
- * are removed first, then credentials are redacted, then the text is bounded.
+ * or send to an agent: credentials are redacted as the text reads with a
+ * separator where each control sequence and invisible formatting character
+ * is, which are then removed (redactTerminalText), and the text is bounded.
  */
 
 const ELLIPSIS = '…';
@@ -43,14 +44,22 @@ type SupabaseTextOptions = Readonly<{
 
 /**
  * Returns `value` with terminal control sequences and invisible characters
- * removed, credentials redacted, and the length bounded.
+ * removed, credentials redacted, and the length bounded. Removing them first
+ * would join a token to the word they parted it from, out of the rules'
+ * reach, so they go as redactTerminalText removes them.
  */
 export function sanitizeSupabaseText(
 	value: string,
 	options: SupabaseTextOptions
 ): string {
-	const visible = stripTerminalControls(value, options.keepNewlines === true);
-	return boundText(redactSupabaseCredentials(visible), options.maxChars);
+	return boundText(
+		redactTerminalText(
+			value,
+			options.keepNewlines === true,
+			redactSupabaseCredentials
+		),
+		options.maxChars
+	);
 }
 
 function redactSupabaseCredentials(value: string): string {
@@ -106,36 +115,38 @@ const EMAIL_MARKER = '[REDACTED EMAIL]';
 
 /**
  * `value` without terminal escape sequences and invisible characters,
- * redacted by the core rules. The JWT and Bearer rules start at a word
- * boundary, and Bearer and an Authorization scheme take their token after
- * white space, so removing a sequence or a character must not join what it
- * kept apart: in colored output a token can follow a sequence's final
- * letter with a word right before the sequence, as in
- * `fetching\x1b[32meyJ…`, and a carriage return, a backspace or a
- * zero-width space can part `Bearer` from its token. So the rules read the
- * text with a separator where each sequence or character was, which is
- * then removed, and what is left is redacted again for a token that one
- * split. The raw text is never redacted: a rule can stop inside a
- * sequence, at the `;` of `\x1b[1;32m`, and leave the rest of it on the
- * token. Once the separators go, what one parts from a marker is shown as
- * redacting the joined text would show it: the token characters and the
- * markers after the marker go with it, as the rest of a token the
- * separator split, and so do the address characters before an email
- * marker, whose rule can start inside a word.
+ * redacted by `redact`: the core rules, unless the caller has more. The JWT
+ * and Bearer rules start at a word boundary, and Bearer and an
+ * Authorization scheme take their token after white space, so removing a
+ * sequence or a character must not join what it kept apart: in colored
+ * output a token can follow a sequence's final letter with a word right
+ * before the sequence, as in `fetching\x1b[32meyJ…`, and a carriage
+ * return, a backspace or a zero-width space can part `Bearer` from its
+ * token. So the rules read the text with a separator where each sequence
+ * or character was, which is then removed, and what is left is redacted
+ * again for a token that one split. The raw text is never redacted: a rule
+ * can stop inside a sequence, at the `;` of `\x1b[1;32m`, and leave the
+ * rest of it on the token. Once the separators go, what one parts from a
+ * marker is shown as redacting the joined text would show it: the token
+ * characters and the markers after the marker go with it, as the rest of a
+ * token the separator split, and so do the address characters before an
+ * email marker, whose rule can start inside a word.
  */
 export function redactTerminalText(
 	value: string,
-	keepNewlines: boolean
+	keepNewlines: boolean,
+	redact: (text: string) => string = redactDiagnosticText
 ): string {
-	return redactDiagnosticText(
-		shownText(redactDiagnosticText(separatedText(value, keepNewlines)))
-	);
+	return redact(shownText(redact(separatedText(value, keepNewlines))));
 }
 
 /**
  * `value` with one SEPARATOR for each run of escape sequences and invisible
  * characters, and its tabs and, unless they are kept, its line breaks as
- * spaces.
+ * spaces. The sequences are ANSI/VT ones (CSI, OSC, DCS and two-byte
+ * escapes), and the characters C0 and C1 controls, bidirectional overrides
+ * and zero-width characters. Written as a scanner so no control character
+ * ever appears in a regular expression.
  */
 function separatedText(value: string, keepNewlines: boolean): string {
 	let output = '';
@@ -259,32 +270,6 @@ function isAddressCharacter(code: number): boolean {
 
 function isAddressPunctuation(code: number): boolean {
 	return code === 0x25 || code === 0x2b || code === 0x2d || code === 0x2e;
-}
-
-/**
- * Removes ANSI/VT escape sequences (CSI, OSC, DCS and two-byte escapes), C0
- * and C1 controls, bidirectional overrides and zero-width characters. Written
- * as a scanner so no control character ever appears in a regular expression.
- */
-function stripTerminalControls(value: string, keepNewlines: boolean): string {
-	let output = '';
-	let index = 0;
-	while (index < value.length) {
-		const code = value.charCodeAt(index);
-		if (code === 0x1b || code === 0x9b) {
-			index = skipEscapeSequence(value, index);
-			continue;
-		}
-		if (code === 0x0a) {
-			output += keepNewlines ? '\n' : ' ';
-		} else if (code === 0x09) {
-			output += ' ';
-		} else if (!isInvisible(code)) {
-			output += value[index];
-		}
-		index += 1;
-	}
-	return output;
 }
 
 function skipEscapeSequence(value: string, start: number): number {
