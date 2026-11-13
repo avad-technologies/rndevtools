@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { realpathSync } from 'node:fs';
 import {
+	chmod,
 	mkdir,
 	mkdtemp,
 	readdir,
@@ -13,7 +14,10 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setImmediate as nextTurn } from 'node:timers/promises';
+import {
+	setImmediate as nextTurn,
+	setTimeout as wait,
+} from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
 	Lane,
@@ -22,6 +26,7 @@ import type {
 } from '../shared/lane-protocol';
 import type {
 	SimulatorAction,
+	SimulatorActionReceipt,
 	SimulatorJob,
 	SimulatorState,
 } from '../shared/simulator-protocol';
@@ -37,6 +42,7 @@ import type {
 	SupabaseState,
 } from '../shared/supabase-protocol';
 import { AgentService } from './agent-service';
+import { laneRetryRecovery } from './lane-agent-text';
 import {
 	createMetroSupervisor,
 	type MetroLaunchInput,
@@ -55,8 +61,13 @@ import type {
 	DiscoveredWorktree,
 	WorktreeInspectorPort,
 } from './lane-worktree';
+import { SimulatorCommandError } from './simulator-command-runner';
 import type { SimulatorMutationLease } from './simulator-mutation-coordinator';
 import { SimulatorMutationCoordinator } from './simulator-mutation-coordinator';
+import {
+	type SimulatorHostProvider,
+	SimulatorService,
+} from './simulator-service';
 import {
 	describeSupabaseLaneBackend,
 	type LaneBackendEnsureInput,
@@ -127,11 +138,15 @@ class FakeSimulator implements LaneSimulatorPort {
 	readonly listeners = new Set<(state: SimulatorState) => void>();
 	state: SimulatorState;
 	failNext: string | undefined;
+	/** Fails every job of these kinds with the message given. */
+	failKinds: Partial<Record<SimulatorAction['kind'], string>> = {};
 	/** Bundle ids `app.list` reports as installed; undefined = everything. */
 	installedApps: string[] | undefined;
 	/** When set, a boot's job finishes only once this settles. */
 	bootGate: Promise<unknown> | undefined;
 	onBootStarted: (() => void) | undefined;
+	/** What every `url.open` job reports it could not do, as it completes. */
+	openWarnings: string[] | undefined;
 
 	constructor(devices: Array<{ udid: string; state: 'booted' | 'shutdown' }>) {
 		this.state = simulatorState(devices);
@@ -139,15 +154,15 @@ class FakeSimulator implements LaneSimulatorPort {
 
 	getState = () => this.state;
 	refresh = async () => this.state;
-	cancelJob = () => true;
+	cancelJob = (_jobId: string) => true;
 	subscribe = (listener: (state: SimulatorState) => void) => {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	};
-	runAction = (action: SimulatorAction) => {
+	runAction = (action: SimulatorAction): SimulatorActionReceipt => {
 		this.actions.push(action);
 		const jobId = `simulator-${this.actions.length}`;
-		const failure = this.failNext;
+		const failure = this.failNext ?? this.failKinds[action.kind];
 		this.failNext = undefined;
 		const settle = () => {
 			const job = {
@@ -161,6 +176,9 @@ class FakeSimulator implements LaneSimulatorPort {
 				finishedAt: 2,
 				message: failure ?? 'done',
 				deviceUdid: 'udid' in action ? action.udid : undefined,
+				...(action.kind === 'url.open' && this.openWarnings
+					? { warnings: this.openWarnings }
+					: {}),
 			} as unknown as SimulatorJob;
 			if (action.kind === 'device.boot' && !failure) {
 				this.state = simulatorState(
@@ -331,9 +349,16 @@ class FakeMetro implements MetroSupervisorPort {
 	readonly deadPids = new Set<number>();
 	nextPid = 1_000;
 	logs = new Map<string, string>();
+	/** Why no Metro can start, as a malformed RNDEVTOOLS_CHILD_ENV_STRIP says. */
+	environmentIssue: string | undefined;
 
 	isPortFree = async (port: number) => !this.busyPorts.has(port);
-	start = async (input: MetroLaunchInput) => this.launch(input);
+	environmentProblem = () => this.environmentIssue;
+	/** Refuses as the real supervisor does when the environment has a problem. */
+	start = async (input: MetroLaunchInput) => {
+		if (this.environmentIssue) throw new Error(this.environmentIssue);
+		return this.launch(input);
+	};
 	/** Records a Metro launch and binds its port unless a live process holds it. */
 	launch(input: MetroLaunchInput, pid?: number): number {
 		let id = pid;
@@ -363,6 +388,13 @@ class FakeMetro implements MetroSupervisorPort {
 		if (this.listeners.get(port) === pid) this.listeners.delete(port);
 	};
 	readLogTail = async (logPath: string) => this.logs.get(logPath) ?? '';
+	/** Every note the desktop added to a lane log, in order. */
+	readonly notes: Array<{ logPath: string; note: string }> = [];
+	failNotes = false;
+	appendLogNote = async (logPath: string, note: string) => {
+		if (this.failNotes) throw new Error('EACCES: permission denied');
+		this.notes.push({ logPath, note });
+	};
 }
 
 class FakeWorktrees implements WorktreeInspectorPort {
@@ -403,6 +435,10 @@ class FakeWorktrees implements WorktreeInspectorPort {
 	};
 	readExpoIdentity = async () => this.identity;
 }
+
+/** Why no Metro can start while RNDEVTOOLS_CHILD_ENV_STRIP is malformed. */
+const MALFORMED_STRIP =
+	'RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name or a NAME_PREFIX* pattern. Separate entries with commas, fix it, and restart RN Devtools.';
 
 const STACK_ID =
 	'64616c83912c48442ec266f86ee2d7f004d2be5c8b7f31a6d6b4c2634f82145f';
@@ -587,18 +623,28 @@ describe('LaneService', () => {
 			bundleIdentifier: 'com.example.app',
 			agent: { kind: 'claude', sessionId: 'session-1', lastSeenAt: now },
 		});
+		// A new lane's first launch starts its app fresh: any copy already
+		// running goes before the dev client opens.
 		expect(simulator.actions.map((action) => action.kind)).toEqual([
 			'device.boot',
 			'app.list',
+			'app.terminate',
 			'url.open',
 		]);
-		const launch = simulator.actions[2] as Extract<
+		expect(simulator.actions[2]).toMatchObject({
+			kind: 'app.terminate',
+			udid: UDID,
+			bundleIdentifier: 'com.example.app',
+		});
+		const launch = simulator.actions[3] as Extract<
 			SimulatorAction,
 			{ kind: 'url.open' }
 		>;
 		expect(launch.url).toBe(
 			'exampleapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'
 		);
+		// The lane's own scheme opens in its own app without iOS asking first.
+		expect(launch.bundleIdentifier).toBe('com.example.app');
 		expect(metro.started[0]).toMatchObject({
 			worktreePath: WORKTREE,
 			port: 8_100,
@@ -622,6 +668,7 @@ describe('LaneService', () => {
 		});
 		expect(simulator.actions.map((action) => action.kind)).toEqual([
 			'app.list',
+			'app.terminate',
 			'url.open',
 		]);
 	});
@@ -806,6 +853,9 @@ describe('LaneService', () => {
 			launch: false,
 		});
 		expect(receipt.error).toBe('CoreSimulator refused to boot.');
+		// No lane was stored, so the receipt names none.
+		expect(receipt).not.toHaveProperty('lane');
+		expect(receipt).not.toHaveProperty('cancelled');
 		expect(metro.started).toHaveLength(0);
 		expect(service.getState().lanes).toHaveLength(0);
 	});
@@ -834,9 +884,12 @@ describe('LaneService', () => {
 				controller.signal
 			);
 			await spawning.promise;
+			// Stopping the lanes waits for the cleanup of a Metro still spawning.
+			let stopping: Promise<void> | undefined;
 			if (operation === 'cancel') controller.abort();
-			else await service.stop();
+			else stopping = service.stop();
 			release.resolve();
+			await stopping;
 			const result = await starting;
 			expect(result.completed).toBe(false);
 			expect(result.error).toMatch(/cancelled|shutting down/);
@@ -875,9 +928,11 @@ describe('LaneService', () => {
 				controller.signal
 			);
 			await spawning.promise;
+			let stopping: Promise<void> | undefined;
 			if (operation === 'cancel') controller.abort();
-			else await service.stop();
+			else stopping = service.stop();
 			release.resolve();
+			await stopping;
 			const result = await starting;
 			expect(result.completed).toBe(false);
 			expect(result.error).toMatch(/cancelled|shutting down/);
@@ -900,6 +955,221 @@ describe('LaneService', () => {
 		}
 	);
 
+	describe('a Metro no lane keeps that outlives its SIGTERM', () => {
+		let signals: Array<{ pid: number; force: boolean }>;
+		let advance: NodeJS.Timeout | undefined;
+
+		beforeEach(() => {
+			signals = [];
+			// The cleanup waits on the injected clock; move it past every deadline.
+			advance = setInterval(() => {
+				now += 1_000;
+			}, 5);
+		});
+
+		afterEach(() => {
+			clearInterval(advance);
+		});
+
+		/** A start whose Metro spawn returns only once the test releases it. */
+		function startHeld(signal: AbortSignal) {
+			const spawning = deferred<void>();
+			const release = deferred<void>();
+			metro.start = async (input) => {
+				const pid = metro.launch(input);
+				spawning.resolve();
+				await release.promise;
+				return pid;
+			};
+			const starting = service.runOperation(
+				{
+					actionId: 'op-stubborn-spawn',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				},
+				signal
+			);
+			return { spawning: spawning.promise, release: release.resolve, starting };
+		}
+
+		/** A Metro that ignores SIGTERM, and SIGKILL too unless `killable`. */
+		function stubbornMetro({ killable }: { killable: boolean }) {
+			metro.stop = async (pid, port, _directory, options) => {
+				signals.push({ pid, force: options?.force === true });
+				if (!options?.force || !killable) return;
+				metro.deadPids.add(pid);
+				if (metro.listeners.get(port) === pid) metro.listeners.delete(port);
+			};
+		}
+
+		it.each(['cancel', 'shutdown'] as const)(
+			'is killed once proven again when its spawn finishes after %s',
+			async (operation) => {
+				stubbornMetro({ killable: true });
+				const controller = new AbortController();
+				const held = startHeld(controller.signal);
+				await held.spawning;
+				let stopping: Promise<void> | undefined;
+				if (operation === 'cancel') controller.abort();
+				else stopping = service.stop();
+				held.release(undefined);
+				// Quitting waits for the cleanup to finish the Metro off.
+				await stopping;
+				const result = await held.starting;
+				expect(result.completed).toBe(false);
+				expect(signals).toEqual([
+					{ pid: 1_001, force: false },
+					{ pid: 1_001, force: true },
+				]);
+				expect(metro.isProcessRunning(1_001)).toBe(false);
+				expect(service.getState().lanes).toEqual([]);
+			}
+		);
+
+		it('is still killed when quit finds both ownership proofs slow', async () => {
+			// The clock moves only as this test says: each proof runs its ps and
+			// its lsof close to their timeouts (5 s and 3 s).
+			clearInterval(advance);
+			const PROOF_MS = 7_900;
+			const proofs = [deferred<void>(), deferred<void>()];
+			const entered = [deferred<void>(), deferred<void>()];
+			metro.stop = async (pid, port, _directory, options) => {
+				const force = options?.force === true;
+				const step = force ? 1 : 0;
+				entered[step]?.resolve();
+				await proofs[step]?.promise;
+				signals.push({ pid, force });
+				if (!force) return;
+				metro.deadPids.add(pid);
+				if (metro.listeners.get(port) === pid) metro.listeners.delete(port);
+			};
+			const held = startHeld(new AbortController().signal);
+			await held.spawning;
+			let quit = false;
+			const stopping = service.stop().then(() => {
+				quit = true;
+			});
+			held.release(undefined);
+			try {
+				await entered[0]?.promise;
+				now += PROOF_MS;
+				proofs[0]?.resolve();
+				await vi.waitFor(() => expect(signals).toHaveLength(1));
+				// The Metro ignores its SIGTERM for the whole grace.
+				now += 5_000;
+				await entered[1]?.promise;
+				// Quit keeps waiting while the second proof runs, past a few of
+				// its polls.
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				expect(quit).toBe(false);
+				now += PROOF_MS;
+				proofs[1]?.resolve();
+				await stopping;
+				expect(signals).toEqual([
+					{ pid: 1_001, force: false },
+					{ pid: 1_001, force: true },
+				]);
+				expect(metro.isProcessRunning(1_001)).toBe(false);
+				expect((await held.starting).completed).toBe(false);
+			} finally {
+				// Whatever failed, let the cleanup and the clock run out.
+				for (const proof of proofs) proof.resolve();
+				advance = setInterval(() => {
+					now += 1_000;
+				}, 5);
+			}
+		});
+
+		it('keeps a recovery lease for one that outlives SIGKILL too', async () => {
+			stubbornMetro({ killable: false });
+			const controller = new AbortController();
+			const held = startHeld(controller.signal);
+			await held.spawning;
+			controller.abort();
+			held.release(undefined);
+			const result = await held.starting;
+			expect(result.completed).toBe(false);
+			expect(result.error).toBe(
+				'Lane operation cancelled. failed for Metro 1001 on port 8100: It did not exit after SIGTERM and SIGKILL. The lane was retained so cleanup can be retried.'
+			);
+			expect(signals).toEqual([
+				{ pid: 1_001, force: false },
+				{ pid: 1_001, force: true },
+			]);
+			expect(service.getState().lanes).toMatchObject([
+				{ metroPid: 1_001, metro: 'starting', port: 8_100 },
+			]);
+		});
+	});
+
+	it('keeps stopping the lanes until a Metro spawned meanwhile has been cleaned up', async () => {
+		const spawning = deferred<void>();
+		const release = deferred<void>();
+		metro.start = async (input) => {
+			const pid = metro.launch(input);
+			spawning.resolve();
+			await release.promise;
+			return pid;
+		};
+		const starting = service.runOperation({
+			actionId: 'op-quit-spawn',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		await spawning.promise;
+		let stopped = false;
+		const stopping = service.stop().then(() => {
+			stopped = true;
+		});
+		await nextTurn();
+		// Quit goes on once this resolves; the Metro has no lane to keep it.
+		expect(stopped).toBe(false);
+		release.resolve();
+		await stopping;
+		expect(metro.stopped).toEqual([{ pid: 1_001, port: 8_100 }]);
+		expect((await starting).completed).toBe(false);
+	});
+
+	it('stops waiting for a Metro spawn that outlasts the shutdown grace', async () => {
+		const spawning = deferred<void>();
+		const release = deferred<void>();
+		metro.start = async (input) => {
+			const pid = metro.launch(input);
+			spawning.resolve();
+			await release.promise;
+			return pid;
+		};
+		const starting = service.runOperation({
+			actionId: 'op-quit-slow-spawn',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: OTHER_UDID,
+			environment: 'development',
+			launch: false,
+		});
+		await spawning.promise;
+		const advance = setInterval(() => {
+			now += 1_000;
+		}, 5);
+		try {
+			await service.stop();
+		} finally {
+			clearInterval(advance);
+		}
+		expect(metro.stopped).toEqual([]);
+		release.resolve();
+		expect((await starting).completed).toBe(false);
+		await vi.waitFor(() =>
+			expect(metro.stopped).toEqual([{ pid: 1_001, port: 8_100 }])
+		);
+	});
+
 	it('does not spawn Metro for an already cancelled lane up', async () => {
 		const controller = new AbortController();
 		controller.abort();
@@ -915,6 +1185,8 @@ describe('LaneService', () => {
 			controller.signal
 		);
 		expect(result.completed).toBe(false);
+		expect(result.cancelled).toBe(true);
+		expect(result).not.toHaveProperty('lane');
 		expect(metro.started).toEqual([]);
 	});
 
@@ -1107,6 +1379,13 @@ describe('LaneService', () => {
 		expect(simulator.actions.map((action) => action.kind)).toEqual([
 			'device.boot',
 		]);
+		// The lane reads as stopped at once, in the receipt that names it too:
+		// only a lane up, which starts Metro again, can launch it now.
+		expect(service.getState().lanes[0]?.metro).toBe('stopped');
+		expect(receipt.lane).toMatchObject({
+			id: service.getState().lanes[0]?.id,
+			metro: 'stopped',
+		});
 	});
 
 	it('times out a Metro that never answers /status', async () => {
@@ -1128,6 +1407,11 @@ describe('LaneService', () => {
 		expect(receipt.completed).toBe(false);
 		expect(receipt.error).toMatch(/did not become ready/);
 		expect(service.getState().lanes[0]?.metro).toBe('starting');
+		// The lane exists and keeps its lease, so the receipt names it for a
+		// lane up or launch to try again.
+		expect(receipt.lane?.id).toBe(service.getState().lanes[0]?.id);
+		expect(receipt.lane?.port).toBe(8_100);
+		expect(receipt).not.toHaveProperty('cancelled');
 	});
 
 	it("launches deep links through the lane scheme and refreshes the holder's attribution", async () => {
@@ -1152,14 +1436,103 @@ describe('LaneService', () => {
 		expect(launched.completed).toBe(true);
 		expect(launched.lane).toMatchObject({
 			metro: 'ready',
-			lastLaunchedAt: now,
 			agent: { kind: 'codex', sessionId: 'thread-9', lastSeenAt: now },
 		});
+		// A deep link opens the app as it is, wherever it was pointed: only a
+		// dev-client launch counts as the lane's launch.
+		expect(launched.lane).not.toHaveProperty('lastLaunchedAt');
 		const open = simulator.actions.at(-1) as Extract<
 			SimulatorAction,
 			{ kind: 'url.open' }
 		>;
 		expect(open.url).toBe('exampleapp://checkout/cart');
+		expect(open.bundleIdentifier).toBe('com.example.app');
+	});
+
+	it("approves only the lane's own scheme for its app", async () => {
+		metro.healthyPorts.add(8_100);
+		const started = await service.runOperation({
+			actionId: 'op-1',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: UDID,
+			environment: 'development',
+			launch: false,
+		});
+		const laneId = started.lane?.id as string;
+		for (const [index, url] of [
+			'https://example.com/items/1',
+			'otherapp://home',
+		].entries()) {
+			const launched = await service.runOperation({
+				actionId: `op-other-${index}`,
+				kind: 'lane.launch',
+				laneId,
+				url,
+			});
+			expect(launched.completed).toBe(true);
+			const open = simulator.actions.at(-1) as Extract<
+				SimulatorAction,
+				{ kind: 'url.open' }
+			>;
+			expect(open.url).toBe(url);
+			expect(open).not.toHaveProperty('bundleIdentifier');
+		}
+		const own = await service.runOperation({
+			actionId: 'op-own',
+			kind: 'lane.launch',
+			laneId,
+			url: 'ExampleApp://settings',
+		});
+		expect(own.completed).toBe(true);
+		expect(simulator.actions.at(-1)).toMatchObject({
+			kind: 'url.open',
+			url: 'ExampleApp://settings',
+			bundleIdentifier: 'com.example.app',
+		});
+	});
+
+	it("notes in the lane log what the dev client's open could not do, and launches anyway", async () => {
+		metro.healthyPorts.add(8_100);
+		const started = await service.runOperation({
+			actionId: 'op-1',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: UDID,
+			environment: 'development',
+			launch: true,
+		});
+		expect(started.completed).toBe(true);
+		// An open that warned of nothing leaves the log to Metro.
+		expect(metro.notes).toEqual([]);
+		const laneId = started.lane?.id as string;
+		const logPath = started.lane?.logPath;
+		const warning =
+			'The exampleapp URL scheme could not be approved for com.example.app (xcrun failed with exit code 1.), so iOS may ask "Open in …?" before the app opens.';
+		simulator.openWarnings = [warning];
+		now += 1_000;
+		const launched = await service.runOperation({
+			actionId: 'op-2',
+			kind: 'lane.launch',
+			laneId,
+		});
+		expect(launched.completed).toBe(true);
+		expect(launched.lane).toMatchObject({
+			metro: 'ready',
+			lastLaunchedAt: now,
+		});
+		expect(metro.notes).toEqual([{ logPath, note: warning }]);
+
+		// A log that cannot take the note fails nothing either.
+		metro.failNotes = true;
+		now += 1_000;
+		const again = await service.runOperation({
+			actionId: 'op-3',
+			kind: 'lane.launch',
+			laneId,
+		});
+		expect(again.completed).toBe(true);
+		expect(again.lane).toMatchObject({ lastLaunchedAt: now });
 	});
 
 	it('never hands a lane to another session that launches or resumes it', async () => {
@@ -1396,6 +1769,286 @@ describe('LaneService', () => {
 		expect(service.getState().lanes).toHaveLength(1);
 	});
 
+	it.each([
+		['success', undefined],
+		['failure', 'Could not inspect process 1001; refusing to stop it.'],
+	] as const)(
+		"gives a second stop of a lane that is stopping the first one's %s",
+		async (_outcome, failure) => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-double-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			const stopping = deferred<void>();
+			const release = deferred<void>();
+			const stop = metro.stop;
+			metro.stop = async (pid, port, directory, options) => {
+				stopping.resolve();
+				await release.promise;
+				if (failure) throw new Error(failure);
+				await stop(pid, port, directory, options);
+			};
+			const first = service.runOperation({
+				actionId: 'op-double-stop-1',
+				kind: 'lane.stop',
+				laneId,
+			});
+			await stopping.promise;
+			const second = service.runOperation({
+				actionId: 'op-double-stop-2',
+				kind: 'lane.stop',
+				laneId,
+			});
+			release.resolve();
+			const receipts = await Promise.all([first, second]);
+			expect(receipts.map((receipt) => receipt.completed)).toEqual(
+				failure ? [false, false] : [true, true]
+			);
+			expect(receipts.map((receipt) => receipt.error)).toEqual(
+				failure ? [failure, failure] : [undefined, undefined]
+			);
+			expect(metro.stopped).toEqual(
+				failure ? [] : [{ pid: started.lane?.metroPid, port: 8_100 }]
+			);
+			expect(service.getState().lanes).toHaveLength(failure ? 1 : 0);
+		}
+	);
+
+	it('tells a lane up during its lane stop how to wait for that stop and start again', async () => {
+		const started = await service.runOperation({
+			actionId: 'op-up-during-stop-start',
+			kind: 'lane.start',
+			worktreePath: WORKTREE,
+			simulatorUdid: UDID,
+			environment: 'staging',
+			launch: false,
+		});
+		const laneId = started.lane?.id as string;
+		const stopping = deferred<void>();
+		const release = deferred<void>();
+		const stop = metro.stop;
+		metro.stop = async (pid, port, directory, options) => {
+			stopping.resolve();
+			await release.promise;
+			await stop(pid, port, directory, options);
+		};
+		const stopped = service.runOperation({
+			actionId: 'op-up-during-stop-stop',
+			kind: 'lane.stop',
+			laneId,
+		});
+		await stopping.promise;
+		try {
+			const up = await service.runOperation({
+				actionId: 'op-up-during-stop-up',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				environment: 'staging',
+				launch: true,
+			});
+			expect(up).toMatchObject({
+				completed: false,
+				error: `Lane ${laneId} is stopping. Wait for that stop to finish: \`rndevtools lane --operation down --lane-id ${laneId}\` waits for it and says how it ended. Then run \`rndevtools lane --operation up --worktree ${WORKTREE} --environment staging\` to start the app's lane again.`,
+			});
+			expect(up).not.toHaveProperty('lane');
+		} finally {
+			release.resolve();
+		}
+		expect((await stopped).completed).toBe(true);
+	});
+
+	describe('a Metro that outlives its SIGTERM', () => {
+		let laneId: string;
+		let pid: number;
+		let signals: Array<{ pid: number; force: boolean }>;
+		let advance: NodeJS.Timeout | undefined;
+
+		beforeEach(async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-stubborn-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			laneId = started.lane?.id as string;
+			pid = started.lane?.metroPid as number;
+			signals = [];
+			// The stop waits on the injected clock; move it past every deadline.
+			advance = setInterval(() => {
+				now += 1_000;
+			}, 5);
+		});
+
+		afterEach(() => {
+			clearInterval(advance);
+		});
+
+		function stop() {
+			return service.runOperation({
+				actionId: `op-stubborn-stop-${signals.length}`,
+				kind: 'lane.stop',
+				laneId,
+			});
+		}
+
+		it("is killed once proven to be the lane's Metro again, and the lane goes", async () => {
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(true);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(false);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('is left alone once its PID names another process, and the lane goes', async () => {
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (options?.force) {
+					throw new NotLaneMetroError(
+						`Process ${target} is no longer the Metro serving port ${port}; refusing to stop it.`
+					);
+				}
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(true);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('is gone when it exits between its proof and its SIGKILL, and the lane goes', async () => {
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				// What process.kill throws for a PID that exited after the proof.
+				metro.deadPids.add(target);
+				throw Object.assign(new Error('kill ESRCH'), {
+					code: 'ESRCH',
+					syscall: 'kill',
+				});
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(true);
+			expect(stopped.error).toBeUndefined();
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('keeps the lane when its proof fails at the SIGKILL stage, and says why', async () => {
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				throw new Error(
+					`Could not inspect process ${target} to confirm it is this lane's Metro (lsof timed out); refusing to stop it.`
+				);
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(false);
+			expect(stopped.error).toBe(
+				`Could not inspect process ${pid} to confirm it is this lane's Metro (lsof timed out); refusing to stop it.`
+			);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(true);
+			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([laneId]);
+		});
+
+		it('is finished off before quit returns when a stop nobody awaits is under way', async () => {
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			// As release --all leaves a stop that outlasts its budget: running,
+			// with nobody waiting for its receipt.
+			const pending = stop();
+			await vi.waitFor(() => expect(signals).toHaveLength(1));
+			await service.stop();
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(false);
+			expect((await pending).completed).toBe(true);
+			const reopened = new LaneStore(root);
+			await reopened.start();
+			expect(reopened.lanes()).toEqual([]);
+		});
+
+		it('lets quit go on once a stop stuck past the shutdown grace is left running', async () => {
+			// Stuck in its proof on a call with no timeout, as the stat of an app
+			// directory on a volume that stopped answering can be.
+			const stuck = deferred<void>();
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				await stuck.promise;
+			};
+			let settled = false;
+			const pending = stop().then((receipt) => {
+				settled = true;
+				return receipt;
+			});
+			await vi.waitFor(() => expect(signals).toHaveLength(1));
+			try {
+				await expect(
+					Promise.race([
+						service.stop().then(() => 'quit'),
+						wait(2_000).then(() => 'still waiting'),
+					])
+				).resolves.toBe('quit');
+				expect(settled).toBe(false);
+			} finally {
+				stuck.resolve();
+				await pending;
+			}
+		});
+
+		it('keeps the lane when it outlives SIGKILL too, so a later stop can finish it', async () => {
+			const original = metro.stop;
+			metro.stop = async (target, _port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+			};
+			const stopped = await stop();
+			expect(stopped.completed).toBe(false);
+			expect(stopped.error).toBe(
+				`Metro ${pid} on port 8100 did not exit after SIGTERM and SIGKILL. The lane was kept so it can be stopped again.`
+			);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([laneId]);
+			metro.stop = original;
+			expect((await stop()).completed).toBe(true);
+			expect(service.getState().lanes).toEqual([]);
+		});
+	});
+
 	it('keeps a lane whose worktree moved under its running Metro, leaving that Metro alone', async () => {
 		const checkout = path.join(root, 'checkout');
 		const appDirectory = path.join(checkout, 'apps', 'mobile');
@@ -1559,6 +2212,51 @@ describe('LaneService', () => {
 					attempts
 				);
 				expect(new Set(actions.map((action) => action.url)).size).toBe(1);
+				// Each attempt opens the lane's own scheme, approved for its app.
+				expect(actions.map((action) => action.bundleIdentifier)).toEqual(
+					Array.from({ length: attempts }, () => 'com.example.app')
+				);
+			}
+		);
+
+		it.each([
+			{ failures: 1, code: 60, completed: true },
+			{ failures: 1, code: 61, completed: false },
+			{ failures: 2, code: 60, completed: false },
+		])(
+			'notes in the lane log what each open could not do, the failed ones included: $code / $failures',
+			async ({ failures, code, completed }) => {
+				const started = await startLane();
+				const warning = (attempt: number) =>
+					`The exampleapp URL scheme could not be approved for com.example.app (attempt ${attempt}), so iOS may ask "Open in …?" before the app opens.`;
+				const run = simulator.runAction;
+				let opens = 0;
+				simulator.runAction = (action) => {
+					if (action.kind === 'url.open') {
+						opens += 1;
+						// Each failed attempt warns of something of its own; a retry
+						// that opens warns of nothing.
+						simulator.openWarnings =
+							opens <= failures ? [warning(opens), warning(opens)] : undefined;
+						if (opens <= failures) {
+							simulator.failNext = `xcrun failed with exit code ${code}.`;
+						}
+					}
+					return run(action);
+				};
+				const result = await service.runOperation({
+					actionId: 'note-open-warnings',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				expect(result.completed).toBe(completed);
+				// Each warning once, from every attempt that ran.
+				expect(metro.notes).toEqual(
+					Array.from({ length: Math.min(opens, failures) }, (_, index) => ({
+						logPath: started.lane?.logPath,
+						note: warning(index + 1),
+					}))
+				);
 			}
 		);
 
@@ -1621,6 +2319,176 @@ describe('LaneService', () => {
 			const reopened = new LaneStore(root);
 			await reopened.start();
 			expect(reopened.lanes()).toEqual([]);
+		});
+
+		it('names no lane for a launch a stop cuts short while that stop waits for Metro to exit', async () => {
+			const started = await startLane();
+			const laneId = started.lane?.id as string;
+			const pid = started.lane?.metroPid as number;
+			// The launch waits for its Metro to answer, which it does not yet.
+			const health = vi.spyOn(metro, 'isHealthy').mockResolvedValue(false);
+			// A Metro slow to exit: the stop keeps the lane until it is gone.
+			const signals: boolean[] = [];
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push(options?.force === true);
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			let advance: NodeJS.Timeout | undefined;
+			try {
+				const launching = service.runOperation({
+					actionId: 'op-launch-cut',
+					kind: 'lane.launch',
+					laneId,
+				});
+				await vi.waitFor(() => expect(health).toHaveBeenCalled());
+				const stopping = service.runOperation({
+					actionId: 'op-stop-slow',
+					kind: 'lane.stop',
+					laneId,
+				});
+				await vi.waitFor(() => expect(signals).toEqual([false]));
+				const launched = await launching;
+				// The lane is its stop's and about to go: no retry on it can work,
+				// so the receipt names no lane for one.
+				expect(launched).toMatchObject({
+					completed: false,
+					error: `Lane ${laneId} is stopping. Wait for that stop to finish: \`rndevtools lane --operation down --lane-id ${laneId}\` waits for it and says how it ended. Then run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start the app's lane again.`,
+				});
+				expect(launched).not.toHaveProperty('lane');
+				expect(service.getState().lanes.map((lane) => lane.id)).toEqual([
+					laneId,
+				]);
+				advance = setInterval(() => {
+					now += 1_000;
+				}, 5);
+				expect((await stopping).completed).toBe(true);
+				expect(signals).toEqual([false, true]);
+				expect(metro.isProcessRunning(pid)).toBe(false);
+				expect(service.getState().lanes).toEqual([]);
+			} finally {
+				clearInterval(advance);
+				health.mockRestore();
+			}
+		});
+
+		it('names the lane it stored when a lane up is cancelled during its launch, and says it was cancelled', async () => {
+			metro.healthyPorts.add(8_100);
+			const held = holdUrlOpen();
+			const controller = new AbortController();
+			const starting = service.runOperation(
+				{
+					actionId: 'op-cancel-up',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: true,
+				},
+				controller.signal
+			);
+			await held.opening;
+			controller.abort();
+			const receipt = await starting;
+			expect(receipt).toMatchObject({
+				completed: false,
+				cancelled: true,
+				error: 'Lane operation cancelled.',
+			});
+			// The lane outlives the cancelled launch, so a lane up or launch can
+			// open it again.
+			expect(receipt.lane?.id).toBe(service.getState().lanes[0]?.id);
+			held.release();
+		});
+
+		describe('a lane up that resumes a stored lane', () => {
+			let laneId: string;
+
+			beforeEach(async () => {
+				laneId = (await startLane()).lane?.id as string;
+				// The lane's Simulator was shut down since, so a lane up boots it.
+				simulator.state = simulatorState([
+					{ udid: UDID, state: 'shutdown' },
+					{ udid: OTHER_UDID, state: 'booted' },
+				]);
+			});
+
+			function resume(signal?: AbortSignal) {
+				return service.runOperation(
+					{
+						actionId: 'op-resume',
+						kind: 'lane.start',
+						worktreePath: WORKTREE,
+						simulatorUdid: UDID,
+						environment: 'development',
+						launch: true,
+					},
+					signal
+				);
+			}
+
+			it('names the lane when it is cancelled while the Simulator boots', async () => {
+				const booting = deferred<void>();
+				simulator.bootGate = new Promise<void>(() => undefined);
+				simulator.onBootStarted = () => booting.resolve();
+				const controller = new AbortController();
+				const resuming = resume(controller.signal);
+				await booting.promise;
+				controller.abort();
+				const receipt = await resuming;
+				expect(receipt).toMatchObject({
+					completed: false,
+					cancelled: true,
+					error: 'Lane operation cancelled.',
+					lane: { id: laneId },
+				});
+				expect(service.getState().lanes.map((lane) => lane.id)).toEqual([
+					laneId,
+				]);
+			});
+
+			it('names the lane when its Simulator fails to boot', async () => {
+				simulator.failNext = 'CoreSimulator refused to boot.';
+				const receipt = await resume();
+				expect(receipt).toMatchObject({
+					completed: false,
+					error: 'CoreSimulator refused to boot.',
+					lane: { id: laneId },
+				});
+				expect(receipt).not.toHaveProperty('cancelled');
+			});
+		});
+
+		it('says a lane up its caller stopped at a deadline timed out, not that it was cancelled', async () => {
+			metro.healthyPorts.add(8_100);
+			const held = holdUrlOpen();
+			const controller = new AbortController();
+			const starting = service.runOperation(
+				{
+					actionId: 'op-deadline-up',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: true,
+				},
+				controller.signal
+			);
+			await held.opening;
+			// What the agent socket aborts with once its own budget runs out.
+			controller.abort(
+				new DOMException('The agent request timed out.', 'TimeoutError')
+			);
+			const receipt = await starting;
+			expect(receipt).toMatchObject({
+				completed: false,
+				timedOut: true,
+				error: 'Lane operation timed out.',
+				lane: { id: service.getState().lanes[0]?.id },
+			});
+			expect(receipt).not.toHaveProperty('cancelled');
+			held.release();
 		});
 
 		it('keeps the Metro that replaced the checked one while the dev client opened', async () => {
@@ -1837,12 +2705,206 @@ describe('LaneService', () => {
 		expect(withHolds.getState().lanes).toHaveLength(1);
 		expect(metro.stopped).toEqual([]);
 
-		// Grace elapsed: the lane is torn down and its Metro stopped.
+		// Grace elapsed: the lane is torn down and its Metro stopped. The
+		// refresh starts that stop and does not wait for the Metro to exit.
 		now = releaseAt;
 		await withHolds.runOperation({ actionId: 'op-r3', kind: 'lane.refresh' });
-		expect(withHolds.getState().lanes).toEqual([]);
+		await vi.waitFor(() => expect(withHolds.getState().lanes).toEqual([]));
 		expect(metro.stopped).toEqual([{ pid: lane.metroPid, port: lane.port }]);
 		await withHolds.stop();
+	});
+
+	it('keeps reconciling other lanes while an abandoned lane waits for its Metro to exit', async () => {
+		await service.stop();
+		const abandoned = new Set<string>();
+		service = new LaneService({
+			store,
+			simulator,
+			metro,
+			worktrees,
+			now: () => now,
+			holds: () =>
+				new Map(
+					service
+						.getState()
+						.lanes.filter((lane) => abandoned.has(lane.id))
+						.map((lane) => [
+							lane.simulatorUdid.toUpperCase(),
+							{
+								simulatorUdid: lane.simulatorUdid.toUpperCase(),
+								via: 'lane' as const,
+								laneId: lane.id,
+								holder: { kind: 'claude' as const, sessionId: 'session-a' },
+								holderLive: false,
+								abandonedSince: now - 1,
+								releaseAt: now,
+							},
+						])
+				),
+		});
+		await service.start();
+		const start = (worktreePath: string, simulatorUdid: string) =>
+			service.runOperation({
+				actionId: `op-two-${simulatorUdid}`,
+				kind: 'lane.start',
+				worktreePath,
+				simulatorUdid,
+				environment: 'development',
+				launch: false,
+			});
+		const first = (await start(WORKTREE, UDID)).lane as Lane;
+		const second = (await start(OTHER_WORKTREE, OTHER_UDID)).lane as Lane;
+		expect(second).toMatchObject({ port: 8_101, metro: 'starting' });
+		// The first lane's Metro ignores SIGTERM; only a SIGKILL ends it.
+		const signals: Array<{ pid: number; force: boolean }> = [];
+		const stop = metro.stop;
+		metro.stop = async (pid, port, directory, options) => {
+			if (pid !== first.metroPid) return stop(pid, port, directory, options);
+			signals.push({ pid, force: options?.force === true });
+			if (options?.force) await stop(pid, port, directory, options);
+		};
+		abandoned.add(first.id);
+		metro.healthyPorts.add(8_101);
+		const refreshed = service.runOperation({
+			actionId: 'op-two-refresh',
+			kind: 'lane.refresh',
+		});
+		await expect(
+			Promise.race([refreshed, wait(2_000, 'still waiting')])
+		).resolves.toMatchObject({ completed: true });
+		// The second lane got its health while the first lane's stop waits.
+		expect(service.getState().lanes).toMatchObject([
+			{ id: first.id },
+			{ id: second.id, metro: 'ready' },
+		]);
+		expect(signals).toEqual([{ pid: first.metroPid, force: false }]);
+		// Past its grace the first lane's Metro is killed and the lane goes.
+		now += 5_001;
+		await vi.waitFor(() =>
+			expect(service.getState().lanes.map((lane) => lane.id)).toEqual([
+				second.id,
+			])
+		);
+		expect(signals).toEqual([
+			{ pid: first.metroPid, force: false },
+			{ pid: first.metroPid, force: true },
+		]);
+	});
+
+	it('reports a timed reconcile that could not save lane health instead of leaving it unhandled', async () => {
+		await service.stop();
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on('unhandledRejection', onUnhandled);
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		try {
+			store = new LaneStore(root);
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-timed-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(started.lane?.metro).toBe('starting');
+			// The next timed pass finds Metro ready and cannot write that down.
+			const failed = vi
+				.spyOn(store, 'upsert')
+				.mockRejectedValue(new Error('Disk full.'));
+			vi.advanceTimersByTime(5_000);
+			await vi.waitFor(() =>
+				expect(service.getState().error).toBe(
+					'Lane status could not be refreshed: Disk full.'
+				)
+			);
+			failed.mockRestore();
+			vi.advanceTimersByTime(5_000);
+			await vi.waitFor(() =>
+				expect(service.getState()).toMatchObject({
+					lanes: [{ id: started.lane?.id, metro: 'ready' }],
+				})
+			);
+			expect(service.getState().error).toBeUndefined();
+			await nextTurn();
+			expect(unhandled).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('retries saving lane health the disk refused until a pass saves it', async () => {
+		await service.stop();
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		try {
+			store = new LaneStore(root);
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-unsaved-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(started.lane?.metro).toBe('starting');
+			// From here the lanes directory takes no new file, so no write lands.
+			await chmod(root, 0o500);
+			try {
+				vi.advanceTimersByTime(5_000);
+				await vi.waitFor(() =>
+					expect(service.getState().error).toMatch(
+						/^Lane status could not be refreshed: EACCES/
+					)
+				);
+				// Memory says ready now, lanes.json still says starting: the next
+				// pass has no new status to write, but the old one is still unsaved.
+				const unsaved = await service.runOperation({
+					actionId: 'op-unsaved-refresh',
+					kind: 'lane.refresh',
+				});
+				expect(unsaved.completed).toBe(false);
+				expect(unsaved.error).toMatch(/^EACCES/);
+				expect(service.getState().error).toMatch(
+					/^Lane status could not be refreshed: EACCES/
+				);
+			} finally {
+				await chmod(root, 0o700);
+			}
+			const saved = await service.runOperation({
+				actionId: 'op-saved-refresh',
+				kind: 'lane.refresh',
+			});
+			expect(saved.completed).toBe(true);
+			expect(service.getState().error).toBeUndefined();
+			const reopened = new LaneStore(root);
+			await reopened.start();
+			expect(reopened.lanes()).toMatchObject([
+				{ id: started.lane?.id, metro: 'ready' },
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('notifies subscribers with a validated state on every change', async () => {
@@ -2265,7 +3327,94 @@ describe('LaneService', () => {
 	});
 
 	describe('Metro health', () => {
-		it('rechecks identity before a direct launch when a cached PID now belongs to another app', async () => {
+		it('says the Metro of a stopped lane whose dead PID is still recorded is not running', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-dead-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			const pid = started.lane?.metroPid as number;
+			// It exited long before this launch, as Metros do over a reboot, and
+			// the lane reads stopped with that PID still recorded.
+			metro.deadPids.add(pid);
+			await service.runOperation({
+				actionId: 'op-dead-refresh',
+				kind: 'lane.refresh',
+			});
+			expect(service.getState().lanes[0]).toMatchObject({
+				metro: 'stopped',
+				metroPid: pid,
+			});
+			const result = await service.runOperation({
+				actionId: 'op-dead-launch',
+				kind: 'lane.launch',
+				laneId,
+			});
+			expect(result.completed).toBe(false);
+			expect(result.error).toBe(
+				`Metro isn't running for lane ${laneId}. Run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start it again.`
+			);
+			expect(result.lane).toMatchObject({ id: laneId, metro: 'stopped' });
+			expect(simulator.actions).toEqual([]);
+		});
+
+		it('reads a ready lane whose Metro exited as stopped once a launch finds it gone, so its retry is a lane up', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-gone-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			const pid = started.lane?.metroPid as number;
+			const launched = await service.runOperation({
+				actionId: 'op-gone-launch',
+				kind: 'lane.launch',
+				laneId,
+			});
+			expect(launched.lane).toMatchObject({ metro: 'ready', metroPid: pid });
+			// Its Metro exits, and no lane status pass reads the lane before
+			// the next launch does.
+			metro.deadPids.add(pid);
+			const opened = simulator.actions.length;
+			const result = await service.runOperation({
+				actionId: 'op-gone-relaunch',
+				kind: 'lane.launch',
+				laneId,
+			});
+			expect(result.completed).toBe(false);
+			expect(result.error).toBe(
+				`Metro isn't running for lane ${laneId}. Run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start it again.`
+			);
+			expect(simulator.actions).toHaveLength(opened);
+			// The receipt and the lane say so, so the retry an agent is given
+			// starts Metro again rather than launching the lane once more.
+			expect(result.lane).toMatchObject({
+				id: laneId,
+				metro: 'stopped',
+				metroPid: pid,
+			});
+			expect(service.getState().lanes[0]).toMatchObject({ metro: 'stopped' });
+			expect(
+				laneRetryRecovery(
+					result.lane as Lane,
+					{ operation: 'launch' },
+					{ interrupted: false, backendFailed: false }
+				)
+			).toContain(
+				`run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start Metro again and open the dev client.`
+			);
+		});
+
+		it('rechecks identity before a direct launch, and a cached PID that now belongs to another app reads as a stopped Metro', async () => {
 			const started = await service.runOperation({
 				actionId: 'op-recycled-start',
 				kind: 'lane.start',
@@ -2286,7 +3435,9 @@ describe('LaneService', () => {
 				laneId: started.lane?.id as string,
 			});
 			expect(result.completed).toBe(false);
-			expect(result.error).toContain('Another app now owns this PID');
+			expect(result.error).toBe(
+				`Metro isn't running for lane ${started.lane?.id}. Run \`rndevtools lane --operation up --worktree ${WORKTREE}\` to start it again.`
+			);
 			expect(verify).toHaveBeenCalledWith(
 				started.lane?.metroPid,
 				8_100,
@@ -2294,7 +3445,150 @@ describe('LaneService', () => {
 			);
 			expect(simulator.actions).toEqual([]);
 			expect(metro.stopped).toEqual([]);
+			// The PID is some other process's now: the lane forgets it, so nothing
+			// ever signals it, and its port is free for its next Metro.
+			const lane = service.getState().lanes[0];
+			expect(lane).toMatchObject({ id: started.lane?.id, metro: 'stopped' });
+			expect(lane).not.toHaveProperty('metroPid');
+			expect(service.getState().error).toBeUndefined();
 			verify.mockRestore();
+		});
+
+		it('starts a new Metro on lane up when the recorded PID now names another process', async () => {
+			metro.healthyPorts.add(8_100);
+			const first = await service.runOperation({
+				actionId: 'op-recycled-first',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			// The lane's Metro is gone and an unrelated process has its PID.
+			metro.listeners.delete(8_100);
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockRejectedValueOnce(
+					new NotLaneMetroError(
+						`Process ${first.lane?.metroPid} is no longer the Metro serving port 8100; refusing to stop it.`
+					)
+				);
+			try {
+				const resumed = await service.runOperation({
+					actionId: 'op-recycled-up',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: true,
+				});
+				expect(resumed.completed).toBe(true);
+				expect(resumed.lane).toMatchObject({
+					id: first.lane?.id,
+					port: 8_100,
+					metro: 'ready',
+				});
+				expect(resumed.lane?.metroPid).not.toBe(first.lane?.metroPid);
+				expect(metro.started).toHaveLength(2);
+				expect(metro.stopped).toEqual([]);
+				expect(service.getState().error).toBeUndefined();
+			} finally {
+				verify.mockRestore();
+			}
+		});
+
+		it('adopts a surviving lease whose PID now names another process as stopped, and lane up restarts it', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-recycled-adopt-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			await service.stop();
+			metro.listeners.delete(8_100);
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockRejectedValue(
+					new NotLaneMetroError(
+						`Process ${started.lane?.metroPid} is no longer the Metro serving port 8100; refusing to stop it.`
+					)
+				);
+			store = new LaneStore(root);
+			service = new LaneService({
+				store,
+				simulator,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await service.start();
+			await vi.waitFor(() =>
+				expect(service.getState().lanes[0]).toMatchObject({
+					id: started.lane?.id,
+					metro: 'stopped',
+				})
+			);
+			expect(service.getState().lanes[0]).not.toHaveProperty('metroPid');
+			expect(service.getState().error).toBeUndefined();
+			await vi.waitFor(async () => {
+				const reopened = new LaneStore(root);
+				await reopened.start();
+				expect(reopened.lanes()[0]).toMatchObject({ metro: 'stopped' });
+				expect(reopened.lanes()[0]?.metroPid).toBeUndefined();
+			});
+			verify.mockRestore();
+			const resumed = await service.runOperation({
+				actionId: 'op-recycled-adopt-up',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(resumed.completed).toBe(true);
+			expect(resumed.lane).toMatchObject({ id: started.lane?.id, port: 8_100 });
+			expect(resumed.lane?.metroPid).not.toBe(started.lane?.metroPid);
+			expect(metro.stopped).toEqual([]);
+		});
+
+		it('keeps a lane whose Metro exited stopped once some other process gets its PID', async () => {
+			metro.healthyPorts.add(8_100);
+			const started = await service.runOperation({
+				actionId: 'op-reused-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const pid = started.lane?.metroPid as number;
+			const pass = (n: number) =>
+				service.runOperation({
+					actionId: `op-reused-pass-${n}`,
+					kind: 'lane.refresh',
+				});
+			await pass(1);
+			expect(service.getState().lanes[0]?.metro).toBe('ready');
+			// The lane's Metro exits, and a status pass finds it gone.
+			metro.deadPids.add(pid);
+			metro.listeners.delete(8_100);
+			await pass(2);
+			expect(service.getState().lanes[0]).toMatchObject({
+				metro: 'stopped',
+				metroPid: pid,
+			});
+			// An unrelated process gets that PID later. It is no Metro of the
+			// lane's, and status passes never prove PIDs, so the lane reads
+			// stopped still: only lane up, which starts a Metro, helps it.
+			metro.deadPids.delete(pid);
+			await pass(3);
+			await pass(4);
+			expect(service.getState().lanes[0]?.metro).toBe('stopped');
+			expect(service.getState().error).toBeUndefined();
+			expect(metro.stopped).toEqual([]);
 		});
 
 		it('starts the desktop service without waiting for surviving Metro ownership probes', async () => {
@@ -2579,6 +3873,192 @@ describe('LaneService', () => {
 			await refreshed;
 			expect(service.getState().lanes).toEqual([]);
 		});
+
+		it("keeps a restarted lane's Metro verified when a reconcile that began before the restart reaches it", async () => {
+			metro.healthyPorts.add(8_100);
+			metro.healthyPorts.add(8_101);
+			const first = await service.runOperation({
+				actionId: 'op-race-a',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const second = await service.runOperation({
+				actionId: 'op-race-b',
+				kind: 'lane.start',
+				worktreePath: OTHER_WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = second.lane?.id as string;
+			expect(first.lane?.port).toBe(8_100);
+			expect(second.lane?.port).toBe(8_101);
+			// The reconcile holds on the first lane's probe, with its snapshot of
+			// the second lane taken before that lane's Metro is replaced.
+			const probing = deferred<void>();
+			const released = deferred<void>();
+			const probe = metro.isHealthy;
+			metro.isHealthy = async (port, pid) => {
+				if (port === 8_100) {
+					probing.resolve();
+					await released.promise;
+				}
+				return probe(port, pid);
+			};
+			const refreshed = service.runOperation({
+				actionId: 'op-race-refresh',
+				kind: 'lane.refresh',
+			});
+			await probing.promise;
+			await service.restartMetro(laneId, 'operator');
+			const restarted = service
+				.getState()
+				.lanes.find((lane) => lane.id === laneId);
+			expect(restarted?.metroPid).not.toBe(second.lane?.metroPid);
+			released.resolve();
+			expect((await refreshed).completed).toBe(true);
+			await service.runOperation({
+				actionId: 'op-race-refresh-2',
+				kind: 'lane.refresh',
+			});
+			expect(
+				service.getState().lanes.find((lane) => lane.id === laneId)
+			).toMatchObject({ metroPid: restarted?.metroPid, metro: 'ready' });
+			await expect(
+				service.restartMetro(laneId, 'operator')
+			).resolves.toBeUndefined();
+		});
+
+		describe('a launch that re-checked a Metro since replaced', () => {
+			let laneId: string;
+			/** Lets the launch's ownership probe of the first Metro answer. */
+			let answer: () => void;
+			let refuseReplacement: boolean;
+			let launching: Promise<LaneOperationReceipt>;
+
+			beforeEach(async () => {
+				metro.healthyPorts.add(8_100);
+				const started = await service.runOperation({
+					actionId: 'op-replaced-start',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+				laneId = started.lane?.id as string;
+				expect(started.lane?.metroPid).toBe(1_001);
+				const probing = deferred<void>();
+				const answered = deferred<void>();
+				answer = () => answered.resolve();
+				refuseReplacement = false;
+				const verify = metro.verifyOwnership;
+				metro.verifyOwnership = async (pid, port, directory) => {
+					if (pid === 1_001) {
+						probing.resolve();
+						await answered.promise;
+					}
+					if (pid === 1_002 && refuseReplacement) {
+						throw new Error('lsof timed out.');
+					}
+					return verify(pid, port, directory);
+				};
+				// The launch reads the lane with the first Metro and probes it.
+				launching = service.runOperation({
+					actionId: 'op-replaced-launch',
+					kind: 'lane.launch',
+					laneId,
+				});
+				await probing.promise;
+				// Meanwhile the operator restarts Metro: the first one is stopped and
+				// the lane gets a second, which this desktop spawned and so trusts.
+				await service.restartMetro(laneId, 'operator');
+				expect(service.getState().lanes[0]?.metroPid).toBe(1_002);
+			});
+
+			it('keeps the proof of the Metro that replaced the one it probed', async () => {
+				answer();
+				const launched = await launching;
+				expect(launched.completed).toBe(false);
+				expect(launched.error).toBe(
+					'The lane changed before its dev-client launch.'
+				);
+				// The probe of the first, stopped Metro proved nothing about the
+				// second: it is still the lane's own, ready and restartable.
+				await service.runOperation({
+					actionId: 'op-replaced-refresh',
+					kind: 'lane.refresh',
+				});
+				expect(service.getState().lanes[0]).toMatchObject({
+					metroPid: 1_002,
+					metro: 'ready',
+				});
+				await expect(
+					service.restartMetro(laneId, 'operator')
+				).resolves.toBeUndefined();
+			});
+
+			it('keeps the refusal of the Metro that replaced the one it probed', async () => {
+				// A second launch cannot prove the new Metro is the lane's own.
+				refuseReplacement = true;
+				const refused = await service.runOperation({
+					actionId: 'op-replaced-refused',
+					kind: 'lane.launch',
+					laneId,
+				});
+				expect(refused.completed).toBe(false);
+				const refusal = `Cannot adopt Metro for lane ${laneId}: lsof timed out. Lane up will retry ownership verification.`;
+				expect(service.getState().error).toBe(refusal);
+				// The first launch's answer, about the stopped Metro, clears nothing
+				// that concerns the new one.
+				answer();
+				expect((await launching).completed).toBe(false);
+				expect(service.getState().error).toBe(refusal);
+			});
+		});
+
+		it("keeps a lane's Metro verified while a launch re-checks its identity", async () => {
+			healthyMetro();
+			const started = await service.runOperation({
+				actionId: 'op-reprobe-start',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+			});
+			expect(started.lane?.metro).toBe('ready');
+			const verifying = deferred<void>();
+			const verified = deferred<boolean>();
+			const verify = vi
+				.spyOn(metro, 'verifyOwnership')
+				.mockImplementation(async () => {
+					verifying.resolve();
+					return verified.promise;
+				});
+			try {
+				const launching = service.runOperation({
+					actionId: 'op-reprobe-launch',
+					kind: 'lane.launch',
+					laneId: started.lane?.id as string,
+				});
+				await verifying.promise;
+				// Whatever reads the lane while the probe runs still sees the Metro
+				// it saw before the probe began.
+				await service.runOperation({
+					actionId: 'op-reprobe-refresh',
+					kind: 'lane.refresh',
+				});
+				expect(service.getState().lanes[0]?.metro).toBe('ready');
+				verified.resolve(true);
+				expect((await launching).completed).toBe(true);
+			} finally {
+				verify.mockRestore();
+			}
+		});
 	});
 
 	describe('lane environment for Metro', () => {
@@ -2594,6 +4074,49 @@ describe('LaneService', () => {
 			});
 			expect(metro.started[0]).not.toHaveProperty('laneEnv');
 		});
+
+		it('refuses a new lane before its Simulator boots when no Metro could start with the desktop environment', async () => {
+			metro.environmentIssue = MALFORMED_STRIP;
+			const receipt = await service.runOperation({
+				actionId: 'op-malformed-strip',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: false,
+			});
+			expect(receipt).toMatchObject({
+				completed: false,
+				error: MALFORMED_STRIP,
+			});
+			expect(simulator.actions).toEqual([]);
+			expect(metro.started).toEqual([]);
+			expect(service.getState().lanes).toEqual([]);
+		});
+
+		it('keeps the running Metro when the desktop environment would refuse its replacement', async () => {
+			const started = await service.runOperation({
+				actionId: 'op-respawn-strip',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const laneId = started.lane?.id as string;
+			// A desktop started with a malformed list adopts the Metros that
+			// survived it; a restart must not stop one it cannot replace.
+			metro.environmentIssue = MALFORMED_STRIP;
+			await expect(service.restartMetro(laneId, 'operator')).rejects.toThrow(
+				MALFORMED_STRIP
+			);
+			expect(metro.stopped).toEqual([]);
+			expect(metro.started).toHaveLength(1);
+			expect(metro.isProcessRunning(1_001)).toBe(true);
+			expect(service.getState().lanes).toMatchObject([
+				{ id: laneId, metroPid: 1_001 },
+			]);
+		});
 	});
 
 	describe('local backends', () => {
@@ -2603,8 +4126,10 @@ describe('LaneService', () => {
 		beforeEach(async () => {
 			backends = new FakeBackends();
 			// Every spawn gets its own PID and answers at once, so a restart
-			// is visible as a new Metro on the same port.
+			// is visible as a new Metro on the same port. Under a malformed
+			// strip list it refuses, as the real supervisor's start does.
 			metro.start = async (input) => {
+				if (metro.environmentIssue) throw new Error(metro.environmentIssue);
 				metro.healthyPorts.add(input.port);
 				return metro.launch(input);
 			};
@@ -2903,6 +4428,9 @@ describe('LaneService', () => {
 				});
 				expect(launch.completed).toBe(false);
 				expect(launch.error).toContain('requires its local backend');
+				// The receipt says where the backend stands and names the lane.
+				expect(launch.backend).toMatchObject({ policy: 'required' });
+				expect(launch.lane?.id).toBe(started.lane?.id);
 				expect(simulator.actions).toHaveLength(actions);
 				backends.runtimeState = healthy;
 				lanes.backendsChanged();
@@ -2997,7 +4525,12 @@ describe('LaneService', () => {
 			expect(receipt.backend).toEqual(readySummary());
 			expect(receipt.lane?.backend).toEqual(readySummary());
 			expect(lanes.getState().lanes[0]?.backend).toEqual(readySummary());
-			expect(kinds()).toEqual(['device.boot', 'app.list', 'url.open']);
+			expect(kinds()).toEqual([
+				'device.boot',
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
 		});
 
 		it('waits at most 15 s past the Metro spawn point, then defers the launch until a late attach restarts Metro with the backend', async () => {
@@ -3034,7 +4567,14 @@ describe('LaneService', () => {
 			expect(lane).toMatchObject({ id: first.id, port: first.port });
 			expect(lane?.metroPid).not.toBe(first.metroPid);
 			expect(lane?.backend).toEqual({ ...readySummary(), metro: 'restarted' });
-			expect(kinds()).toEqual(['device.boot', 'app.list', 'url.open']);
+			// The held-back launch is still the lane's first, so its app starts
+			// fresh too.
+			expect(kinds()).toEqual([
+				'device.boot',
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
 		});
 
 		it('launches an auto lane without its backend when the late attach fails, and says why', async () => {
@@ -3141,6 +4681,95 @@ describe('LaneService', () => {
 			});
 		});
 
+		it("kills a required lane's Metro that outlives its SIGTERM once its late attach fails, and the lane stays stopped", async () => {
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const receipt = await up({ backend: 'required' });
+			expect(receipt.completed).toBe(true);
+			const pid = receipt.lane?.metroPid as number;
+			// A Metro whose main thread is stuck lets its SIGTERM go by.
+			const signals: Array<{ pid: number; force: boolean }> = [];
+			metro.stop = async (target, port, _directory, options) => {
+				signals.push({ pid: target, force: options?.force === true });
+				if (!options?.force) return;
+				metro.deadPids.add(target);
+				if (metro.listeners.get(port) === target) metro.listeners.delete(port);
+			};
+			late.resolve({
+				summary: {
+					policy: 'required',
+					status: 'failed',
+					reason: 'failed',
+					reasonText: 'The database did not become healthy.',
+					appEnvNames: [],
+					warnings: [],
+				},
+			});
+			await eventually(() => expect(signals).toHaveLength(1));
+			// While it waits for that Metro to exit, it serves the lane no more:
+			// a lane status pass never calls the lane ready.
+			await lanes.runOperation({ actionId: 'op-pass-1', kind: 'lane.refresh' });
+			expect(lanes.getState().lanes[0]?.metro).not.toBe('ready');
+			await advanceClockUntil(() => signals.length === 2);
+			await eventually(() =>
+				expect(lanes.getState().lanes[0]?.metro).toBe('stopped')
+			);
+			expect(signals).toEqual([
+				{ pid, force: false },
+				{ pid, force: true },
+			]);
+			expect(metro.isProcessRunning(pid)).toBe(false);
+			await lanes.runOperation({ actionId: 'op-pass-2', kind: 'lane.refresh' });
+			expect(lanes.getState().lanes[0]).toMatchObject({
+				metro: 'stopped',
+				backend: {
+					status: 'failed',
+					reasonText:
+						'The lane requires its local backend, so its Metro was stopped. The database did not become healthy.',
+				},
+			});
+			expect(kinds()).not.toContain('url.open');
+		});
+
+		it("says a required lane's Metro could not be stopped when it outlives SIGKILL too, and never calls it ready", async () => {
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const receipt = await up({ backend: 'required' });
+			const pid = receipt.lane?.metroPid as number;
+			const signals: boolean[] = [];
+			metro.stop = async (_target, _port, _directory, options) => {
+				signals.push(options?.force === true);
+			};
+			late.resolve({
+				summary: {
+					policy: 'required',
+					status: 'failed',
+					reason: 'failed',
+					reasonText: 'The database did not become healthy.',
+					appEnvNames: [],
+					warnings: [],
+				},
+			});
+			// Both waits run on the injected clock: move it until the stop gives up.
+			await advanceClockUntil(
+				() =>
+					lanes
+						.getState()
+						.lanes[0]?.backend?.reasonText?.includes('could not be stopped') ===
+					true
+			);
+			expect(lanes.getState().lanes[0]?.backend?.reasonText).toBe(
+				'The lane requires its local backend, but its Metro could not be stopped: It did not exit after SIGTERM and SIGKILL. The database did not become healthy.'
+			);
+			expect(signals).toEqual([false, true]);
+			expect(metro.isProcessRunning(pid)).toBe(true);
+			await lanes.runOperation({ actionId: 'op-pass', kind: 'lane.refresh' });
+			expect(lanes.getState().lanes[0]).toMatchObject({
+				metroPid: pid,
+				metro: 'starting',
+			});
+		});
+
 		it('makes no backend call when the policy is off, by default or by choice', async () => {
 			backends.policy = 'off';
 			const byDefault = await up();
@@ -3218,6 +4847,28 @@ describe('LaneService', () => {
 			expect(metro.started).toHaveLength(2);
 			expect(metro.started[1]?.laneEnv).toEqual(backendEnv(MOVED_API_URL));
 			expect(resumed.backend).toMatchObject({ apiUrl: MOVED_API_URL });
+		});
+
+		it('refuses to respawn a dead Metro before booting its Simulator or ensuring its backend when no Metro could start', async () => {
+			const first = await up({ launch: false });
+			metro.deadPids.add(first.lane?.metroPid as number);
+			// The Simulator went down with it, so a respawn would boot it first.
+			simulator.state = simulatorState([
+				{ udid: UDID, state: 'shutdown' },
+				{ udid: OTHER_UDID, state: 'booted' },
+			]);
+			metro.environmentIssue = MALFORMED_STRIP;
+			const actions = simulator.actions.length;
+			const ensures = backends.ensured.length;
+			const resumed = await up({ launch: false });
+			expect(resumed).toMatchObject({
+				completed: false,
+				error: MALFORMED_STRIP,
+			});
+			expect(kinds().slice(actions)).toEqual([]);
+			expect(backends.ensured).toHaveLength(ensures);
+			expect(metro.started).toHaveLength(1);
+			expect(lanes.getState().lanes).toMatchObject([{ id: first.lane?.id }]);
 		});
 
 		it('lets the backend go on lane stop without waiting, and a failing port never keeps the lane', async () => {
@@ -3463,6 +5114,295 @@ describe('LaneService', () => {
 			expect(kinds().filter((kind) => kind === 'url.open')).toHaveLength(1);
 			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
 		});
+
+		it.each([true, false])(
+			'restarts the app on the launch a resumed lane up held back for its backend only when asked (restart %s)',
+			async (restart) => {
+				const started = await up({ backend: 'off' });
+				expect(started.completed).toBe(true);
+				expect(kinds()).toEqual([
+					'device.boot',
+					'app.list',
+					'app.terminate',
+					'url.open',
+				]);
+				const late = deferred<LaneBackendLateAttach>();
+				backends.answers.push(starting(late.promise));
+				const resumed = await up({ backend: 'auto', restart });
+				expect(resumed.completed).toBe(true);
+				expect(resumed.backend).toMatchObject({
+					status: 'starting',
+					launch: 'deferred',
+				});
+				// Nothing is terminated while the launch waits for the backend.
+				expect(kinds()).toHaveLength(4);
+
+				late.resolve({ summary: readySummary(), laneEnv: backendEnv() });
+				await eventually(() =>
+					expect(kinds().filter((kind) => kind === 'url.open')).toHaveLength(2)
+				);
+				expect(kinds().slice(4)).toEqual(
+					restart
+						? ['app.list', 'app.terminate', 'url.open']
+						: ['app.list', 'url.open']
+				);
+			}
+		);
+
+		it('restarts the app for a held-back restart once a later lane up turns the backend off', async () => {
+			expect((await up({ backend: 'off' })).completed).toBe(true);
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const resumed = await up({ backend: 'auto', restart: true });
+			expect(resumed.backend).toMatchObject({ launch: 'deferred' });
+			expect(kinds()).toHaveLength(4);
+
+			// Turning the backend off lets go of the record that held the launch
+			// back; the launch goes ahead now, and its restart with it.
+			const off = await up({ backend: 'off' });
+			expect(off.completed).toBe(true);
+			expect(off.lane).not.toHaveProperty('backend');
+			expect(kinds().slice(4)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+		});
+
+		it('keeps a held-back launch and its restart through a deep link, restarting or not, for the dev client', async () => {
+			const started = await up({ backend: 'off' });
+			const laneId = started.lane?.id as string;
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const resumed = await up({ backend: 'auto', restart: true });
+			expect(resumed.backend).toMatchObject({ launch: 'deferred' });
+			expect(kinds()).toHaveLength(4);
+
+			// A deep link without restart never terminates the app, so it does
+			// not do the restart that was asked for, and leaves it held back.
+			const linked = await lanes.runOperation({
+				actionId: 'op-held-link',
+				kind: 'lane.launch',
+				laneId,
+				url: 'checkout',
+			});
+			expect(linked.completed).toBe(true);
+			expect(kinds().slice(4)).toEqual(['app.list', 'url.open']);
+			expect(linked.lane?.backend).toMatchObject({ launch: 'deferred' });
+
+			// The held-back launch then opens the dev client, restarting the app.
+			await lanes.launchDeferred(laneId);
+			expect(kinds().slice(6)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
+
+			// A deep link that restarts does its own restart, and is still no
+			// dev-client launch: the held-back launch stays, its restart with it.
+			backends.answers.push(starting(new Promise(() => undefined)));
+			await up({ backend: 'auto', restart: true });
+			expect(lanes.getState().lanes[0]?.backend).toMatchObject({
+				launch: 'deferred',
+			});
+			const restarted = await lanes.runOperation({
+				actionId: 'op-held-link-restart',
+				kind: 'lane.launch',
+				laneId,
+				url: 'checkout',
+				restart: true,
+			});
+			expect(restarted.completed).toBe(true);
+			expect(kinds().slice(9)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(restarted.lane?.backend).toMatchObject({ launch: 'deferred' });
+			await lanes.launchDeferred(laneId);
+			expect(kinds().slice(12)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
+		});
+
+		it("fulfils a schemeless lane's held-back launch, and takes its restart, with the dev client's full URL", async () => {
+			worktrees.identity = { bundleIdentifier: 'com.example.app' };
+			const started = await up({ backend: 'off', launch: false });
+			const laneId = started.lane?.id as string;
+			expect(started.lane?.port).toBe(8_100);
+			// A lane with no URL scheme opens its dev client only by its full URL.
+			const devClient =
+				'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1';
+			const first = await lanes.runOperation({
+				actionId: 'op-held-url-first',
+				kind: 'lane.launch',
+				laneId,
+				url: devClient,
+			});
+			expect(first.completed).toBe(true);
+			const mark = kinds().length;
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			const resumed = await up({ backend: 'auto', restart: true });
+			expect(resumed.completed).toBe(true);
+			expect(resumed.backend).toMatchObject({ launch: 'deferred' });
+			expect(kinds()).toHaveLength(mark);
+
+			// That launch is the held-back one: it takes the restart held back
+			// with it, though it is not the lane's first, and nothing is left
+			// held back.
+			const opened = await lanes.runOperation({
+				actionId: 'op-held-url',
+				kind: 'lane.launch',
+				laneId,
+				url: devClient,
+			});
+			expect(opened.completed).toBe(true);
+			expect(kinds().slice(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(opened.lane?.backend).not.toHaveProperty('launch');
+
+			// Once the backend is ready, Metro restarts with it and nothing
+			// opens the dev client again, which no URL the lane keeps could do.
+			late.resolve(ready());
+			await eventually(() =>
+				expect(lanes.getState().lanes[0]?.backend).toEqual({
+					...readySummary(),
+					metro: 'restarted',
+				})
+			);
+			expect(metro.started).toHaveLength(2);
+			expect(kinds()).toHaveLength(mark + 3);
+		});
+
+		it.each([false, true])(
+			"keeps a new lane's held-back first launch through a deep link, so its dev client still opens on the lane's Metro once the backend attaches (deep link restart %s)",
+			async (restart) => {
+				const late = deferred<LaneBackendLateAttach>();
+				backends.answers.push(starting(late.promise));
+				const started = await up();
+				expect(started.completed).toBe(true);
+				expect(started.backend).toMatchObject({ launch: 'deferred' });
+				const laneId = started.lane?.id as string;
+				expect(kinds()).toEqual(['device.boot']);
+
+				// A deep link opens the app as it is, pointed wherever it was, so
+				// it is not the lane's launch: the held-back one stays.
+				const linked = await lanes.runOperation({
+					actionId: 'op-new-lane-link',
+					kind: 'lane.launch',
+					laneId,
+					url: 'checkout',
+					...(restart ? { restart } : {}),
+				});
+				expect(linked.completed).toBe(true);
+				expect(kinds().slice(1)).toEqual(
+					restart
+						? ['app.list', 'app.terminate', 'url.open']
+						: ['app.list', 'url.open']
+				);
+				expect(linked.lane).not.toHaveProperty('lastLaunchedAt');
+				expect(linked.lane?.backend).toMatchObject({ launch: 'deferred' });
+
+				// Metro restarts with the backend, and the held-back launch opens
+				// the dev client against it as the lane's first dev-client launch,
+				// so the app starts fresh.
+				const mark = kinds().length;
+				late.resolve(ready());
+				await eventually(() =>
+					expect(lanes.getState().lanes[0]?.lastLaunchedAt).toBeDefined()
+				);
+				expect(metro.started).toHaveLength(2);
+				expect(lanes.getState().lanes[0]?.backend).toEqual({
+					...readySummary(),
+					metro: 'restarted',
+				});
+				expect(kinds().slice(mark)).toEqual([
+					'app.list',
+					'app.terminate',
+					'url.open',
+				]);
+				expect(simulator.actions.at(-1)).toMatchObject({
+					kind: 'url.open',
+					url: expect.stringMatching(
+						/^exampleapp:\/\/expo-development-client\/\?url=/
+					),
+				});
+			}
+		);
+
+		it('drops a restart once a lane up hands it to a launch, even one that fails, so a later relaunch keeps the app', async () => {
+			const started = await up({ backend: 'off' });
+			const laneId = started.lane?.id as string;
+			const late = deferred<LaneBackendLateAttach>();
+			backends.answers.push(starting(late.promise));
+			await up({ backend: 'auto', restart: true });
+			expect(kinds()).toHaveLength(4);
+
+			// The backend is ready for the next lane up, which launches at once
+			// with the held-back restart; with no dev client installed it fails.
+			simulator.installedApps = [];
+			const failed = await up();
+			expect(failed.completed).toBe(false);
+			expect(failed.error).toMatch(/is not installed on this Simulator/);
+			expect(failed.lane?.id).toBe(laneId);
+			expect(failed.lane?.backend).not.toHaveProperty('launch');
+			expect(kinds().slice(4)).toEqual(['app.list']);
+
+			// A Metro restart for the backend relaunches the dev client in the
+			// background, and the restart that launch was handed is not its.
+			simulator.installedApps = undefined;
+			backends.answers.push(ready(MOVED_API_URL));
+			await lanes.restartMetro(laneId, 'ports-moved');
+			await eventually(() =>
+				expect(kinds().filter((kind) => kind === 'url.open')).toHaveLength(2)
+			);
+			expect(kinds().slice(5)).toEqual(['app.list', 'url.open']);
+		});
+
+		it.each([true, false])(
+			"holds a new lane's asked-for restart back with its launch, so a terminate that fails then fails that launch (restart %s)",
+			async (restart) => {
+				const late = deferred<LaneBackendLateAttach>();
+				backends.answers.push(starting(late.promise));
+				const started = await up({ restart });
+				expect(started.backend).toMatchObject({ launch: 'deferred' });
+				simulator.failKinds['app.terminate'] = 'xcrun failed with exit code 1.';
+
+				late.resolve({ summary: readySummary(), laneEnv: backendEnv() });
+				if (restart) {
+					await eventually(() =>
+						expect(lanes.getState().lanes[0]?.backend?.reasonText).toMatch(
+							/The dev client did not open: com\.example\.app could not be terminated before its dev client opened/
+						)
+					);
+					expect(kinds()).toEqual(['device.boot', 'app.list', 'app.terminate']);
+					expect(metro.notes).toEqual([]);
+				} else {
+					// The first launch's own terminate is best effort, and says so.
+					await eventually(() => expect(kinds()).toContain('url.open'));
+					expect(kinds()).toEqual([
+						'device.boot',
+						'app.list',
+						'app.terminate',
+						'url.open',
+					]);
+					expect(metro.notes.map(({ note }) => note)).toEqual([
+						expect.stringMatching(
+							/^com\.example\.app could not be terminated before the lane's first launch/
+						),
+					]);
+				}
+				expect(lanes.getState().lanes[0]?.backend).not.toHaveProperty('launch');
+			}
+		);
 
 		it("leaves a name the lane's environment pins to the environment", async () => {
 			const pinned = new LaneService({
@@ -3859,6 +5799,96 @@ describe('LaneService', () => {
 			expect(ids).toContain(replaced.deviceRequest?.id);
 		});
 
+		describe('a start no Simulator can help', () => {
+			beforeEach(async () => {
+				// Both devices hold lanes for other apps, so a start that names
+				// none would wait on the user for one.
+				await up({ simulatorUdid: UDID });
+				await service.runOperation({
+					actionId: 'op-other-app',
+					kind: 'lane.start',
+					worktreePath: OTHER_WORKTREE,
+					simulatorUdid: OTHER_UDID,
+					environment: 'development',
+					launch: false,
+				});
+			});
+
+			function third(extra: Record<string, unknown> = {}) {
+				return service.runOperation({
+					actionId: `op-third-${Math.random().toString(16).slice(2)}`,
+					kind: 'lane.start',
+					worktreePath: THIRD_WORKTREE,
+					environment: 'development',
+					launch: false,
+					...extra,
+				});
+			}
+
+			it.each([
+				['RNDEVTOOLS_CHILD_ENV_STRIP is malformed', {}, MALFORMED_STRIP],
+				[
+					'a restart cannot name the app',
+					{ launch: true, restart: true },
+					"A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart.",
+				],
+				[
+					'the SimSlim profile is unknown',
+					{ slimProfileId: 'rndevtools-unknown' },
+					'Unknown SimSlim profile "rndevtools-unknown". Known profiles: rndevtools-development.',
+				],
+			] as const)(
+				'fails rather than parks a device request when %s',
+				async (_, extra, error) => {
+					if (error === MALFORMED_STRIP)
+						metro.environmentIssue = MALFORMED_STRIP;
+					if ('restart' in extra) worktrees.identity = { scheme: 'exampleapp' };
+					const receipt = await third(extra);
+					expect(receipt.completed).toBe(false);
+					expect(receipt.error).toBe(error);
+					expect(receipt).not.toHaveProperty('deviceRequest');
+					expect(service.getState().deviceRequests).toEqual([]);
+				}
+			);
+
+			it.each([
+				['RNDEVTOOLS_CHILD_ENV_STRIP is malformed now', MALFORMED_STRIP],
+				[
+					'the app.json lost the bundle identifier a restart needs',
+					"A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart.",
+				],
+			] as const)(
+				'settles no request with a clone when %s, and clones nothing',
+				async (_, error) => {
+					const parked = await third({ launch: true, restart: true });
+					const requestId = parked.deviceRequest?.id as string;
+					expect(requestId).toBeDefined();
+					if (error === MALFORMED_STRIP)
+						metro.environmentIssue = MALFORMED_STRIP;
+					else worktrees.identity = { scheme: 'exampleapp' };
+					for (const attempt of [1, 2]) {
+						const cloned = await service.runOperation({
+							actionId: `op-clone-${attempt}`,
+							kind: 'lane.provide-device',
+							requestId,
+							decision: 'clone',
+							simulatorUdid: OTHER_UDID,
+						});
+						expect(cloned.completed).toBe(false);
+						expect(cloned.error).toBe(error);
+					}
+					expect(simulator.actions.map((action) => action.kind)).not.toContain(
+						'device.clone'
+					);
+					expect(service.getState().deviceRequests[0]).toMatchObject({
+						id: requestId,
+						status: 'pending',
+						message: error,
+					});
+				}
+			);
+		});
+
 		it('keeps a request pending with the reason when the chosen start fails', async () => {
 			await up({ simulatorUdid: UDID });
 			await service.runOperation({
@@ -3894,6 +5924,118 @@ describe('LaneService', () => {
 			});
 			expect(service.getState().deviceRequests[0]?.message).toMatch(
 				/already assigned to lane/
+			);
+		});
+
+		it('fulfils a request with the lane it stored when only that lane launch fails', async () => {
+			for (const port of [8_100, 8_101, 8_102]) metro.healthyPorts.add(port);
+			await up({ simulatorUdid: UDID });
+			await service.runOperation({
+				actionId: 'op-other-app-launch',
+				kind: 'lane.start',
+				worktreePath: OTHER_WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const parked = await service.runOperation({
+				actionId: 'op-third-launch',
+				kind: 'lane.start',
+				worktreePath: THIRD_WORKTREE,
+				environment: 'development',
+				launch: true,
+			});
+			const requestId = parked.deviceRequest?.id ?? '';
+			// The clone's lane is stored; its dev client is not installed there.
+			simulator.installedApps = [];
+			const settled = await service.runOperation({
+				actionId: 'op-clone-launch',
+				kind: 'lane.provide-device',
+				requestId,
+				decision: 'clone',
+				simulatorUdid: OTHER_UDID,
+			});
+			expect(settled.completed).toBe(false);
+			expect(settled.error).toMatch(
+				/^com\.example\.app is not installed on this Simulator/
+			);
+			const laneId = settled.lane?.id as string;
+			expect(laneId).toBeDefined();
+			expect(service.getState().lanes.some((lane) => lane.id === laneId)).toBe(
+				true
+			);
+			// The request is settled by that lane: an agent polling lane ls finds
+			// it there, not a request still waiting on the user.
+			const request = service
+				.getState()
+				.deviceRequests.find((candidate) => candidate.id === requestId);
+			expect(request).toMatchObject({ status: 'fulfilled', laneId });
+			// Its message says the launch failed, and how to launch it again, as
+			// a lane up that failed on that lane would.
+			expect(request?.message).toMatch(
+				new RegExp(
+					`^Started lane ${laneId} on ${CLONE_UDID}, but its launch failed: com\\.example\\.app is not installed`
+				)
+			);
+			expect(request?.message).toContain(
+				` Metro on port ${settled.lane?.port} is still running. The lane keeps its Simulator and port ${settled.lane?.port}. Once the cause is fixed, run \`rndevtools lane --operation up --worktree ${THIRD_WORKTREE}\` to launch it again; it starts Metro again first if Metro exited. \`rndevtools lane --operation log --lane-id ${laneId}\` shows Metro's output.`
+			);
+			// Settled once, it cannot be settled again into a second lane.
+			const again = await service.runOperation({
+				actionId: 'op-clone-again',
+				kind: 'lane.provide-device',
+				requestId,
+				decision: 'use',
+				simulatorUdid: UDID,
+			});
+			expect(again.error).toBe(`Device request ${requestId} is fulfilled.`);
+		});
+
+		it('keeps the retry in the message of a request whose launch failed at length', async () => {
+			for (const port of [8_100, 8_101, 8_102]) metro.healthyPorts.add(port);
+			// Both Simulators run other apps' lanes, so the third start parks.
+			await up({ simulatorUdid: UDID });
+			await service.runOperation({
+				actionId: 'op-long-failure-other',
+				kind: 'lane.start',
+				worktreePath: OTHER_WORKTREE,
+				simulatorUdid: OTHER_UDID,
+				environment: 'development',
+				launch: false,
+			});
+			const parked = await service.runOperation({
+				actionId: 'op-long-failure-park',
+				kind: 'lane.start',
+				worktreePath: THIRD_WORKTREE,
+				environment: 'development',
+				launch: true,
+				restart: true,
+			});
+			const requestId = parked.deviceRequest?.id ?? '';
+			simulator.failKinds['url.open'] =
+				`CoreSimulator refused: ${'x'.repeat(8_000)}`;
+			const settled = await service.runOperation({
+				actionId: 'op-long-failure-clone',
+				kind: 'lane.provide-device',
+				requestId,
+				decision: 'clone',
+				simulatorUdid: OTHER_UDID,
+			});
+			expect(settled.completed).toBe(false);
+			const message =
+				service
+					.getState()
+					.deviceRequests.find((candidate) => candidate.id === requestId)
+					?.message ?? '';
+			expect(message.length).toBeLessThanOrEqual(4_096);
+			expect(message).toMatch(
+				/^Started lane \S+ on \S+, but its launch failed: CoreSimulator refused: x+…/
+			);
+			// The restart the start asked for goes with its retry.
+			expect(message).toMatch(
+				new RegExp(
+					`run \`rndevtools lane --operation up --worktree ${THIRD_WORKTREE} --restart\` to launch it again; it starts Metro again first if Metro exited\\. \`rndevtools lane --operation log --lane-id ${settled.lane?.id}\` shows Metro's output\\.$`
+				)
 			);
 		});
 	});
@@ -3947,6 +6089,7 @@ describe('LaneService', () => {
 			expect(simulator.actions.map((action) => action.kind)).toEqual([
 				'device.boot',
 				'app.list',
+				'app.terminate',
 				'url.open',
 			]);
 		});
@@ -3975,6 +6118,7 @@ describe('LaneService', () => {
 			expect(simulator.actions.map((action) => action.kind)).toEqual([
 				'device.boot',
 				'app.list',
+				'app.terminate',
 				'url.open',
 			]);
 			expect(metro.started).toHaveLength(1);
@@ -4031,9 +6175,8 @@ describe('LaneService', () => {
 
 		it('reports plainly when the build has no slimming at all', async () => {
 			const bare = new LaneService({
-				store: new LaneStore(
-					await mkdtemp(path.join(os.tmpdir(), 'lane-bare-'))
-				),
+				// Inside the suite's root, which every test's cleanup removes.
+				store: new LaneStore(await mkdtemp(path.join(root, 'lane-bare-'))),
 				simulator,
 				metro,
 				worktrees,
@@ -4055,6 +6198,180 @@ describe('LaneService', () => {
 	});
 
 	describe('dev client presence', () => {
+		it('names a lane with no URL scheme and how to open it, which lane up cannot', async () => {
+			// No scheme, and no slug to take the dev client's default from.
+			worktrees.identity = { bundleIdentifier: 'com.example.app' };
+			metro.healthyPorts.add(8_100);
+			const receipt = await service.runOperation({
+				actionId: 'op-no-scheme',
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+			});
+			expect(receipt.completed).toBe(false);
+			const laneId = receipt.lane?.id as string;
+			expect(laneId).toBeDefined();
+			expect(receipt.error).toBe(
+				`Lane ${laneId} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`rndevtools lane --operation launch --lane-id ${laneId} --url <full launch URL>\`; the up operation takes no URL.`
+			);
+			// A full launch URL opens it.
+			const opened = await service.runOperation({
+				actionId: 'op-no-scheme-url',
+				kind: 'lane.launch',
+				laneId,
+				url: 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100',
+			});
+			expect(opened.completed).toBe(true);
+		});
+
+		describe('a lane with no URL scheme', () => {
+			const DEV_CLIENT_URL =
+				'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1';
+
+			async function startSchemeless(identity: { bundleIdentifier?: string }) {
+				worktrees.identity = identity;
+				metro.healthyPorts.add(8_100);
+				const started = await service.runOperation({
+					actionId: 'op-schemeless-start',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: false,
+				});
+				const laneId = started.lane?.id as string;
+				return (actionId: string, url: string) => {
+					const before = simulator.actions.length;
+					return service
+						.runOperation({ actionId, kind: 'lane.launch', laneId, url })
+						.then((receipt) => ({
+							receipt,
+							kinds: simulator.actions.slice(before).map(({ kind }) => kind),
+						}));
+				};
+			}
+
+			it('takes its fresh start on the launch that opens its dev client by its full URL', async () => {
+				const launch = await startSchemeless({
+					bundleIdentifier: 'com.example.app',
+				});
+				// A deep link, or the dev client pointed at another Metro, opens the
+				// app as it is and is not the lane's launch.
+				for (const url of [
+					'otherapp://home',
+					'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8101',
+				]) {
+					const linked = await launch(`op-link-${url.length}`, url);
+					expect(linked.receipt.completed).toBe(true);
+					expect(linked.kinds).toEqual(['app.list', 'url.open']);
+					expect(linked.receipt.lane).not.toHaveProperty('lastLaunchedAt');
+				}
+				now += 1_000;
+				const opened = await launch('op-dev-client', DEV_CLIENT_URL);
+				expect(opened.receipt.completed).toBe(true);
+				expect(opened.kinds).toEqual(['app.list', 'app.terminate', 'url.open']);
+				expect(opened.receipt).not.toHaveProperty('warnings');
+				expect(opened.receipt.lane).toMatchObject({ lastLaunchedAt: now });
+				// Later ones restart the app only when asked to.
+				const again = await launch('op-dev-client-again', DEV_CLIENT_URL);
+				expect(again.kinds).toEqual(['app.list', 'url.open']);
+			});
+
+			it.each([
+				{ opens: 'its dev client', url: DEV_CLIENT_URL, attempts: 2 },
+				{
+					// The dev client pointed at another Metro is a deep link.
+					opens: 'the dev client on another Metro',
+					url: 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8101',
+					attempts: 1,
+				},
+			])(
+				'retries a launch by full URL once after exit 60 only when it opens its dev client: $opens',
+				async ({ url, attempts }) => {
+					const launch = await startSchemeless({
+						bundleIdentifier: 'com.example.app',
+					});
+					const run = simulator.runAction;
+					let opens = 0;
+					simulator.runAction = (action) => {
+						// CoreSimulator can time out at once after a native install.
+						if (action.kind === 'url.open' && opens++ === 0) {
+							simulator.failNext = 'xcrun failed with exit code 60.';
+						}
+						return run(action);
+					};
+					const opened = await launch('op-dev-client-exit-60', url);
+					expect(opens).toBe(attempts);
+					if (attempts === 2) {
+						expect(opened.receipt.completed).toBe(true);
+						expect(opened.kinds).toEqual([
+							'app.list',
+							'app.terminate',
+							'url.open',
+							'url.open',
+						]);
+					} else {
+						expect(opened.receipt.completed).toBe(false);
+						expect(opened.receipt.error).toBe(
+							'xcrun failed with exit code 60.'
+						);
+						expect(opened.kinds).toEqual(['app.list', 'url.open']);
+					}
+					expect(
+						simulator.actions
+							.filter((action) => action.kind === 'url.open')
+							.map((action) => action.url)
+					).toEqual(Array.from({ length: attempts }, () => url));
+				}
+			);
+
+			it('says on the receipt and in the lane log when no bundle identifier names the app to restart', async () => {
+				const launch = await startSchemeless({});
+				const opened = await launch('op-dev-client-unnamed', DEV_CLIENT_URL);
+				expect(opened.receipt.completed).toBe(true);
+				expect(opened.kinds).toEqual(['url.open']);
+				expect(opened.receipt.warnings).toEqual([
+					expect.stringMatching(
+						/^The lane's first launch did not restart the app: the worktree's app\.json declared no ios\.bundleIdentifier/
+					),
+				]);
+				expect(metro.notes.map(({ note }) => note)).toEqual(
+					opened.receipt.warnings
+				);
+				expect(opened.receipt.lane?.lastLaunchedAt).toBeDefined();
+			});
+
+			it('names its dev client full URL in the launch after a build when the app is not installed', async () => {
+				const launch = await startSchemeless({
+					bundleIdentifier: 'com.example.app',
+				});
+				simulator.installedApps = [];
+				const missing = await launch('op-dev-client-missing', DEV_CLIENT_URL);
+				expect(missing.receipt.completed).toBe(false);
+				const laneId = missing.receipt.lane?.id;
+				expect(missing.receipt.error).toContain(
+					`then \`rndevtools lane --operation launch --lane-id ${laneId} --url '<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1' --restart\`, with <scheme> the URL scheme the app registers: the build opens the app against port 8081, and the restart reopens it with this lane's Metro.`
+				);
+			});
+
+			it('restarts its Metro without reopening a dev client it opened by URL', async () => {
+				const launch = await startSchemeless({
+					bundleIdentifier: 'com.example.app',
+				});
+				await launch('op-dev-client', DEV_CLIENT_URL);
+				const laneId = service.getState().lanes[0]?.id as string;
+				const before = simulator.actions.length;
+				// Its URL is never kept, so a Metro restart has none to open it with.
+				await expect(
+					service.restartMetro(laneId, 'operator')
+				).resolves.toBeUndefined();
+				expect(simulator.actions.slice(before)).toEqual([]);
+				expect(service.getState().lanes[0]?.metroPid).not.toBe(1_001);
+			});
+		});
+
 		it('refuses to launch when the worktree bundle is not installed and says what to build', async () => {
 			healthyMetro();
 			simulator.installedApps = ['com.apple.mobilesafari'];
@@ -4068,16 +6385,25 @@ describe('LaneService', () => {
 			});
 			expect(receipt.completed).toBe(false);
 			expect(receipt.error).toMatch(/com\.example\.app is not installed/);
-			expect(receipt.error).toMatch(
-				new RegExp(`expo run:ios --device ${UDID} --port 8100 --no-bundler`)
+			// Expo CLI refuses --port with --no-bundler, so the build names no
+			// port and the restart afterwards points the app at this lane.
+			expect(receipt.error).toContain(
+				`run \`npx expo run:ios --device ${UDID} --no-bundler\` from the worktree, then \`rndevtools lane --operation launch --lane-id ${receipt.lane?.id} --restart\`: the build opens the app against port 8081, and the restart reopens it with this lane's Metro.`
 			);
+			expect(receipt.error).not.toMatch(/`npx expo run:ios[^`]*--port/);
 			expect(receipt.error).toMatch(/Metro on port 8100 is still running/);
+			// The plan it asks for names this lane's app directory and Simulator.
+			expect(receipt.error).toContain(
+				`Call \`rndevtools native --operation plan --worktree ${WORKTREE} --udid ${UDID}\` first.`
+			);
 			expect(simulator.actions.map((action) => action.kind)).toEqual([
 				'device.boot',
 				'app.list',
 			]);
-			// The lease survives so the operator can build and relaunch.
+			// The lease survives so the operator can build and relaunch, and the
+			// receipt names the lane to relaunch.
 			expect(service.getState().lanes).toHaveLength(1);
+			expect(receipt.lane?.id).toBe(service.getState().lanes[0]?.id);
 		});
 
 		it('skips the check when the worktree declares no bundle identifier', async () => {
@@ -4097,6 +6423,525 @@ describe('LaneService', () => {
 				'device.boot',
 				'url.open',
 			]);
+		});
+	});
+
+	describe('fresh app starts', () => {
+		const kinds = () => simulator.actions.map((action) => action.kind);
+		/**
+		 * What the Simulator was asked to do since `mark` actions. The log is
+		 * never cleared: the fake numbers its jobs by its length.
+		 */
+		const kindsSince = (mark: number) => kinds().slice(mark);
+
+		function start(extra: Record<string, unknown> = {}) {
+			metro.healthyPorts.add(8_100);
+			return service.runOperation({
+				actionId: `op-start-${Math.random().toString(16).slice(2)}`,
+				kind: 'lane.start',
+				worktreePath: WORKTREE,
+				simulatorUdid: UDID,
+				environment: 'development',
+				launch: true,
+				...extra,
+			});
+		}
+
+		function launch(laneId: string, extra: Record<string, unknown> = {}) {
+			return service.runOperation({
+				actionId: `op-launch-${Math.random().toString(16).slice(2)}`,
+				kind: 'lane.launch',
+				laneId,
+				...extra,
+			});
+		}
+
+		/** A lane that has launched its dev client once, and what that took. */
+		async function launchedLane(): Promise<string> {
+			const started = await start();
+			expect(started.completed).toBe(true);
+			expect(kinds()).toEqual([
+				'device.boot',
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			return started.lane?.id as string;
+		}
+
+		it("terminates the lane's app before its first dev-client launch, as the Lanes panel starts one too", async () => {
+			// No agent: the operator's start from the Lanes panel takes this path.
+			const receipt = await start();
+			expect(receipt.completed).toBe(true);
+			const terminate = kinds().indexOf('app.terminate');
+			expect(terminate).toBeGreaterThan(kinds().indexOf('app.list'));
+			expect(terminate).toBeLessThan(kinds().indexOf('url.open'));
+			expect(simulator.actions[terminate]).toMatchObject({
+				kind: 'app.terminate',
+				udid: UDID,
+				bundleIdentifier: 'com.example.app',
+			});
+			expect(receipt.lane?.lastLaunchedAt).toBe(now);
+			// A terminate that worked leaves the log to Metro.
+			expect(metro.notes).toEqual([]);
+		});
+
+		it('keeps the app of a resumed lane unless the lane up asks to restart it', async () => {
+			const laneId = await launchedLane();
+			let mark = kinds().length;
+			const resumed = await start();
+			expect(resumed.lane?.id).toBe(laneId);
+			expect(kindsSince(mark)).toEqual(['app.list', 'url.open']);
+
+			mark = kinds().length;
+			const restarted = await start({ restart: true });
+			expect(restarted.completed).toBe(true);
+			expect(restarted.lane?.id).toBe(laneId);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+		});
+
+		it('restarts the app for a lane launch only when asked once the lane has launched', async () => {
+			const laneId = await launchedLane();
+			let mark = kinds().length;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual(['app.list', 'url.open']);
+
+			mark = kinds().length;
+			expect((await launch(laneId, { restart: true })).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+		});
+
+		it('gives a lane started without launching its fresh start on its first launch, whichever command opens it', async () => {
+			const started = await start({ launch: false });
+			expect(kinds()).toEqual(['device.boot']);
+			const laneId = started.lane?.id as string;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kinds()).toEqual([
+				'device.boot',
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			const mark = kinds().length;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual(['app.list', 'url.open']);
+		});
+
+		it('never terminates for a deep link without restart, even as the first launch', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			const linked = await launch(laneId, { url: 'checkout' });
+			expect(linked.completed).toBe(true);
+			expect(kinds()).toEqual(['device.boot', 'app.list', 'url.open']);
+
+			// A deep link asked to restart terminates first.
+			const mark = kinds().length;
+			const restarted = await launch(laneId, {
+				url: 'checkout',
+				restart: true,
+			});
+			expect(restarted.completed).toBe(true);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			expect(simulator.actions.at(-1)).toMatchObject({
+				kind: 'url.open',
+				url: 'exampleapp://checkout',
+			});
+		});
+
+		it("leaves a lane's fresh start to its first dev-client launch when a deep link comes first", async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			expect((await launch(laneId, { url: 'checkout' })).completed).toBe(true);
+			expect(kinds()).toEqual(['device.boot', 'app.list', 'url.open']);
+			// The deep link opened the app as it was, pointed wherever it was: the
+			// dev-client launch that points it at this lane's Metro is the first.
+			let mark = kinds().length;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+			mark = kinds().length;
+			expect((await launch(laneId)).completed).toBe(true);
+			expect(kindsSince(mark)).toEqual(['app.list', 'url.open']);
+		});
+
+		it('gives a lane up the fresh start a deep link before it left', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			expect((await launch(laneId, { url: 'checkout' })).completed).toBe(true);
+			const mark = kinds().length;
+			const resumed = await start();
+			expect(resumed.lane?.id).toBe(laneId);
+			expect(kindsSince(mark)).toEqual([
+				'app.list',
+				'app.terminate',
+				'url.open',
+			]);
+		});
+
+		it('launches when the app it terminates was not running, through the Simulator service', async () => {
+			const commands: string[][] = [];
+			const provider: SimulatorHostProvider = {
+				discover: async () => simulatorState([]).capability,
+				inventory: async () => ({
+					runtimes: [
+						{
+							identifier: 'com.apple.CoreSimulator.SimRuntime.iOS-26-5',
+							name: 'iOS 26.5',
+							version: '26.5',
+							isAvailable: true,
+						},
+					],
+					deviceTypes: [],
+					devices: [
+						{
+							udid: UDID,
+							name: 'Example Phone',
+							state: 'booted',
+							runtimeIdentifier: 'com.apple.CoreSimulator.SimRuntime.iOS-26-5',
+							isAvailable: true,
+						},
+					],
+				}),
+				listApps: async () => [
+					{
+						bundleIdentifier: 'com.example.app',
+						displayName: 'ExampleApp',
+						isSystem: false,
+					},
+				],
+				runSimctl: async (args) => {
+					commands.push([...args]);
+					if (args[0] === 'terminate') {
+						throw new SimulatorCommandError('xcrun failed with exit code 3.', {
+							kind: 'failed',
+							exitCode: 3,
+							stderr:
+								'The request to terminate "com.example.app" failed. found nothing to terminate\n',
+						});
+					}
+					return { stdout: '', stderr: '', exitCode: 0 };
+				},
+				openSimulator: async () => undefined,
+			};
+			const simulators = new SimulatorService({
+				captureDirectory: path.join(root, 'captures'),
+				provider,
+				metricsProvider: {
+					sample: async () => ({ status: 'available', byDevice: {} }),
+				},
+				pollIntervalMs: 60_000,
+			});
+			await simulators.start();
+			const lanes = new LaneService({
+				store: new LaneStore(path.join(root, 'service-lanes')),
+				simulator: simulators,
+				metro,
+				worktrees,
+				now: () => now,
+			});
+			await lanes.start();
+			try {
+				metro.healthyPorts.add(8_100);
+				const receipt = await lanes.runOperation({
+					actionId: 'op-not-running',
+					kind: 'lane.start',
+					worktreePath: WORKTREE,
+					simulatorUdid: UDID,
+					environment: 'development',
+					launch: true,
+				});
+				expect(receipt.completed).toBe(true);
+				expect(commands.map((args) => args.slice(0, 3))).toEqual([
+					['terminate', UDID, 'com.example.app'],
+					['spawn', UDID, 'defaults'],
+					['openurl', UDID, expect.stringMatching(/^exampleapp:\/\//)],
+				]);
+				expect(
+					simulators.getState().jobs.find((job) => job.kind === 'app.terminate')
+						?.status
+				).toBe('complete');
+				expect(metro.notes).toEqual([]);
+			} finally {
+				await lanes.stop();
+				await simulators.stop();
+			}
+		});
+
+		it.each(['failed', 'rejected'] as const)(
+			'goes ahead with a first launch whose app it could not terminate unasked, and says so in the lane log (%s)',
+			async (how) => {
+				const started = await start({ launch: false });
+				const laneId = started.lane?.id as string;
+				if (how === 'failed') {
+					simulator.failKinds['app.terminate'] =
+						'xcrun failed with exit code 1.';
+				} else {
+					// As on an Xcode without app support, which refuses app.list too.
+					const run = simulator.runAction;
+					simulator.runAction = (action) => {
+						if (action.kind !== 'app.terminate' && action.kind !== 'app.list') {
+							return run(action);
+						}
+						simulator.actions.push(action);
+						return {
+							actionId: action.actionId,
+							accepted: false,
+							error: 'This Xcode installation does not support apps.',
+						};
+					};
+				}
+				const receipt = await launch(laneId);
+				expect(receipt.completed).toBe(true);
+				expect(kinds()).toEqual([
+					'device.boot',
+					'app.list',
+					'app.terminate',
+					'url.open',
+				]);
+				expect(receipt.lane?.lastLaunchedAt).toBe(now);
+				expect(metro.notes).toEqual([
+					{
+						logPath: started.lane?.logPath,
+						note: `com.example.app could not be terminated before the lane's first launch (${how === 'failed' ? 'xcrun failed with exit code 1.' : 'This Xcode installation does not support apps.'}). If a copy was already running, it stays registered as a debug target on the Metro it came from; run \`rndevtools lane --operation launch --lane-id ${laneId} --restart\` to start it fresh.`,
+					},
+				]);
+			}
+		);
+
+		it('says on the receipt when a first launch could not restart the app', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			simulator.failKinds['app.terminate'] = 'xcrun failed with exit code 1.';
+			const receipt = await launch(laneId);
+			expect(receipt.completed).toBe(true);
+			expect(receipt.warnings).toEqual([
+				`com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run \`rndevtools lane --operation launch --lane-id ${laneId} --restart\` to start it fresh.`,
+			]);
+			// Only the first launch restarts unasked; a later one has nothing to say.
+			const later = await launch(laneId);
+			expect(later.completed).toBe(true);
+			expect(later).not.toHaveProperty('warnings');
+		});
+
+		it('says on the receipt when a first launch had no bundle identifier to restart the app by', async () => {
+			worktrees.identity = { scheme: 'exampleapp' };
+			const note = `The lane's first launch did not restart the app: the worktree's app.json declared no ios.bundleIdentifier when the lane started, so nothing names the app to terminate. If a copy was already running, it stays registered as a debug target on the Metro it came from. To start it fresh, run \`rndevtools simulator --operation shutdown --udid ${UDID}\`, then \`rndevtools simulator --operation boot --udid ${UDID}\`, which keep the lane, its Metro and the Simulator's data, and launch the lane again; or declare ios.bundleIdentifier in app.json and replace the lane; or ask the user to quit the app.`;
+			const started = await start();
+			expect(started.completed).toBe(true);
+			expect(kinds()).toEqual(['device.boot', 'url.open']);
+			expect(started.warnings).toEqual([note]);
+			// The lane's agent reads the lane log, so it says so there too.
+			expect(metro.notes.map((entry) => entry.note)).toEqual([note]);
+		});
+
+		it.each(['launch', 'deep link', 'up'] as const)(
+			'fails a %s asked to restart whose app could not be terminated, and opens nothing',
+			async (how) => {
+				const laneId = await launchedLane();
+				const mark = kinds().length;
+				simulator.failKinds['app.terminate'] = 'xcrun failed with exit code 1.';
+				const receipt =
+					how === 'up'
+						? await start({ restart: true })
+						: await launch(laneId, {
+								restart: true,
+								...(how === 'deep link' ? { url: 'checkout' } : {}),
+							});
+				expect(receipt.completed).toBe(false);
+				expect(receipt.error).toBe(
+					`com.example.app could not be terminated before ${how === 'deep link' ? 'the URL' : 'its dev client'} opened, so the launch stopped there: xcrun failed with exit code 1. Metro on port 8100 is still running.`
+				);
+				expect(receipt.lane?.id).toBe(laneId);
+				expect(kindsSince(mark)).toEqual(['app.list', 'app.terminate']);
+				expect(service.getState().lanes[0]?.lastLaunchedAt).toBe(now);
+			}
+		);
+
+		it('stops waiting for the terminate when the launch is cancelled, and cancels its job', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			const run = simulator.runAction;
+			let terminating: () => void = () => undefined;
+			const held = new Promise<void>((resolve) => {
+				terminating = resolve;
+			});
+			// The terminate job never ends on its own.
+			simulator.runAction = (action) => {
+				if (action.kind !== 'app.terminate') return run(action);
+				simulator.actions.push(action);
+				terminating();
+				return {
+					actionId: action.actionId,
+					accepted: true,
+					jobId: 'simulator-held-terminate',
+				};
+			};
+			const cancelled: string[] = [];
+			simulator.cancelJob = (jobId: string) => {
+				cancelled.push(jobId);
+				return true;
+			};
+			const controller = new AbortController();
+			const launched = service.runOperation(
+				{ actionId: 'op-cancel', kind: 'lane.launch', laneId },
+				controller.signal
+			);
+			await held;
+			controller.abort();
+			const receipt = await launched;
+			expect(receipt.completed).toBe(false);
+			expect(receipt.error).toBe('Lane operation cancelled.');
+			expect(receipt.cancelled).toBe(true);
+			expect(receipt.lane?.id).toBe(laneId);
+			expect(cancelled).toEqual(['simulator-held-terminate']);
+			expect(kinds()).not.toContain('url.open');
+			expect(metro.notes).toEqual([]);
+		});
+
+		it('terminates and opens nothing on the Simulator of a lane stopped while its dev client was checked', async () => {
+			const started = await start({ launch: false });
+			const laneId = started.lane?.id as string;
+			const run = simulator.runAction;
+			let release: () => void = () => undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let listing: () => void = () => undefined;
+			const listed = new Promise<void>((resolve) => {
+				listing = resolve;
+			});
+			// The app list waits for the test to let it finish.
+			simulator.runAction = (action) => {
+				if (action.kind !== 'app.list') return run(action);
+				listing();
+				void gate.then(() => run(action));
+				return {
+					actionId: action.actionId,
+					accepted: true,
+					jobId: `simulator-${simulator.actions.length + 1}`,
+				};
+			};
+			const launching = launch(laneId, { restart: true });
+			await listed;
+			const stopped = await service.runOperation({
+				actionId: 'op-stop',
+				kind: 'lane.stop',
+				laneId,
+			});
+			expect(stopped.completed).toBe(true);
+			release();
+			const launched = await launching;
+			expect(launched.completed).toBe(false);
+			expect(launched.error).toBe(`Lane ${laneId} does not exist.`);
+			expect(launched).not.toHaveProperty('lane');
+			// The device is free now: this launch no longer touches it.
+			expect(kinds()).toEqual(['device.boot', 'app.list']);
+		});
+
+		it('refuses a restart it cannot name the app for, before booting a new lane or launching an old one', async () => {
+			worktrees.identity = { scheme: 'exampleapp' };
+			const refused = await start({ restart: true });
+			expect(refused.completed).toBe(false);
+			expect(refused.error).toBe(
+				"A restart terminates the app by its bundle identifier, and the worktree's app.json declares no ios.bundleIdentifier. Declare it there, or run this without restart."
+			);
+			expect(simulator.actions).toEqual([]);
+			expect(metro.started).toEqual([]);
+			expect(service.getState().lanes).toEqual([]);
+
+			// Without restart the lane starts, and its first launch has no app
+			// to name, so nothing is terminated.
+			const started = await start();
+			expect(started.completed).toBe(true);
+			expect(kinds()).toEqual(['device.boot', 'url.open']);
+			const laneId = started.lane?.id as string;
+			const mark = kinds().length;
+			// The lane read its identity when it started, so declaring the bundle
+			// identifier now does not give this lane one: the refusal says so.
+			worktrees.identity = {
+				scheme: 'exampleapp',
+				bundleIdentifier: 'com.example.app',
+			};
+			for (const refusedAgain of [
+				await launch(laneId, { restart: true }),
+				await start({ restart: true }),
+			]) {
+				expect(refusedAgain.completed).toBe(false);
+				expect(refusedAgain.error).toBe(
+					`A restart terminates the app by its bundle identifier, and lane ${laneId} has none: the worktree's app.json declared no ios.bundleIdentifier when the lane started. To start the app fresh anyway, run \`rndevtools simulator --operation shutdown --udid ${UDID}\`, then \`rndevtools simulator --operation boot --udid ${UDID}\`, which keep the lane, its Metro and the Simulator's data, and then this without restart. Or declare it, then replace the lane with \`rndevtools lane --operation down --lane-id ${laneId}\` and \`rndevtools lane --operation up --worktree <app directory>\`: a new lane's first dev-client launch restarts the app. Or ask the user to quit the app, and run this without restart.`
+				);
+				// Not a failed launch: retrying it as one would fail again.
+				expect(refusedAgain.lane).toBeUndefined();
+			}
+			expect(kindsSince(mark)).toEqual([]);
+		});
+
+		it("keeps a parked start's restart for the start the user settles", async () => {
+			for (const port of [8_100, 8_101, 8_102]) metro.healthyPorts.add(port);
+			// Both Simulators run other apps' lanes, so the third start parks.
+			for (const [worktreePath, simulatorUdid] of [
+				[WORKTREE, UDID],
+				[OTHER_WORKTREE, OTHER_UDID],
+			] as const) {
+				const taken = await service.runOperation({
+					actionId: `op-take-${simulatorUdid}`,
+					kind: 'lane.start',
+					worktreePath,
+					simulatorUdid,
+					environment: 'development',
+					launch: false,
+				});
+				expect(taken.completed).toBe(true);
+			}
+			const parked = await service.runOperation({
+				actionId: 'op-parked',
+				kind: 'lane.start',
+				worktreePath: THIRD_WORKTREE,
+				environment: 'development',
+				launch: true,
+				restart: true,
+			});
+			expect(parked.deviceRequest).toMatchObject({
+				status: 'pending',
+				launch: true,
+				restart: true,
+			});
+			// The restart was asked for, so a terminate that fails fails the
+			// launch, where the first launch's own would have let it go ahead.
+			simulator.failKinds['app.terminate'] = 'xcrun failed with exit code 1.';
+			const settled = await service.runOperation({
+				actionId: 'op-settle',
+				kind: 'lane.provide-device',
+				requestId: parked.deviceRequest?.id ?? '',
+				decision: 'clone',
+				simulatorUdid: OTHER_UDID,
+			});
+			expect(settled.completed).toBe(false);
+			expect(settled.error).toMatch(
+				/^com\.example\.app could not be terminated before its dev client opened/
+			);
+			// The settled start stored its lane before the launch failed, and its
+			// receipt names it.
+			expect(settled.lane).toMatchObject({
+				worktreePath: THIRD_WORKTREE,
+				simulatorUdid: CLONE_UDID,
+			});
+			expect(kinds().slice(-2)).toEqual(['app.list', 'app.terminate']);
 		});
 	});
 

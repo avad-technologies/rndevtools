@@ -231,6 +231,26 @@ describe('simulator protocol', () => {
 		}
 	});
 
+	it('lets a deep link name the app it is for, with a valid bundle identifier', () => {
+		const action = {
+			actionId: 'url-for-app',
+			kind: 'url.open',
+			udid: UDID,
+			url: 'exampleapp://home',
+		};
+		expect(
+			simulatorActionSchema.safeParse({
+				...action,
+				bundleIdentifier: 'com.example.app',
+			}).success
+		).toBe(true);
+		for (const bundleIdentifier of ['', '-com.example.app', 'com example']) {
+			expect(
+				simulatorActionSchema.safeParse({ ...action, bundleIdentifier }).success
+			).toBe(false);
+		}
+	});
+
 	it('requires HTTPS for the dedicated universal-link action', () => {
 		expect(
 			simulatorActionSchema.safeParse({
@@ -303,6 +323,31 @@ describe('simulator protocol', () => {
 				captureDirectory: '/private/path',
 			}).success
 		).toBe(false);
+	});
+
+	it("bounds a job's warnings", () => {
+		const jobSchema = simulatorStateSchema.shape.jobs.element;
+		const job = {
+			id: 'simulator-12345678-1234-4123-8123-123456789abc',
+			actionId: 'open-url',
+			kind: 'url.open',
+			status: 'complete',
+			progressSequence: 3,
+			phase: 'complete',
+			createdAt: 1,
+			finishedAt: 2,
+			message: 'Simulator action completed.',
+		};
+		expect(jobSchema.safeParse(job).success).toBe(true);
+		expect(
+			jobSchema.safeParse({ ...job, warnings: ['A step was skipped.'] }).success
+		).toBe(true);
+		for (const warnings of [
+			Array.from({ length: 9 }, () => 'A step was skipped.'),
+			['x'.repeat(4 * 1024 + 1)],
+		]) {
+			expect(jobSchema.safeParse({ ...job, warnings }).success).toBe(false);
+		}
 	});
 
 	it('accepts only exact opaque capture operations without renderer paths', () => {

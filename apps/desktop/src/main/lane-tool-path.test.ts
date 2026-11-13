@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+	access,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -172,6 +179,61 @@ describe('readLoginShellPath', () => {
 			}
 		}
 		expect(alive).toBe(false);
+	});
+
+	it('asks the shell without the agent session the desktop was started from', async () => {
+		// The rc files run whatever they run, and none of it may act as the
+		// agent session that launched the desktop.
+		const seen = path.join(root, 'environment');
+		const shell = await fakeShell(
+			[
+				`/usr/bin/env > '${seen}'`,
+				'PATH=/opt/example/bin:/usr/bin:/bin',
+				'export PATH',
+				'eval "$2"',
+			].join('\n')
+		);
+		expect(
+			await readLoginShellPath({
+				env: {
+					SHELL: shell,
+					HOME: root,
+					LANG: 'en_US.UTF-8',
+					CLAUDE_CODE_SESSION_ID: 'session-1',
+					CLAUDE_CODE_MESSAGING_TOKEN: 'example-token',
+					CODEX_THREAD_ID: 'thread-1',
+					EXAMPLE_AGENT_TOKEN: 'example-secret',
+					RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+				},
+			})
+		).toBe('/opt/example/bin:/usr/bin:/bin');
+		const environment = await readFile(seen, 'utf8');
+		expect(environment).toContain(`HOME=${root}\n`);
+		expect(environment).toContain('LANG=en_US.UTF-8\n');
+		for (const stripped of [
+			'CLAUDE_CODE_SESSION_ID',
+			'CLAUDE_CODE_MESSAGING_TOKEN',
+			'CODEX_THREAD_ID',
+			'EXAMPLE_AGENT_TOKEN',
+			'example-secret',
+		]) {
+			expect(environment).not.toContain(stripped);
+		}
+	});
+
+	it('asks no shell while RNDEVTOOLS_CHILD_ENV_STRIP cannot be read', async () => {
+		const ran = path.join(root, 'ran');
+		const shell = await fakeShell(`: > '${ran}'\neval "$2"`);
+		expect(
+			await readLoginShellPath({
+				env: {
+					SHELL: shell,
+					HOME: root,
+					RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_FIRST,EXAMPLE TOKEN',
+				},
+			})
+		).toBeUndefined();
+		await expect(access(ran)).rejects.toThrow();
 	});
 
 	it('reads a shell that exits without printing the value as undefined', async () => {

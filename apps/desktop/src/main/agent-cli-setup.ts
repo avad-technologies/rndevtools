@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { inheritedChildEnvironment } from './agent-harness-env';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,6 +18,8 @@ const setupReportSchema = z.looseObject({
 	doctor: z.looseObject({
 		ok: z.boolean(),
 		message: z.string().optional(),
+		/** `--no-doctor`: the connection was not checked. */
+		skipped: z.boolean().optional(),
 	}),
 	codexHooksNeedTrust: z.boolean().optional(),
 });
@@ -24,16 +27,29 @@ const setupReportSchema = z.looseObject({
 /**
  * Runs the verified CLI's `setup` and returns one line per touched file. The
  * CLI owns every edit (its Go code is tested against each agent's file
- * format); the desktop only launches it and relays the outcome.
+ * format); the desktop only launches it and relays the outcome. `doctor:
+ * false` skips setup's closing doctor, which dials the socket under the real
+ * home whatever `home` is: with an isolated test home that is an installed
+ * RN Devtools, not this desktop. The CLI gets the desktop's `environment`
+ * without the variables of the agent session the desktop may have been
+ * started from, which it would otherwise act as (agent-harness-env.ts).
  */
 export async function runAgentCliSetup(
 	executablePath: string,
-	home: string
+	home: string,
+	options: { doctor?: boolean; environment?: NodeJS.ProcessEnv } = {}
 ): Promise<string[]> {
+	const env = inheritedChildEnvironment(options.environment ?? process.env);
 	const { stdout } = await execFileAsync(
 		executablePath,
-		['setup', '--config-home', home],
+		[
+			'setup',
+			'--config-home',
+			home,
+			...(options.doctor === false ? ['--no-doctor'] : []),
+		],
 		{
+			env,
 			timeout: 60_000,
 			maxBuffer: 1024 * 1024,
 		}
@@ -85,9 +101,11 @@ export function summarizeAgentCliSetup(stdout: string, home: string): string[] {
 		);
 	}
 	lines.push(
-		report.doctor.ok
-			? 'The RN Devtools desktop connection is working.'
-			: `Agents will reach RN Devtools once it is running${report.doctor.message ? ` (${report.doctor.message})` : ''}.`
+		report.doctor.skipped
+			? 'Setup skipped its RN Devtools desktop connection check.'
+			: report.doctor.ok
+				? 'The RN Devtools desktop connection is working.'
+				: `Agents will reach RN Devtools once it is running${report.doctor.message ? ` (${report.doctor.message})` : ''}.`
 	);
 	return lines;
 }

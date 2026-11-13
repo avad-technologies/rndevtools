@@ -13,12 +13,23 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { FailureRecord, FailureRequest } from '../shared/failure-protocol';
-import { failureText } from './failure-diagnostics';
+import {
+	AGENT_SESSION_ENV_NAMES,
+	childEnvironmentStrip,
+} from './agent-harness-env';
+import { failureText, METRO_LOG_TAIL_HEADING } from './failure-diagnostics';
 import { readLoginShellPath, resolveToolPath } from './lane-tool-path';
 import { ensurePrivateDirectory, writeFileAtomic } from './private-files';
 
 type HandoffRequest = Extract<FailureRequest, { operation: 'handoff' }>;
 const exec = promisify(execFile);
+/**
+ * What the agent CLI a handoff opens must not inherit, by exact name so the
+ * task script can unset each: provider keys, base URLs and the Bedrock,
+ * Vertex and Foundry switches, which would bypass the subscription login, and
+ * the identity and control channels of the agent session the desktop was
+ * launched from. The CLIs' own configuration directories are kept.
+ */
 const STRIPPED = [
 	'OPENAI_API_KEY',
 	'OPENAI_BASE_URL',
@@ -29,10 +40,7 @@ const STRIPPED = [
 	'CLAUDE_CODE_USE_BEDROCK',
 	'CLAUDE_CODE_USE_VERTEX',
 	'CLAUDE_CODE_USE_FOUNDRY',
-	'CLAUDECODE',
-	'CODEX_THREAD_ID',
-	'CLAUDE_CODE_SESSION_ID',
-	'RNDEVTOOLS_AGENT_SESSION_ID',
+	...AGENT_SESSION_ENV_NAMES,
 ];
 const CONFIG_ENVIRONMENT = [
 	'HOME',
@@ -41,10 +49,32 @@ const CONFIG_ENVIRONMENT = [
 	'XDG_CONFIG_HOME',
 	'XDG_DATA_HOME',
 ] as const;
+const CONFIG_NAMES: ReadonlySet<string> = new Set(CONFIG_ENVIRONMENT);
 const CLAUDE_SUBSCRIPTION_SETTINGS = JSON.stringify({
 	forceLoginMethod: 'claudeai',
 	apiKeyHelper: '',
 });
+/** Who receives a session's prompt, and what each mode lets the agent do. */
+const CLIENTS = {
+	claude: {
+		name: 'Claude Code',
+		vendor: 'Anthropic',
+		investigate: 'Claude Code starts in plan mode, which does not edit files.',
+		fix: 'Claude Code may edit this project, but asks before each edit and each command your Claude Code permission rules do not already allow.',
+	},
+	codex: {
+		name: 'Codex',
+		vendor: 'OpenAI',
+		investigate: 'Codex works in a read-only sandbox.',
+		fix: 'Codex may edit this project, but asks before each edit and each command that is neither read-only nor allowed by your Codex rules.',
+	},
+} as const;
+/** Records read from a diagnostic report, whose fields the crashing app shapes. */
+const REPORT_KINDS: ReadonlySet<FailureRecord['kind']> = new Set([
+	'app-crash',
+	'simulator-crash',
+	'simulator-diagnostic',
+]);
 
 /** Literal shell argument; report text and paths are never shell source. */
 function quoteShell(value: string): string {
@@ -82,24 +112,121 @@ export function handoffArguments(
 				'--sandbox',
 				mode === 'fix' ? 'workspace-write' : 'read-only',
 				'--ask-for-approval',
-				'on-request',
+				// The evidence a fix starts from carries text the app logged or
+				// named, so no edit, and no command outside Codex's read-only set
+				// or the user's own rules, runs without the operator's approval.
+				// Under on-request, edits inside the workspace would not ask.
+				mode === 'fix' ? 'untrusted' : 'on-request',
 				prompt,
 			]
 		: [
 				'--settings',
 				CLAUDE_SUBSCRIPTION_SETTINGS,
 				'--permission-mode',
+				// Default is Claude Code's manual mode: it asks before each edit
+				// and command its permission rules do not already allow.
 				mode === 'fix' ? 'default' : 'plan',
 				prompt,
 			];
 }
 
+/** What a session's prompt carries besides its instructions, by category. */
+function handoffEvidence(record: FailureRecord): string[] {
+	return [
+		"the failure's title, kind, time, source and detail, with its lane, port and Simulator when known",
+		...(record.detail.includes(METRO_LOG_TAIL_HEADING)
+			? [
+					"the Metro log tail: up to 8 KB of the lane's Metro output, redacted, including the app's own console logs",
+				]
+			: []),
+		...(REPORT_KINDS.has(record.kind)
+			? [
+					'crash report fields and stack symbol names, which the crashing app can influence',
+				]
+			: []),
+		'the project path',
+	];
+}
+
+/** The confirmation's answers: the index of the button pressed. */
+const CANCEL_RESPONSE = 0;
+const OPEN_RESPONSE = 1;
+
+/**
+ * Whether the confirmation's answer (the message box's `response`, the
+ * index of the button pressed) opens the session. This module owns the
+ * button order, so the desktop reads the answer through this alone.
+ */
+export function handoffOpens(response: number): boolean {
+	return response === OPEN_RESPONSE;
+}
+
+/**
+ * The message box that asks before an agent session opens. It names what the
+ * prompt sends and to whom. Cancel is the first button and the default, so
+ * Return never opens one, as in the other confirmations: a session sends
+ * diagnostics off the Mac, and in fix mode it can edit the project.
+ */
+type HandoffConfirmation = {
+	type: 'question';
+	title: string;
+	message: string;
+	detail: string;
+	buttons: [cancel: string, open: string];
+	defaultId: typeof CANCEL_RESPONSE;
+	cancelId: typeof CANCEL_RESPONSE;
+	noLink: true;
+};
+
+function handoffConfirmation(
+	record: FailureRecord,
+	{ client, mode }: Pick<HandoffRequest, 'client' | 'mode'>,
+	project: string
+): HandoffConfirmation {
+	const { name, vendor, [mode]: approvals } = CLIENTS[client];
+	return {
+		type: 'question',
+		title: `Open ${name}`,
+		message: `${mode === 'fix' ? 'Investigate and fix' : 'Investigate'} with ${name}?`,
+		detail: [
+			record.title,
+			`Project: ${project}`,
+			`${name} sends to ${vendor}, as untrusted evidence:\n${handoffEvidence(
+				record
+			)
+				.map((item) => `• ${item}`)
+				.join('\n')}`,
+			`Opens an interactive terminal using your existing subscription login. ${approvals} Review its results there before marking this failure resolved.`,
+		].join('\n\n'),
+		// At CANCEL_RESPONSE and OPEN_RESPONSE, as handoffOpens reads them.
+		buttons: ['Cancel', `Open ${name}`],
+		defaultId: CANCEL_RESPONSE,
+		cancelId: CANCEL_RESPONSE,
+		noLink: true,
+	};
+}
+
+/**
+ * The environment the agent CLI's login check runs with: the desktop's,
+ * without what STRIPPED names and without what no desktop child inherits
+ * (agent-harness-env.ts), the launching session's CLAUDE_* and CODEX_*
+ * variables and whatever RNDEVTOOLS_CHILD_ENV_STRIP names. The CLIs'
+ * configuration directories stay, CLAUDE_CONFIG_DIR and CODEX_HOME among
+ * them: the login the check verifies lives there, and the task script
+ * exports the same ones. Throws, as childEnvironmentStrip does, on a strip
+ * list it cannot read.
+ */
 export function subscriptionEnvironment(
 	inherited: NodeJS.ProcessEnv
 ): NodeJS.ProcessEnv {
-	return Object.fromEntries(
-		Object.entries(inherited).filter(([key]) => !STRIPPED.includes(key))
-	);
+	const stripped = childEnvironmentStrip(inherited);
+	const kept: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(inherited)) {
+		if (value === undefined || STRIPPED.includes(name)) continue;
+		if (stripped(name) && !CONFIG_NAMES.has(name)) continue;
+		kept[name] = value;
+	}
+	return kept;
 }
 
 async function pruneTasks(directory: string): Promise<void> {
@@ -124,12 +251,8 @@ export class FailureHandoff {
 		private readonly dependencies: {
 			directory: string;
 			projects: () => readonly string[];
-			confirm: (input: {
-				client: string;
-				mode: string;
-				project: string;
-				title: string;
-			}) => Promise<boolean>;
+			/** Shows the message box; true once the operator chose to open. */
+			confirm: (dialog: HandoffConfirmation) => Promise<boolean>;
 			openTerminal: (script: string) => Promise<void>;
 			toolPath?: typeof resolveToolPath;
 			loginShellPath?: typeof readLoginShellPath;
@@ -150,6 +273,9 @@ export class FailureHandoff {
 				'Choose a repository or worktree registered in RN Devtools.'
 			);
 		const project = await realpath(request.project);
+		// A strip list that cannot be read fails the handoff before any agent
+		// CLI runs, rather than letting through what it names.
+		const inherited = subscriptionEnvironment(process.env);
 		let toolPath = await (this.dependencies.toolPath ?? resolveToolPath)(
 			process.env.PATH
 		);
@@ -184,10 +310,7 @@ export class FailureHandoff {
 			throw new Error(
 				`Install ${request.client === 'claude' ? 'Claude Code' : 'Codex CLI'} and sign in with your subscription, then retry.`
 			);
-		const env: NodeJS.ProcessEnv = {
-			...subscriptionEnvironment(process.env),
-			PATH: toolPath,
-		};
+		const env: NodeJS.ProcessEnv = { ...inherited, PATH: toolPath };
 		const checkLogin =
 			this.dependencies.checkLogin ??
 			(async (client, executable, environment) => {
@@ -228,12 +351,9 @@ export class FailureHandoff {
 				`Sign in to ${request.client === 'claude' ? 'Claude Code with Claude.ai' : 'Codex with ChatGPT'} before opening this task. Subscription login could not be verified.`
 			);
 		if (
-			!(await this.dependencies.confirm({
-				client: request.client === 'claude' ? 'Claude Code' : 'Codex',
-				mode: request.mode,
-				project,
-				title: record.title,
-			}))
+			!(await this.dependencies.confirm(
+				handoffConfirmation(record, request, project)
+			))
 		)
 			return { cancelled: true };
 		if ((await realpath(request.project)) !== project)

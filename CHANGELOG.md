@@ -200,3 +200,107 @@
   hairline borders, dense typography.
 - Disabled actions now explain why (missing device capability, invalid input).
 - Playwright end-to-end harness and per-panel specs against the demo device.
+- A lane's first dev-client launch terminates a copy of the lane's app already
+  running on its Simulator, named by the `ios.bundleIdentifier` in the
+  worktree's static `app.json`, so the app starts fresh with the lane's Metro
+  instead of staying registered as a debug target on another Metro. That copy
+  loses its in-memory state. Without a bundle identifier, or when the
+  Simulator cannot terminate the app, the launch goes ahead and the lane log
+  says so. A deep link terminates nothing unless asked to restart; a launch
+  with the dev client's own URL for the lane's Metro counts as its dev-client
+  launch.
+- Before a lane opens a URL in its own scheme, it approves that scheme for its
+  app, by its bundle identifier, on the Simulator, so the iOS 26 "Open in"
+  prompt no longer stalls the dev client. A failed approval is a job warning
+  and a lane log line.
+- Stopping a lane waits up to 5 s for its Metro to exit, then sends SIGKILL
+  once the PID is proven again to be the lane's Metro; a Metro that survives,
+  or cannot be proven, keeps its lane. A second stop of a lane waits for the
+  first. Quitting waits up to 24 s for the lane stops under way. A recorded
+  Metro PID that now names another process leaves its lane stopped instead of
+  failing every lane up and launch.
+- Lane Metros, the native build plan, the `rndevtools` CLI runs for agent
+  setup and its checks, the login shell asked for a PATH, and a failure
+  handoff's login check no longer inherit the variables of an agent session
+  the desktop was started from: `AI_AGENT`, `CLAUDECODE`,
+  `DEBUG_CLAUDE_AGENT_SDK`, `RNDEVTOOLS_AGENT_SESSION_ID`, and every
+  `CLAUDE_*` and `CODEX_*` variable (the login check keeps `CLAUDE_CONFIG_DIR`
+  and `CODEX_HOME`, where the clients keep their logins). To strip more,
+  start the desktop with `RNDEVTOOLS_CHILD_ENV_STRIP`: comma-separated names
+  and `NAME_PREFIX*` patterns, at most 64 entries and 4,096 characters. A
+  malformed list fails lane starts, Metro restarts, native plans, agent setup
+  and failure handoffs before anything runs.
+- Lane Metros no longer advertise over Bonjour (`EXPO_UNSTABLE_BONJOUR=0`).
+- The native build plan gives the build as
+  `npx expo run:ios --device <UDID> --no-bundler`, without the `--port` that
+  Expo CLI refuses beside `--no-bundler`, then the lane launch that reopens
+  the app with the lane's Metro: with `--restart` only for a lane that has a
+  bundle identifier, and with the dev client's full URL for a lane without a
+  URL scheme. It waits up to 15 s for a lane that is still starting, leaves
+  `installed` out when the Simulator is not booted or its apps cannot be
+  listed, gives a cache hit's install as a whole `rndevtools` command, and no
+  longer fails when the desktop was started with `DEBUG`.
+- Agent discovery keeps running while every window is hidden, so a session
+  that ended without its session-end hook still has its holds released.
+- Failure text, native plan errors and local Supabase output (CLI messages
+  and service log lines) are redacted however the terminal escape sequences
+  and invisible characters they lose part or join a credential: the rules
+  read the text without them, with a break at each, and as it came, and
+  whatever any reading finds is hidden. So colored output no longer shields
+  a token, not even one that a sequence glues to the word before it, and
+  neither does a carriage return, a backspace, a zero-width character or a
+  soft hyphen between a word, or `Bearer`, and a token, or between an
+  Authorization parameter's name and its `=`, nor a stray ESC that takes a
+  letter of a credential's name. A token that one of them splits is hidden
+  whole. Supabase output lost them before it was redacted, which let a
+  carriage return join a JWT to the word before it. The failure handoff's
+  confirmation defaults to Cancel and lists the evidence it sends and to
+  which vendor, and Codex fix mode asks before each edit
+  (`--ask-for-approval untrusted`). Failure history no longer reports a
+  Metro RN Devtools stopped on purpose as no longer running, records one
+  whose PID came to name another process, and scans crash reports after
+  startup, reusing the ones it already parsed.
+
+### `rndevtools` CLI
+
+- **Breaking:** field flags are the whole command. Given any of a command's
+  field flags, `rndevtools` never reads standard input, so a caller that pipes
+  part of a command and passes the rest as flags must add the new `--stdin`,
+  which reads the piped JSON object beside the flags. A command complete
+  without fields, `rndevtools simulators` included, reads standard input only
+  with `--stdin`; one that needs fields and is given none still reads a JSON
+  object from a standard input that is not a terminal. Previously every
+  command with fields read a JSON object from a non-terminal standard input
+  and merged its flags into it, so a pipe that was never closed hung it.
+- `lane --operation up|launch --restart` (MCP `restart`) terminates the lane's
+  app before the dev client or URL opens, so it starts fresh with the lane's
+  Metro. It needs the `ios.bundleIdentifier` the lane started with, and a
+  terminate that fails fails the launch.
+- Lane `up` and `launch` results carry `warnings` when the lane's first launch
+  could not restart the app, Simulator jobs carry `warnings` for best-effort
+  steps they skipped, and a parked device request carries `restart`. A lane
+  `up` or `launch` that the desktop stops at its 230 s deadline fails with the
+  new code `timed_out` (exit 6) instead of `cancelled`. A launch that fails
+  after its lane was stored names the lane, and its `recovery` gives the
+  command that launches it again; a device request fulfilled with such a lane
+  says so in its message, with that command.
+- `rndevtools setup --no-doctor` skips the closing connection check and says
+  so in the report. With Claude Code configured, `setup --project` writes a
+  `CLAUDE.md` that imports `AGENTS.md` when the project has none, keeps an
+  RN Devtools block in an existing one current, and leaves one that links
+  outside the project alone.
+- The PreToolUse hook also blocks an `expo` whose first operand is no
+  subcommand (`npx expo`, `npx expo --port 8082`), `expo run:ios` without
+  `--no-bundler` or with `--configuration Debug`, and a package script that
+  runs one of those or a blocked `simctl` command (`npm start`, `yarn ios`,
+  `pnpm ios`). Its reasons quote a script without control, format or
+  invisible characters.
+- `rndevtools agent-check` reports XcodeBuildMCP as a Simulator controller and
+  a Codex `tool_timeout_sec` under 240 s, which its repair raises to 240. A
+  repair names the file a link makes it write, and a project repair whose file
+  resolves outside the project is refused. Repair history keeps the newest 32
+  repairs per scope, and previews, repairs and undos delete expired previews
+  and undone records; the check itself only reads. A bad operation, a missing
+  id or a relative path exits 2 (`invalid_arguments`) instead of 7.
+- The vendored go-toml sources are byte-anchored by SHA-256, as the SimSlim
+  tree is, and the native build and Go check verify them first.

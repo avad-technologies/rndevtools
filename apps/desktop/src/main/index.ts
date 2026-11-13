@@ -78,7 +78,7 @@ import { BuildInsightsService } from './build-insights-service';
 import { BuildInsightsStore } from './build-insights-store';
 import { desktopActionConfirmationCopy } from './desktop-action-confirmation';
 import { DesktopSettingsStore } from './desktop-settings-store';
-import { FailureHandoff } from './failure-handoff';
+import { FailureHandoff, handoffOpens } from './failure-handoff';
 import { createFailureIpcHandlers } from './failure-ipc';
 import { FailureService } from './failure-service';
 import { createLaneIpcHandlers } from './lane-ipc';
@@ -770,10 +770,16 @@ function registerIpc(
 		selectRepository: selectLaneRepository,
 	});
 	// Isolated fixture homes are allowed only in unpackaged demo tests.
-	const agentConfigHome =
-		!app.isPackaged && process.env.RNDEVTOOLS_DEMO === 'true'
-			? (process.env.RNDEVTOOLS_AGENT_CHECK_HOME ?? app.getPath('home'))
-			: app.getPath('home');
+	const agentFixtures =
+		!app.isPackaged && process.env.RNDEVTOOLS_DEMO === 'true';
+	const agentConfigHome = agentFixtures
+		? (process.env.RNDEVTOOLS_AGENT_CHECK_HOME ?? app.getPath('home'))
+		: app.getPath('home');
+	// Setup's closing doctor dials the socket under the real home, which in a
+	// test is an installed RN Devtools rather than this desktop; tests skip it.
+	const agentSetupDoctor = !(
+		agentFixtures && process.env.RNDEVTOOLS_AGENT_SETUP_DOCTOR === 'off'
+	);
 	agentSetupCheckService = new AgentSetupCheckService({
 		home: agentConfigHome,
 		executable: async () =>
@@ -839,7 +845,9 @@ function registerIpc(
 				resourceDirectory: nativeResourceDirectory,
 				appVersion: app.getVersion(),
 			});
-			return runAgentCliSetup(cli.executablePath, agentConfigHome);
+			return runAgentCliSetup(cli.executablePath, agentConfigHome, {
+				doctor: agentSetupDoctor,
+			});
 		},
 	});
 	const appearanceHandlers = createAppearanceIpcHandlers({
@@ -1301,6 +1309,9 @@ function updateSimulatorPolling(): void {
 	);
 	simulatorService?.setPollingActive(visible);
 	slimmingService?.setPollingActive(visible);
+	// While no window is visible, agent discovery slows to once a minute rather
+	// than stopping, as long as an agent holds something: it is what notices an
+	// exited session, so abandoned lanes, claims and stacks still release.
 	agentService?.setPollingActive(visible);
 	// Live screens are the most expensive poller; they also stop when every
 	// window is merely unfocused, not just hidden.
@@ -1556,18 +1567,10 @@ if (!app.requestSingleInstanceLock()) {
 							.worktrees.map((worktree) => worktree.path) ?? []),
 					]),
 				],
-				confirm: async ({ client, mode, project, title }) => {
-					const result = await dialog.showMessageBox({
-						type: 'question',
-						title: `Open ${client}`,
-						message: `${mode === 'fix' ? 'Investigate and fix' : 'Investigate'} with ${client}?`,
-						detail: `${title}\n\nProject: ${project}\n\nOpens an interactive terminal using your existing subscription login. ${mode === 'fix' ? 'The agent may edit this project and run checks, subject to its normal approval prompts.' : 'The agent starts in read-only or plan mode.'} Review its results there before marking this failure resolved.`,
-						buttons: ['Cancel', `Open ${client}`],
-						defaultId: 1,
-						cancelId: 0,
-					});
-					return result.response === 1;
-				},
+				// The handoff builds the whole message box, Cancel default included,
+				// and says which answer opens the session.
+				confirm: async (options) =>
+					handoffOpens((await dialog.showMessageBox(options)).response),
 				openTerminal: async (script) => {
 					const error = await shell.openPath(script);
 					if (error)
@@ -1799,11 +1802,22 @@ if (!app.requestSingleInstanceLock()) {
 			await laneService.start();
 			await agentCliService.start();
 			if (shutdownStarted) return;
-			createWindow();
+			// The first diagnostic report scan reads and parses every recent
+			// report on this thread, so it starts once a window is on screen
+			// (createWindow shows each on ready-to-show), never before: the
+			// window's first paint does not wait for it. A window opened after
+			// one that closed before it showed asks again; only the first ask
+			// starts the scans.
+			const openWindow = () => {
+				createWindow().once('ready-to-show', () =>
+					failureService?.startScanning()
+				);
+			};
+			openWindow();
 
 			app.on('activate', () => {
 				if (!shutdownStarted && BrowserWindow.getAllWindows().length === 0) {
-					createWindow();
+					openWindow();
 				}
 			});
 		})

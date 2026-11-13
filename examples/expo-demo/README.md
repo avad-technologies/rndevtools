@@ -121,8 +121,8 @@ pnpm --dir "$app_a" exec supabase db query --local "$qa_query"
 pnpm --dir "$app_b" exec supabase db query --local "$qa_query"
 ```
 
-Each query should return exactly its own marker. Inspect the native plan for
-each assigned simulator.
+Each query should return exactly its own marker. Inspect each assigned
+simulator's native build plan.
 
 ```sh
 rndevtools native --operation plan --worktree "$app_a" --udid "$udid_a"
@@ -130,13 +130,18 @@ rndevtools native --operation plan --worktree "$app_b" --udid "$udid_b"
 ```
 
 Follow each recommendation. Install a cache hit with
-`native --operation install`. For a cache miss, run the supplied Expo build
-command with the lane's assigned `--port` and `--no-bundler`. Launch each app
-through its lane after its dev client is installed.
+`native --operation install`. For a cache miss, run the build each plan gives
+once its lane's Metro is ready, `npx expo run:ios --device <udid> --no-bundler`,
+as given: it names no port, because Expo CLI refuses `--port` with
+`--no-bundler`, and it opens the app against port 8081. Then run the launch
+each plan quotes after the build, which reopens the app with that lane's
+Metro. The demo's `app.json` declares both a `scheme` and an
+`ios.bundleIdentifier`, so that launch restarts the app and needs no `--url`.
+The plan names the lane by `--lane-id`; `--worktree` reaches the same lane.
 
 ```sh
-rndevtools lane --operation launch --worktree "$app_a"
-rndevtools lane --operation launch --worktree "$app_b"
+rndevtools lane --operation launch --worktree "$app_a" --restart
+rndevtools lane --operation launch --worktree "$app_b" --restart
 ```
 
 Tap **Refresh database** in each app and verify the label, local API URL and

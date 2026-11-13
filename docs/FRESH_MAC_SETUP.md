@@ -70,7 +70,7 @@ rndevtools supabase --operation ls
 ```
 
 Without `--udid`, RN Devtools chooses a free device. If none is available, settle
-the returned device request in the desktop and poll `lane ls`. If a result
+the returned device request in the desktop and poll `rndevtools lane --operation ls`. If a result
 contains a `jobId`, wait for that job; a timeout is an observation deadline, not
 proof that the background work stopped. A first Supabase start downloads and
 initializes services and can take several minutes.
@@ -83,12 +83,23 @@ rndevtools native --operation plan --worktree /absolute/lane-a/app --udid DEVICE
 ```
 
 Follow `recommendation`: install a cache hit with `native --operation install`,
-or start the requested lane with `launch=false` and run the supplied
-`expo run:ios … --port LANE_PORT --no-bundler` command once for a cache miss.
-The port matters: Expo still opens the app with `--no-bundler`. A matching
-bundle ID only proves that an app is installed, not that its native fingerprint
-is current. An explicit cached install refreshes that binary.
-RN Devtools owns Metro. Then run `lane --operation launch` for the lane.
+or, for a cache miss, start the requested lane with `launch=false` and run the
+two commands the plan gives once the lane's Metro is ready, exactly as it
+quotes them. The build, `npx expo run:ios --device DEVICE_UDID --no-bundler`,
+runs once and names no port: Expo CLI refuses `--port` with `--no-bundler`,
+and it opens the app it installs against port 8081. Then the launch reopens
+the app with the lane's Metro. For a lane whose `app.json` declared both a
+`scheme` and an `ios.bundleIdentifier` when it started, the plan quotes
+`rndevtools lane --operation launch --lane-id LANE_ID --restart`, which starts
+the app fresh with the lane's Metro alone. It gives `--restart` only to a lane
+with a bundle identifier, and for one without says how to quit the app before
+the launch. For a lane without a scheme, the launch also carries the dev
+client's full URL,
+`--url '<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>&disableOnboarding=1&disableAutoLaunch=1'`
+with the lane's Metro port, filled in from the project's Expo config when it
+names a scheme. A matching bundle ID only proves that an
+app is installed, not that its native fingerprint is current. An explicit
+cached install refreshes that binary. RN Devtools owns Metro.
 
 Check all of the following before calling the Mac qualified:
 
@@ -97,8 +108,9 @@ Check all of the following before calling the Mac qualified:
 - A record written through app A appears in A and is absent from B, and vice
   versa. Separate local stacks use shared default signing keys unless per-stack
   keys are enabled; data isolation alone does not prove JWT signing isolation.
-- Relaunch each app, repeat `lane up`, and restart the desktop. The same lanes
-  should recover with their own Metro and backend. Observe jobs until terminal.
+- Relaunch each app, repeat both `rndevtools lane --operation up --worktree …`
+  commands above, and restart the desktop. The same lanes should recover with
+  their own Metro and backend. Observe jobs until terminal.
 - Restore and reapply SimSlim on a test device, then check app input, captures,
   and database access again. Retain the restore checkpoint.
 - An unrelated agent is refused access to a device held by another session.

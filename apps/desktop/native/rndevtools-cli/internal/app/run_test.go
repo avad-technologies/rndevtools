@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adalloul0928/rndevtools-cli/internal/protocol"
 )
@@ -103,6 +104,88 @@ func TestRunClassifiesOversizedEnvelopeAsInvalidArguments(t *testing.T) {
 	})
 	if exitCode != ExitUsage || !strings.Contains(stderr.String(), "complete request fits within 256 KiB") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunWithFieldFlagsReachesTheDesktopWhileStdinStaysOpen(t *testing.T) {
+	// Some agent harnesses run a command with a pipe or a socket for stdin
+	// that never closes, and lane up waited on one for good without ever
+	// reaching the desktop. Field flags are the whole command.
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The writer closes when the test ends, so a CLI that does wait on stdin
+	// is let go once the test has failed.
+	defer reader.Close()
+	defer writer.Close()
+	var seen protocol.Request
+	socketPath := appTestServerCapturing(t, &seen, func(id string) string {
+		return `{"protocol":"rndevtools/1","id":"` + id + `","ok":true,"result":{"completed":true}}`
+	})
+	exit := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		exit <- Run(Config{
+			Arguments:      []string{"lane", "--operation", "up", "--worktree", "/Users/example/app", "--udid", "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"},
+			Stdin:          reader,
+			StdinAvailable: true,
+			Stdout:         &stdout,
+			Stderr:         &stderr,
+			SocketPath:     socketPath,
+			Lookup:         func(string) string { return "" },
+		})
+	}()
+	select {
+	case code := <-exit:
+		if code != ExitSuccess {
+			t.Fatalf("exit %d; stderr %s", code, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lane up with field flags waited on a stdin that never closes")
+	}
+	if want := `{"kind":"lane","operation":"up","udid":"AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE","worktreePath":"/Users/example/app"}`; string(seen.Command) != want {
+		t.Fatalf("command sent: %s, want %s", seen.Command, want)
+	}
+}
+
+func TestRunBareSimulatorsReachesTheDesktopWhileStdinStaysOpen(t *testing.T) {
+	// The lanes skill tells agents to run a bare `rndevtools simulators`.
+	// It is complete without any field, so it never waits on a stdin that
+	// stays open, as the harnesses that run commands with one leave it.
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	var seen protocol.Request
+	socketPath := appTestServerCapturing(t, &seen, func(id string) string {
+		return `{"protocol":"rndevtools/1","id":"` + id + `","ok":true,"result":{"devices":[]}}`
+	})
+	exit := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		exit <- Run(Config{
+			Arguments:      []string{"simulators"},
+			Stdin:          reader,
+			StdinAvailable: true,
+			Stdout:         &stdout,
+			Stderr:         &stderr,
+			SocketPath:     socketPath,
+			Lookup:         func(string) string { return "" },
+		})
+	}()
+	select {
+	case code := <-exit:
+		if code != ExitSuccess {
+			t.Fatalf("exit %d; stderr %s", code, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a bare simulators waited on a stdin that never closes")
+	}
+	if want := `{"kind":"simulators"}`; string(seen.Command) != want {
+		t.Fatalf("command sent: %s, want %s", seen.Command, want)
 	}
 }
 
@@ -454,6 +537,18 @@ func TestHookUsageDescribesTheSupabaseRules(t *testing.T) {
 		if !strings.Contains(stdout.String(), phrase) {
 			t.Fatalf("hook usage lacks %q:\n%s", phrase, stdout.String())
 		}
+	}
+	// It names the simctl commands the MCP instructions name.
+	if flat := strings.Join(strings.Fields(stdout.String()), " "); !strings.Contains(flat, "simctl boot/shutdown/openurl/ install/launch/terminate/io") {
+		t.Fatalf("hook usage must name terminate with the other simctl commands:\n%s", stdout.String())
+	}
+	// So does setup's, where it describes the hook it installs.
+	stdout.Reset()
+	if Run(Config{Arguments: []string{"setup", "--help"}, Stdout: &stdout, Stderr: &stderr}) != ExitSuccess {
+		t.Fatal("setup --help should succeed")
+	}
+	if flat := strings.Join(strings.Fields(stdout.String()), " "); !strings.Contains(flat, "PreToolUse redirects simctl boot/shutdown/openurl/ install/launch/terminate/io") {
+		t.Fatalf("setup usage must name terminate with the other simctl commands:\n%s", stdout.String())
 	}
 }
 

@@ -107,11 +107,14 @@ pnpm --filter @rndevtools/desktop native:check
 ```
 
 Every check selection first fails when `HelperVersion.swift` does not declare
-the `package.json` version. The Go gate runs formatting, vet, race tests, a
-pinned vendored-module checks for both Go binaries, exact SimSlim vendored-file
-SHA-256 verification, and `govulncheck` with module downloads disabled.
-The agent CLI vendors go-toml v2.4.3; update it with `go get` and `go mod vendor`
-from `native/rndevtools-cli`, then update the module pin in the check script and
+the `package.json` version. The Go gate runs formatting, vet, race tests,
+pinned vendored-module checks for both Go binaries, exact vendored-file SHA-256
+verification for SimSlim and for the agent CLI's go-toml, and `govulncheck` with
+module downloads disabled. The native build repeats both vendored-file checks
+before it compiles anything. The agent CLI vendors go-toml v2.4.3; update it
+with `go get` and `go mod vendor` from `native/rndevtools-cli`, regenerate its
+`VENDORED_SOURCE_SHA256SUMS`, then update the anchors in
+`scripts/verify-vendored-go-toml.mjs`, the module pin in the check script, and
 its license notice. Packaging and validation use `-mod=vendor` with
 `GOPROXY=off`, including on a Mac without a populated Go module cache. The
 Swift gate runs strict formatting and package tests.

@@ -326,7 +326,7 @@ func TestSupabaseToolFollowsLaneAndSpeaksTheWireContract(t *testing.T) {
 	if properties["service"].(map[string]any)["type"] != "array" {
 		t.Fatalf("service must be an array: %v", properties["service"])
 	}
-	for _, phrase := range []string{"supabase/config.toml", "--runtime native", "never run supabase start, stop, stack, or local", "lane up", "jobId"} {
+	for _, phrase := range []string{"supabase/config.toml", "--runtime native", "never run supabase start, stop, stack, or local", "lane (operation up)", "jobId"} {
 		if !strings.Contains(supabase.Description, phrase) {
 			t.Fatalf("supabase description lacks %q", phrase)
 		}
@@ -370,6 +370,85 @@ func TestSupabaseToolFollowsLaneAndSpeaksTheWireContract(t *testing.T) {
 	}
 	if responses[2]["result"].(map[string]any)["isError"] != true {
 		t.Fatalf("ls with a worktree must be a tool error: %v", responses[2])
+	}
+}
+
+func TestLaneToolTakesRestartAndTheInstructionsSayWhen(t *testing.T) {
+	lane := Tools()[0]
+	if lane.Name != "lane" {
+		t.Fatalf("lane must be listed first, got %s", lane.Name)
+	}
+	properties := lane.InputSchema["properties"].(map[string]any)
+	restart, ok := properties["restart"].(map[string]any)
+	if !ok || restart["type"] != "boolean" {
+		t.Fatalf("lane restart parameter: %v", restart)
+	}
+	usage, _ := restart["description"].(string)
+	// A launch held back for the local backend opens after up has returned,
+	// so only the lane's log can say it could not restart the app.
+	heldBack := "or, for a launch held back for the local backend, only the lane's log"
+	// A url that opens the dev client against the lane's own Metro, as a lane
+	// without a scheme opens it, is the dev-client launch, not a deep link.
+	devClientURL := "a url that opens the dev client against this lane's Metro is that dev-client launch"
+	for _, phrase := range []string{"(up, launch)", "a terminate that fails fails the launch", "first dev-client launch", "warnings", heldBack, "another lane or a person", "debug target", "without restart keeps the app's state", devClientURL, "ios.bundleIdentifier"} {
+		if !strings.Contains(usage, phrase) {
+			t.Fatalf("restart description lacks %q: %s", phrase, usage)
+		}
+	}
+	// A lane's first dev-client launch restarts the app by itself, as far as
+	// app.json names the app and the Simulator lets it.
+	for _, phrase := range []string{
+		"first dev-client launch restarts the app (only with ios.bundleIdentifier in app.json; the result's warnings say when it could not, " + heldBack + ")",
+		"pass restart to up or launch", "names the lane and the command that retries it", "(lane-id, url, restart)",
+		// A parked lane up completes: the desktop parks the start as a
+		// receipt with a deviceRequest and no lane.
+		"when none is free the result has completed=true, no lane, and a deviceRequest",
+		// A request the user settled is fulfilled with its lane even when
+		// that lane's launch failed; only its message says so.
+		"fulfilled with a laneId, or dismissed; its message says if the launch failed, and how to retry",
+	} {
+		if !strings.Contains(lane.Description, phrase) {
+			t.Fatalf("lane description lacks %q", phrase)
+		}
+	}
+	// The desktop picks a free iPhone when udid is left out; nothing tells
+	// agents to always pass one.
+	if udid, _ := properties["udid"].(map[string]any)["description"].(string); !strings.Contains(udid, "Omit it to let RN Devtools pick a free iPhone") {
+		t.Fatalf("udid description: %s", udid)
+	}
+	for _, phrase := range []string{"leave udid out and the desktop picks a free device", "pass udid when the user named a device or is using one", "Pass restart to lane (operation up or launch)", "started by another lane or by hand", "restarts its app on its first dev-client launch by itself", "launch, terminate, or io directly"} {
+		if !strings.Contains(instructions, phrase) {
+			t.Fatalf("instructions lack %q: %s", phrase, instructions)
+		}
+	}
+	for _, text := range []string{lane.Description, usage, instructions} {
+		for _, stale := range []string{"new lane's first launch", "new lane does that", "new lane restarts", "completed=false"} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%q is stale in %s", stale, text)
+			}
+		}
+	}
+	if strings.Contains(instructions, "always pass") {
+		t.Fatalf("instructions must not tell agents to always pass a udid: %s", instructions)
+	}
+
+	server, calls := newTestServer(t, func(r protocol.Request) (protocol.Response, error) {
+		return okResponse(r, `{"completed":true}`)
+	}, nil, map[string]string{"CLAUDE_CODE_SESSION_ID": "sess-1"})
+	responses := exchange(t, server,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lane","arguments":{"operation":"launch","lane-id":"lane-11111111-2222-4333-8444-555555555555","restart":true}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lane","arguments":{"operation":"ls","restart":true}}}`,
+	)
+	if len(*calls) != 1 {
+		t.Fatalf("%d socket calls; lane ls with restart must not reach the socket", len(*calls))
+	}
+	launch := callWith(t, *calls, `"operation":"launch"`)
+	if string(launch.request.Command) != `{"agent":{"kind":"claude","sessionId":"sess-1"},"kind":"lane","laneId":"lane-11111111-2222-4333-8444-555555555555","operation":"launch","restart":true}` {
+		t.Fatalf("launch command: %s", launch.request.Command)
+	}
+	refused := responses[1]["result"].(map[string]any)
+	if refused["isError"] != true || !strings.Contains(fmt.Sprint(refused["content"]), "only the up and launch operations accept restart") {
+		t.Fatalf("lane ls with restart must be a tool error that says why: %v", refused)
 	}
 }
 
@@ -744,4 +823,70 @@ func TestClaimIsDescribedAsTheHoldTheDesktopEnforces(t *testing.T) {
 		return
 	}
 	t.Fatal("no claim tool is listed")
+}
+
+func TestDoctorAndNativeDescribeWhatTheirResultsMayLeaveOut(t *testing.T) {
+	// doctor carries the read-only agent setup check as agentSetup, or
+	// {status: "not-checked", message} when that check could not run; a
+	// native plan leaves installed out when it cannot list the Simulator's
+	// apps.
+	wants := map[string][]string{
+		"doctor": {"agentSetup", `{status: "not-checked", message}`, "Claude Code and Codex", "Agent setup checks"},
+		"native": {"installed is left out when the Simulator's apps cannot be listed"},
+	}
+	for _, tool := range Tools() {
+		for _, phrase := range wants[tool.Name] {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Errorf("%s description lacks %q: %s", tool.Name, phrase, tool.Description)
+			}
+		}
+		delete(wants, tool.Name)
+	}
+	if len(wants) > 0 {
+		t.Fatalf("tools not listed: %v", wants)
+	}
+}
+
+func TestNativeToolGivesTheBuildWithoutAPort(t *testing.T) {
+	// Expo CLI refuses --port with --no-bundler, so the build native plan
+	// gives names no port, and a lane launch with restart then reopens the
+	// app with the lane's Metro, except where the lane cannot restart it or
+	// has no scheme to open its dev client by.
+	for _, tool := range Tools() {
+		if tool.Name != "native" {
+			continue
+		}
+		for _, phrase := range []string{
+			"names no port", "Expo CLI refuses --port with --no-bundler", "lane with operation launch, the lane-id, and restart",
+			"leaves restart out for a lane started without an ios.bundleIdentifier", "a url for a lane started without a URL scheme",
+		} {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Fatalf("native description lacks %q: %s", phrase, tool.Description)
+			}
+		}
+		if strings.Contains(tool.Description, "keep its --port") {
+			t.Fatalf("native description still tells agents to keep a port: %s", tool.Description)
+		}
+		return
+	}
+	t.Fatal("no native tool is listed")
+}
+
+func TestNativeToolSaysAPlanMayWaitForAStartingLane(t *testing.T) {
+	// A plan that is due to advise a build, and an install's cache_miss
+	// answer, wait up to 15 s for the worktree's lane to turn ready while
+	// its Metro is still starting, as it is right after lane up with launch
+	// false. Agents told only "about two seconds" may give up on that wait.
+	for _, tool := range Tools() {
+		if tool.Name != "native" {
+			continue
+		}
+		for _, phrase := range []string{"builds nothing and takes about two seconds", "up to 15 s longer", "lane is still starting"} {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Fatalf("native description lacks %q: %s", phrase, tool.Description)
+			}
+		}
+		return
+	}
+	t.Fatal("no native tool is listed")
 }

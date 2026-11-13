@@ -94,6 +94,30 @@ describe('worktree inspector', () => {
 		expect(dirty.get('/Users/dev/app-1')).toBe(true);
 		expect(dirty.get('/Users/dev/app-2')).toBe(false);
 	});
+
+	it('lists no worktrees, and no git failure, for a repository deleted since it was recorded', async () => {
+		const root = await mkdtemp(path.join(os.tmpdir(), 'rndevtools-worktree-'));
+		try {
+			// git -C on a directory that is gone exits 128, as it does for a
+			// directory that is no repository.
+			const failure = new SimulatorCommandError(
+				'git failed with exit code 128.',
+				{ kind: 'failed', exitCode: 128 }
+			);
+			const worktrees = createWorktreeInspector({
+				runCommand: async () => {
+					throw failure;
+				},
+			});
+			await expect(
+				worktrees.listWorktrees(path.join(root, 'deleted-checkout'))
+			).resolves.toEqual([]);
+			// A directory that is still there keeps its git failure.
+			await expect(worktrees.listWorktrees(root)).rejects.toBe(failure);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('parseWorktreeList', () => {

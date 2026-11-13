@@ -18,7 +18,7 @@ import (
 )
 
 const healthFileLimit = 2 * 1024 * 1024
-const healthRulesVersion = "2026-11-06.1"
+const healthRulesVersion = "2026-11-09.1"
 
 // HealthOptions are local filesystem inputs, never accepted through the MCP.
 type HealthOptions struct {
@@ -186,19 +186,56 @@ func healthContains(value any, wanted string) bool {
 	return false
 }
 
-func (s *healthScanner) label(file string) string {
-	if rel, err := filepath.Rel(s.options.Home, file); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+// healthClientNames are the clients' names as the report and the desktop
+// show them.
+var healthClientNames = map[string]string{"codex": "Codex", "claude": "Claude Code"}
+
+func (s *healthScanner) label(file string) string { return healthLabel(s.options.Home, file) }
+
+// healthLabel shows file relative to home when it is inside it.
+func healthLabel(home, file string) string {
+	if healthInside(home, file) && file != home {
+		rel, _ := filepath.Rel(home, file)
 		return "~/" + rel
 	}
 	return file
 }
+
+// healthInside reports whether path is base or inside it, lexically.
+func healthInside(base, path string) bool {
+	rel, err := filepath.Rel(base, path)
+	return err == nil && !filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// healthEscapesProject reports a file of the selected project that an edit
+// would write outside it, through a link the repository committed (a
+// .claude/settings.local.json that points at the user's own settings): a
+// "Selected project" repair there would change every project. label names
+// the file the edit would write.
+func healthEscapesProject(options HealthOptions, file string) (escapes bool, label string) {
+	if options.Project == "" || !healthInside(options.Project, file) {
+		return false, ""
+	}
+	target, reason := writeTarget(file)
+	if reason != "" || healthInside(options.Project, target) {
+		return false, ""
+	}
+	return true, healthLabel(options.Home, target)
+}
+
 func (s *healthScanner) add(f HealthFinding) {
 	if len(s.report.Findings) >= 200 {
 		return
 	}
+	if f.FixLabel != "" {
+		if escapes, label := healthEscapesProject(s.options, f.file); escapes {
+			f.FixLabel = ""
+			f.Detail += " This project file resolves to " + label + ", outside the project, so no automatic fix is offered; change the setting where that file lives."
+		}
+	}
 	f.Source = s.label(f.file)
 	if f.Scope == "" {
-		f.Scope = "All " + f.Client + " projects"
+		f.Scope = "All " + healthClientNames[f.Client] + " projects"
 	}
 	f.ID = "finding-" + healthHash([]byte(f.Client + "\x00" + f.Rule + "\x00" + f.file + "\x00" + strings.Join(f.keys, "\x00")))[:32]
 	for _, existing := range s.report.Findings {
@@ -275,8 +312,13 @@ func (s *healthScanner) validateDocument(doc map[string]any, file, client string
 	}
 }
 
+// controllerNames are signatures of MCP servers and plugins that drive
+// Simulators themselves, matched in a server's name, command, and arguments.
+// xcodebuildmcp is XcodeBuildMCP's npm package and binary (`xcodebuildmcp
+// mcp`, or `npx -y xcodebuildmcp@latest`), whose boot_sim and build_run_sim
+// ignore RN Devtools' holds.
 var controllerNames = []struct{ signature, name string }{
-	{"simview", "SimView"}, {"argent", "Argent"}, {"agent-device", "agent-device"}, {"maestro", "Maestro"}, {"radon", "Radon"}, {"ios-simulator", "iOS Simulator MCP"}, {"serve-sim", "serve-sim"}, {"appium", "Appium"}, {"mobile-mcp", "Mobile MCP"}, {"bridge4simulator", "bridge4simulator"},
+	{"simview", "SimView"}, {"argent", "Argent"}, {"agent-device", "agent-device"}, {"maestro", "Maestro"}, {"radon", "Radon"}, {"ios-simulator", "iOS Simulator MCP"}, {"serve-sim", "serve-sim"}, {"appium", "Appium"}, {"mobile-mcp", "Mobile MCP"}, {"bridge4simulator", "bridge4simulator"}, {"xcodebuildmcp", "XcodeBuildMCP"},
 }
 
 func healthController(name string, entry map[string]any) string {
@@ -340,6 +382,7 @@ func CheckAgents(options HealthOptions) (HealthReport, error) {
 		fingerprints.WriteString(file + "\x00" + s.files[file] + "\n")
 	}
 	s.report.Fingerprint = healthHash([]byte(fingerprints.String()))
+	// Read-only, like the rest of the check: previews, repairs and undos prune.
 	s.report.Repairs = healthReceipts(options)
 	return s.report, nil
 }
@@ -410,7 +453,9 @@ func (s *healthScanner) scanCodex() {
 			break
 		}
 	}
-	if healthString(server["command"]) != s.options.Executable || !jsonEqual(server["args"], []any{"mcp"}) || healthFalse(server["enabled"]) {
+	// A short tool timeout cuts a cold lane or Supabase start off; setup raises
+	// it, so the check does too.
+	if healthString(server["command"]) != s.options.Executable || !jsonEqual(server["args"], []any{"mcp"}) || healthFalse(server["enabled"]) || codexTimeoutShort(server["tool_timeout_sec"]) {
 		connection = "needs-setup"
 		target := serverSources["rndevtools"]
 		if target == "" {
@@ -420,7 +465,7 @@ func (s *healthScanner) scanCodex() {
 		if target != file {
 			scope = "Selected project (Codex)"
 		}
-		f := HealthFinding{Client: "codex", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled executable and enable its MCP. Existing environment and approval settings are preserved.", file: target, format: "toml", mode: "connection", Scope: scope, FixLabel: "Repair Codex connection"}
+		f := HealthFinding{Client: "codex", Rule: "connection", Severity: "warning", Title: "RN Devtools connection needs setup", Detail: "Register the bundled executable, enable its MCP, and raise a tool timeout shorter than 240 seconds, which can cut off a cold lane or Supabase start. Existing environment and approval settings are preserved.", file: target, format: "toml", mode: "connection", Scope: scope, FixLabel: "Repair Codex connection"}
 		if server["url"] != nil {
 			f.FixLabel = ""
 			f.Detail = "A custom RN Devtools transport is configured. Review it in Codex; it will not be replaced automatically."
@@ -583,6 +628,8 @@ func (s *healthScanner) scanGuidance(client string) {
 	start, blockEnd, found, valid := agentsBlockSpan(string(data))
 	if !valid {
 		s.add(HealthFinding{Client: client, Rule: "routing-incomplete", Severity: "review", Title: "Routing instructions are incomplete", Detail: "The RN Devtools instruction markers do not form one complete block. Review the file before repairing its instructions.", file: file})
+	} else if !found && s.projectRouting(client) {
+		// setup --project wrote the block into the project instead.
 	} else if !found || string(data[start:blockEnd]) != healthRoutingBlock() {
 		title, label := "Add RN Devtools routing instructions", "Add routing instructions"
 		if found {
@@ -606,8 +653,14 @@ func (s *healthScanner) scanGuidance(client string) {
 	}
 	for _, name := range skillNames() {
 		file := filepath.Join(s.options.Home, skillDir, "skills", name, "SKILL.md")
-		data, _ := s.read(file, client)
+		data, present := s.read(file, client)
 		wanted, _ := skillFiles.ReadFile("skills/" + name + "/SKILL.md")
+		if !present && s.options.Project != "" {
+			// setup --project installs the skills into the project instead.
+			if installed, _ := s.peek(filepath.Join(s.options.Project, skillDir, "skills", name, "SKILL.md")); bytes.Equal(installed, wanted) {
+				continue
+			}
+		}
 		if !bytes.Equal(data, wanted) {
 			s.add(HealthFinding{Client: client, Rule: "skill-" + name, Severity: "warning", Title: "Update " + name + " instructions", Detail: "Install the skill matching this RN Devtools build. Only this RN Devtools skill file changes.", file: file, format: "text", mode: "skill", value: string(wanted), FixLabel: "Update RN Devtools skill"})
 		}
@@ -655,6 +708,60 @@ func (s *healthScanner) scanGuidance(client string) {
 			}
 		}
 	}
+}
+
+// peek reads a file that may stand in for a missing one, such as the copy
+// setup --project installed in the project. Like read, it counts toward the
+// fingerprint; unlike read, a file it cannot read only means no stand-in.
+func (s *healthScanner) peek(file string) ([]byte, bool) {
+	data, present, err := healthRead(file)
+	switch {
+	case err != nil:
+		s.files[file] = "unreadable"
+		return nil, false
+	case present:
+		s.files[file] = healthHash(data)
+	default:
+		s.files[file] = "missing"
+	}
+	return data, present
+}
+
+// projectRouting reports whether the selected project carries this client's
+// routing as setup --project writes it, current: Codex reads the project's
+// AGENTS.md, and Claude Code its CLAUDE.md, which may import AGENTS.md. A
+// CLAUDE.md with marker lines routes Claude only when its own block is
+// current, as setup reads it (installClaudeImport): Claude Code reads that
+// block beside the one it imports, so a stale block, or markers that do not
+// pair up, are not made good by an import of AGENTS.md.
+func (s *healthScanner) projectRouting(client string) bool {
+	if s.options.Project == "" {
+		return false
+	}
+	current := func(name string) bool {
+		data, present := s.peek(filepath.Join(s.options.Project, name))
+		start, end, found, valid := agentsBlockSpan(string(data))
+		return present && valid && found && string(data[start:end]) == AgentsBlock(s.options.Project)
+	}
+	if client == "codex" {
+		return current("AGENTS.md")
+	}
+	claude, _ := s.peek(filepath.Join(s.options.Project, "CLAUDE.md"))
+	if _, _, found, paired := agentsBlockSpan(string(claude)); found || !paired {
+		return current("CLAUDE.md")
+	}
+	return importsAgentsFile(claude) && current("AGENTS.md")
+}
+
+// importsAgentsFile reports a CLAUDE.md with a line that imports the
+// AGENTS.md beside it (@AGENTS.md).
+func importsAgentsFile(claude []byte) bool {
+	for _, line := range strings.Split(string(claude), "\n") {
+		if line := strings.TrimSpace(line); line == "@AGENTS.md" || line == "@./AGENTS.md" {
+			return true
+		}
+	}
+	return false
 }
 
 func asHealthList(value any) []any { list, _ := value.([]any); return list }

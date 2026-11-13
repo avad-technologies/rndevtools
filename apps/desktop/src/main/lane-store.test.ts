@@ -1,4 +1,5 @@
 import {
+	chmod,
 	lutimes,
 	mkdir,
 	mkdtemp,
@@ -77,6 +78,35 @@ describe('LaneStore', () => {
 		expect(store.get(id)?.metro).toBe('ready');
 		expect(await store.remove(id)).toBe(true);
 		expect(await store.remove(id)).toBe(false);
+	});
+
+	it('writes a change the disk refused again once flushed, and only then', async () => {
+		const store = new LaneStore(root);
+		await store.start();
+		const id = store.newLaneId();
+		await store.upsert(lane(id));
+		await chmod(root, 0o500);
+		try {
+			await expect(store.upsert(lane(id, { metro: 'ready' }))).rejects.toThrow(
+				/EACCES/
+			);
+			// The change is held, not saved, and a flush says so.
+			expect(store.get(id)?.metro).toBe('ready');
+			await expect(store.flush()).rejects.toThrow(/EACCES/);
+		} finally {
+			await chmod(root, 0o700);
+		}
+		await store.flush();
+		const reopened = new LaneStore(root);
+		await reopened.start();
+		expect(reopened.get(id)?.metro).toBe('ready');
+		// With nothing unsaved a flush writes nothing.
+		await chmod(root, 0o500);
+		try {
+			await expect(store.flush()).resolves.toBeUndefined();
+		} finally {
+			await chmod(root, 0o700);
+		}
 	});
 
 	it('quarantines a corrupt file instead of failing to start', async () => {

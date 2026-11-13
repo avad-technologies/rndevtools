@@ -3,10 +3,13 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func healthFixture(t *testing.T) HealthOptions {
@@ -494,5 +497,623 @@ func TestAgentHealthSkillReviewDoesNotRewriteVendorContent(t *testing.T) {
 	raw, _, _ := healthRead(file)
 	if string(raw) != content {
 		t.Fatal("modified vendor skill")
+	}
+}
+
+func TestAgentHealthFindsXcodeBuildMCPAsASimulatorController(t *testing.T) {
+	// XcodeBuildMCP (npm package and binary xcodebuildmcp, run as
+	// `xcodebuildmcp mcp` or through npx) boots, builds onto, and drives
+	// Simulators, so it overlaps RN Devtools' holds like ios-simulator does.
+	options := healthFixture(t)
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[mcp_servers.xcodebuildmcp]\ncommand = \"/opt/homebrew/bin/xcodebuildmcp\"\nargs = [\"mcp\"]\n[mcp_servers.apple-build]\ncommand = \"npx\"\nargs = [\"-y\", \"xcodebuildmcp@latest\", \"mcp\"]\n")
+	healthPut(t, filepath.Join(options.Home, ".claude.json"), `{"mcpServers":{"XcodeBuildMCP":{"type":"stdio","command":"xcodebuildmcp","args":["mcp"]}}}`)
+	report, err := CheckAgents(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]int{}
+	for _, f := range report.Findings {
+		if strings.HasPrefix(f.Rule, "controller") && f.Title == "XcodeBuildMCP can also control simulators" {
+			found[f.Client]++
+		}
+	}
+	if found["codex"] != 2 || found["claude"] != 1 {
+		t.Fatalf("XcodeBuildMCP controllers found: %v in %+v", found, report.Findings)
+	}
+}
+
+// healthStoredRepair writes a repair record for options' scope with the given
+// id and apply time, as ApplyAgentFix stores one.
+func healthStoredRepair(t *testing.T, options HealthOptions, id string, appliedAt int64) {
+	t.Helper()
+	j := healthJournal{Home: options.Home, Project: options.Project, Executable: options.Executable,
+		Plan:    HealthPlan{ID: id, Client: "codex", Title: "Disable plugin in Codex"},
+		Receipt: HealthReceipt{ID: id, Client: "codex", Title: "Disable plugin in Codex", Scope: "All Codex projects", AppliedAt: appliedAt, Status: "applied"},
+		Before:  []byte("[plugins.simview]\nenabled = true\n"), Format: "toml"}
+	if err := healthSaveReceipt(options, j); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func healthHistoryFiles(t *testing.T, options HealthOptions) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(healthStateDir(options))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	files := map[string]bool{}
+	for _, entry := range entries {
+		files[entry.Name()] = true
+	}
+	return files
+}
+
+func TestAgentHealthListsRepairsNewestFirstWithinTheLimit(t *testing.T) {
+	// Repair ids are random, so the order of their files says nothing about
+	// when they were applied: the newest repair must be listed even when its
+	// id sorts after thirty-two older ones.
+	options := healthFixture(t)
+	for i := 1; i <= 40; i++ {
+		healthStoredRepair(t, options, fmt.Sprintf("check-%032x", i), int64(1_000+i))
+	}
+	newest := "check-" + strings.Repeat("f", 32)
+	healthStoredRepair(t, options, newest, 9_000)
+	report, err := CheckAgents(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Repairs) != 32 || report.Repairs[0].ID != newest {
+		t.Fatalf("want the newest of 41 repairs first, 32 in all; got %d starting with %+v", len(report.Repairs), report.Repairs[0])
+	}
+	for i := 1; i < len(report.Repairs); i++ {
+		if report.Repairs[i-1].AppliedAt < report.Repairs[i].AppliedAt {
+			t.Fatalf("repairs are not newest first: %+v", report.Repairs)
+		}
+	}
+	// Applying another repair keeps only the newest 32 records of the scope.
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	plan := healthRepair(t, options, "codex", "plugin-controller")
+	files := healthHistoryFiles(t, options)
+	summaries := 0
+	for name := range files {
+		if strings.HasSuffix(name, ".summary.json") {
+			summaries++
+			if !files[strings.TrimSuffix(name, ".summary.json")+".json"] {
+				t.Fatalf("summary %s kept without its record", name)
+			}
+		}
+	}
+	if summaries != 32 || !files[plan.ID+".summary.json"] || !files[newest+".json"] || files[fmt.Sprintf("check-%032x", 10)+".json"] {
+		t.Fatalf("history after a repair: %v", files)
+	}
+}
+
+func TestAgentHealthDeletesPreviewsAndOriginalBytesItNoLongerNeeds(t *testing.T) {
+	options := healthFixture(t)
+	file := filepath.Join(options.Home, ".codex", "config.toml")
+	healthPut(t, file, "[plugins.simview]\nenabled=true\n[mcp_servers.cloud.env]\nTOKEN='sensitive-fixture'\n")
+	f := healthFinding(t, options, "codex", "plugin-controller")
+	stale, err := PlanAgentFix(options, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := PlanAgentFix(options, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A preview the user cancelled, or never applied, expires after five
+	// minutes; so does the temporary file of a write that was interrupted.
+	old := time.Now().Add(-10 * time.Minute)
+	leftover := filepath.Join(healthStateDir(options), ".rndevtools-setup-123456")
+	healthPut(t, leftover, "TOKEN='sensitive-fixture'")
+	for _, path := range []string{filepath.Join(healthStateDir(options), stale.ID+".json"), leftover} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The next preview prunes them.
+	next, err := PlanAgentFix(options, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := healthHistoryFiles(t, options)
+	if files[stale.ID+".json"] || files[filepath.Base(leftover)] || !files[fresh.ID+".json"] || !files[next.ID+".json"] {
+		t.Fatalf("expired previews must go and fresh ones stay: %v", files)
+	}
+	// Once a repair is undone, its copy of the original file is not needed.
+	if _, err := ApplyAgentFix(options, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	report, err := UndoAgentFix(options, fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = healthHistoryFiles(t, options)
+	if files[fresh.ID+".json"] || files[fresh.ID+".summary.json"] {
+		t.Fatalf("undo must delete the repair's record: %v", files)
+	}
+	for _, repair := range report.Repairs {
+		if repair.ID == fresh.ID {
+			t.Fatalf("an undone repair is still offered: %+v", report.Repairs)
+		}
+	}
+	for name := range files {
+		raw, _ := os.ReadFile(filepath.Join(healthStateDir(options), name))
+		if bytes.Contains(raw, []byte("sensitive-fixture")) {
+			t.Fatalf("%s still holds the original configuration", name)
+		}
+	}
+}
+
+func TestAgentHealthChecksOnlyReadWhilePreviewsRepairsAndUndosPrune(t *testing.T) {
+	// The check is read-only wherever it runs: the desktop's view, doctor,
+	// and before and after setup, --dry-run included. Only a preview, a
+	// repair, or an undo prunes what the history no longer needs.
+	options := healthFixture(t)
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	finding := healthFinding(t, options, "codex", "plugin-controller")
+	routing := healthFinding(t, options, "codex", "routing")
+	old := time.Now().Add(-10 * time.Minute)
+	expiredPreview := func(finding HealthFinding) string {
+		t.Helper()
+		plan, err := PlanAgentFix(options, finding.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(healthStateDir(options), plan.ID+".json"), old, old); err != nil {
+			t.Fatal(err)
+		}
+		return plan.ID + ".json"
+	}
+	stale := expiredPreview(finding)
+	leftover := filepath.Join(healthStateDir(options), ".rndevtools-setup-123456")
+	healthPut(t, leftover, "")
+	if err := os.Chtimes(leftover, old, old); err != nil {
+		t.Fatal(err)
+	}
+	before := healthHistoryFiles(t, options)
+	for range 2 {
+		if _, err := CheckAgents(options); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := healthHistoryFiles(t, options); !maps.Equal(after, before) {
+		t.Fatalf("the check changed the history: %v, was %v", after, before)
+	}
+	fresh, err := PlanAgentFix(options, finding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files := healthHistoryFiles(t, options); files[stale] || files[filepath.Base(leftover)] || !files[fresh.ID+".json"] {
+		t.Fatalf("a preview must prune what expired and keep itself: %v", files)
+	}
+	stale = expiredPreview(routing)
+	if _, err := ApplyAgentFix(options, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	if files := healthHistoryFiles(t, options); files[stale] || !files[fresh.ID+".summary.json"] {
+		t.Fatalf("a repair must prune what expired and keep itself: %v", files)
+	}
+	stale = expiredPreview(routing)
+	if _, err := UndoAgentFix(options, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	if files := healthHistoryFiles(t, options); files[stale] || files[fresh.ID+".json"] {
+		t.Fatalf("an undo must prune what expired and its own record: %v", files)
+	}
+}
+
+func TestAgentHealthDeletesTheUndoneRepairsEarlierBuildsKept(t *testing.T) {
+	// Builds before undo deleted a repair's record marked it undone instead,
+	// and kept it, with its copies of the configuration, until 32 newer
+	// repairs of its scope pushed it out. Undo cannot use one again, so
+	// pruning deletes it in any scope, and it no longer takes the place of a
+	// repair that undo can still reach.
+	options := healthFixture(t)
+	other := options
+	other.Project = filepath.Join(options.Home, "code", "example-app")
+	undone := func(options HealthOptions, id string, appliedAt int64) {
+		t.Helper()
+		j := healthJournal{Home: options.Home, Project: options.Project, Executable: options.Executable,
+			Plan:    HealthPlan{ID: id, Client: "codex", Title: "Disable plugin in Codex"},
+			Receipt: HealthReceipt{ID: id, Client: "codex", Title: "Disable plugin in Codex", Scope: "All Codex projects", AppliedAt: appliedAt, Status: "undone"},
+			Before:  []byte("[mcp_servers.cloud.env]\nTOKEN = 'sensitive-fixture'\n"), Format: "toml"}
+		if err := healthSaveReceipt(options, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied := fmt.Sprintf("check-%032x", 1)
+	healthStoredRepair(t, options, applied, 1_000)
+	gone := []string{}
+	for i := 2; i <= 40; i++ {
+		id := fmt.Sprintf("check-%032x", i)
+		undone(options, id, int64(1_000+i))
+		gone = append(gone, id)
+	}
+	elsewhere := fmt.Sprintf("check-%032x", 99)
+	undone(other, elsewhere, 5_000)
+	gone = append(gone, elsewhere)
+	if report, _ := CheckAgents(options); len(report.Repairs) != 1 || report.Repairs[0].ID != applied {
+		t.Fatalf("the report lists only the repair undo can reach: %+v", report.Repairs)
+	}
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	plan := healthRepair(t, options, "codex", "plugin-controller")
+	files := healthHistoryFiles(t, options)
+	for _, id := range gone {
+		if files[id+".json"] || files[id+".summary.json"] {
+			t.Fatalf("the undone repair %s kept its record: %v", id, files)
+		}
+	}
+	for _, id := range []string{applied, plan.ID} {
+		if !files[id+".json"] || !files[id+".summary.json"] {
+			t.Fatalf("undone repairs pushed out %s, which undo can reach: %v", id, files)
+		}
+	}
+	for name := range files {
+		if raw, _ := os.ReadFile(filepath.Join(healthStateDir(options), name)); bytes.Contains(raw, []byte("sensitive-fixture")) {
+			t.Fatalf("%s still holds a copy of the configuration", name)
+		}
+	}
+}
+
+func TestAgentHealthPrunesNothingFromAHistoryItCannotListWhole(t *testing.T) {
+	// One listing reads at most healthHistoryEntries files, in no particular
+	// order. Past that, a repair's summary can be left out of it while it is
+	// on disk, so that its record looks like an expired preview, or its
+	// record left out, so that the summary looks orphaned. A history that one
+	// listing cannot hold is therefore not pruned at all.
+	options := healthFixture(t)
+	dir, err := healthPrivateDir(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-10 * time.Minute)
+	age := func(name string) {
+		t.Helper()
+		if err := os.Chtimes(filepath.Join(dir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := []string{}
+	for i := 1; i <= 8; i++ {
+		id := fmt.Sprintf("check-%032x", i)
+		healthStoredRepair(t, options, id, int64(1_000+i))
+		for _, name := range []string{id + ".json", id + ".summary.json"} {
+			age(name)
+			kept = append(kept, name)
+		}
+	}
+	previews := []string{}
+	for i := 1; i <= healthHistoryEntries; i++ {
+		name := fmt.Sprintf("check-%032x.json", 1<<20+i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"plan":{}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		age(name)
+		previews = append(previews, name)
+	}
+	healthPut(t, filepath.Join(options.Home, ".codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	plan := healthRepair(t, options, "codex", "plugin-controller")
+	kept = append(kept, plan.ID+".json", plan.ID+".summary.json")
+	missing := func(names []string) []string {
+		gone := []string{}
+		for _, name := range names {
+			if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+				gone = append(gone, name)
+			}
+		}
+		return gone
+	}
+	if gone := missing(append(append([]string{}, kept...), previews...)); len(gone) > 0 {
+		t.Fatalf("a history one listing cannot hold was pruned: %d files gone, starting with %v", len(gone), gone[:min(len(gone), 4)])
+	}
+	// Once it fits in one listing again, expired previews go and every
+	// repair keeps its pair.
+	for _, name := range previews[8:] {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	healthPut(t, filepath.Join(options.Home, ".claude", "settings.json"), `{"enabledPlugins":{"simview@tools":true}}`)
+	plan = healthRepair(t, options, "claude", "plugin-controller")
+	kept = append(kept, plan.ID+".json", plan.ID+".summary.json")
+	if gone := missing(kept); len(gone) > 0 {
+		t.Fatalf("repairs lost files: %v", gone)
+	}
+	if gone := missing(previews[:8]); len(gone) != 8 {
+		t.Fatalf("expired previews kept from a whole listing: %v", previews[:8])
+	}
+}
+
+func TestAgentHealthPlanNamesTheFileItWritesThroughALink(t *testing.T) {
+	// A dotfiles link is edited where it points; the preview says so.
+	options := healthFixture(t)
+	target := filepath.Join(options.Home, "dotfiles", "codex.toml")
+	healthPut(t, target, "[plugins.simview]\nenabled=true\n")
+	link := filepath.Join(options.Home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanAgentFix(options, healthFinding(t, options, "codex", "plugin-controller").ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Source != "~/.codex/config.toml" || plan.Target != "~/dotfiles/codex.toml" {
+		t.Fatalf("the preview must name the file it writes: %+v", plan)
+	}
+	// A plain file is written where it is, and the preview names it once.
+	healthPut(t, filepath.Join(options.Home, ".claude", "settings.json"), `{"enabledPlugins":{"simview@tools":true}}`)
+	plan, err = PlanAgentFix(options, healthFinding(t, options, "claude", "plugin-controller").ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target != "" {
+		t.Fatalf("a plain file needs no second name: %+v", plan)
+	}
+}
+
+func TestAgentHealthPlanNamesNoLinkAboveTheConfigurationHome(t *testing.T) {
+	// The home itself can be reached through links: macOS keeps temporary
+	// directories under /var, a link to /private/var, and a home can be a
+	// link to another volume. A plain file in it is written where it is, so
+	// the preview names no second file; a link inside the home still names
+	// the file it resolves to.
+	base := t.TempDir()
+	real := filepath.Join(base, "volume", "example")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "home")
+	if err := os.Symlink(real, home); err != nil {
+		t.Fatal(err)
+	}
+	options := HealthOptions{Home: home, Executable: filepath.Join(home, "RN Devtools.app", "rndevtools")}
+	plan := func(client string) HealthPlan {
+		t.Helper()
+		plan, err := PlanAgentFix(options, healthFinding(t, options, client, "plugin-controller").ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	settings := filepath.Join(home, ".claude", "settings.json")
+	original := `{"enabledPlugins":{"simview@tools":true}}`
+	healthPut(t, settings, original)
+	got := plan("claude")
+	if got.Source != "~/.claude/settings.json" || got.Target != "" {
+		t.Fatalf("a plain file in a home reached through a link needs no second name: %+v", got)
+	}
+	if _, err := ApplyAgentFix(options, got.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UndoAgentFix(options, got.ID); err != nil || string(mustRead(t, settings)) != original {
+		t.Fatalf("undo through the home's link: %v", err)
+	}
+	target := filepath.Join(home, "dotfiles", "codex.toml")
+	healthPut(t, target, "[plugins.simview]\nenabled=true\n")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(home, ".codex", "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan("codex"); got.Source != "~/.codex/config.toml" || got.Target != "~/dotfiles/codex.toml" {
+		t.Fatalf("a link inside the home must name the file it writes: %+v", got)
+	}
+	// So does a link to a directory inside the home.
+	if err := os.RemoveAll(filepath.Join(home, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	healthPut(t, filepath.Join(home, "dotfiles", "codex", "config.toml"), "[plugins.simview]\nenabled=true\n")
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "codex"), filepath.Join(home, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan("codex"); got.Target != "~/dotfiles/codex/config.toml" {
+		t.Fatalf("a directory link inside the home must name the file it writes: %+v", got)
+	}
+}
+
+func TestAgentHealthOffersNoProjectRepairThatWritesOutsideTheProject(t *testing.T) {
+	// A repository can commit .claude/settings.local.json as a link to the
+	// user's own settings. A "Selected project" repair through it would edit
+	// every project, so none is offered, and the user settings stay as they are.
+	options := healthFixture(t)
+	options.Project = filepath.Join(options.Home, "code", "example-app")
+	global := filepath.Join(options.Home, ".claude", "settings.json")
+	original := `{"enabledPlugins":{"simview@tools":true}}`
+	healthPut(t, global, original)
+	local := filepath.Join(options.Project, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../.claude/settings.json", local); err != nil {
+		t.Fatal(err)
+	}
+	f := healthFinding(t, options, "claude", "plugin-controller")
+	if f.Scope != "Selected project (Claude Code)" || f.FixLabel != "" || !strings.Contains(f.Detail, "outside the project") || !strings.Contains(f.Detail, "~/.claude/settings.json") {
+		t.Fatalf("a project repair that writes outside the project must not be offered: %+v", f)
+	}
+	if _, err := PlanAgentFix(options, f.ID); err == nil {
+		t.Fatal("planned a project repair outside the project")
+	}
+	f.FixLabel = "Disable plugin in Claude"
+	if _, err := prepareHealthFix(options, f); err == nil || !strings.Contains(err.Error(), "outside the project") {
+		t.Fatalf("prepare must refuse it too: %v", err)
+	}
+	if string(mustRead(t, global)) != original {
+		t.Fatal("user settings changed")
+	}
+}
+
+func TestAgentHealthRaisesAShortCodexToolTimeoutAsSetupDoes(t *testing.T) {
+	// Setup raises a Codex tool timeout below 240 s, which a cold lane or
+	// Supabase start over MCP can exceed; the check and its repair agree.
+	for _, row := range []struct {
+		setting string
+		flagged bool
+		want    any
+	}{
+		{"tool_timeout_sec = 60\n", true, int64(codexToolTimeoutSeconds)},
+		{"tool_timeout_sec = 0\n", true, int64(codexToolTimeoutSeconds)},
+		{"", true, int64(codexToolTimeoutSeconds)},
+		{"tool_timeout_sec = 240\n", false, int64(240)},
+		{"tool_timeout_sec = 900\n", false, int64(900)},
+	} {
+		options := healthFixture(t)
+		file := filepath.Join(options.Home, ".codex", "config.toml")
+		healthPut(t, file, "[mcp_servers.rndevtools]\ncommand = "+tomlString(options.Executable)+"\nargs = [\"mcp\"]\n"+row.setting)
+		report, err := CheckAgents(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		flagged := false
+		for _, f := range report.Findings {
+			flagged = flagged || (f.Client == "codex" && f.Rule == "connection")
+		}
+		if flagged != row.flagged {
+			t.Fatalf("%q: connection finding %v, want %v", row.setting, flagged, row.flagged)
+		}
+		if row.flagged {
+			healthRepair(t, options, "codex", "connection")
+		}
+		raw, _, _ := healthRead(file)
+		doc, _ := healthDecode(raw, "toml")
+		if value, _ := healthGet(doc, "mcp_servers", "rndevtools", "tool_timeout_sec"); value != row.want {
+			t.Fatalf("%q: timeout %#v after the check, want %#v", row.setting, value, row.want)
+		}
+		merged, err := mergeCodexServer(raw, options.Executable)
+		if err != nil || !bytes.Equal(merged, raw) {
+			t.Fatalf("%q: setup would still change the repaired configuration:\n%s", row.setting, merged)
+		}
+	}
+}
+
+func TestAgentHealthAcceptsGuidanceSetupInstalledInTheProject(t *testing.T) {
+	// setup --project installs the skills into the project and the routing
+	// block into its AGENTS.md instead of the user directories. Checked with
+	// that project, they count; user-level copies are not reported missing.
+	options := healthFixture(t)
+	options.Project = filepath.Join(options.Home, "code", "example-app")
+	if _, err := Apply(Options{Home: options.Home, Executable: options.Executable, Project: options.Project, Agents: []Agent{AgentClaude, AgentCodex}, SkipLink: true}); err != nil {
+		t.Fatal(err)
+	}
+	rules := func(options HealthOptions) map[string]bool {
+		report, err := CheckAgents(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := map[string]bool{}
+		for _, f := range report.Findings {
+			found[f.Client+" "+f.Rule] = true
+		}
+		return found
+	}
+	found := rules(options)
+	// Claude Code reads CLAUDE.md, which setup wrote to import AGENTS.md.
+	for _, rule := range []string{"codex routing", "claude routing", "codex skill-rndevtools-lanes", "codex skill-rndevtools-supabase", "claude skill-rndevtools-lanes", "claude skill-rndevtools-supabase"} {
+		if found[rule] {
+			t.Errorf("reported %s although setup installed it in the project: %v", rule, found)
+		}
+	}
+	// A CLAUDE.md of the project's own that does not import AGENTS.md does
+	// not route Claude, and setup leaves it alone.
+	healthPut(t, filepath.Join(options.Project, "CLAUDE.md"), "# Example app\n")
+	if _, err := Apply(Options{Home: options.Home, Executable: options.Executable, Project: options.Project, Agents: []Agent{AgentClaude}, SkipLink: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !rules(options)["claude routing"] {
+		t.Fatalf("Claude reads CLAUDE.md, not AGENTS.md: %v", found)
+	}
+	healthPut(t, filepath.Join(options.Project, "CLAUDE.md"), "# Example app\n\n@AGENTS.md\n")
+	if rules(options)["claude routing"] {
+		t.Fatal("a CLAUDE.md that imports the project's AGENTS.md routes Claude")
+	}
+	// A stale user-level copy is still loaded in every project, so it is still
+	// reported, and so is everything missing when no project is selected.
+	healthPut(t, filepath.Join(options.Home, ".agents", "skills", "rndevtools-lanes", "SKILL.md"), "outdated\n")
+	if !rules(options)["codex skill-rndevtools-lanes"] {
+		t.Fatal("a stale user-level skill must be reported")
+	}
+	global := options
+	global.Project = ""
+	found = rules(global)
+	for _, rule := range []string{"codex routing", "claude routing", "codex skill-rndevtools-supabase", "claude skill-rndevtools-lanes"} {
+		if !found[rule] {
+			t.Errorf("user scope must report missing %s: %v", rule, found)
+		}
+	}
+}
+
+func TestAgentHealthReadsAProjectClaudeMDAsSetupDoes(t *testing.T) {
+	// Claude Code reads a block in the project's CLAUDE.md as well as the
+	// AGENTS.md the file imports, so setup keeps such a block current, also
+	// beside the import, and leaves markers that do not pair up alone. The
+	// check reads the file the same way: a block, or markers, route Claude
+	// only when the block is current, whatever the import says.
+	options := healthFixture(t)
+	options.Project = filepath.Join(options.Home, "code", "example-app")
+	apply := func() {
+		t.Helper()
+		if _, err := Apply(Options{Home: options.Home, Executable: options.Executable, Project: options.Project, Agents: []Agent{AgentClaude, AgentCodex}, SkipLink: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routed := func() bool {
+		t.Helper()
+		report, err := CheckAgents(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range report.Findings {
+			if f.Client == "claude" && f.Rule == "routing" {
+				return false
+			}
+		}
+		return true
+	}
+	apply()
+	claude := filepath.Join(options.Project, "CLAUDE.md")
+	stale := "<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n"
+	for _, row := range []struct {
+		name, content string
+		routed        bool
+	}{
+		{"an import", "# Example app\n\n@AGENTS.md\n", true},
+		{"an import and a current block", "# Example app\n\n@AGENTS.md\n\n" + AgentsBlock(options.Project), true},
+		{"an import and a stale block", "# Example app\n\n@AGENTS.md\n\n" + stale, false},
+		{"an import and unpaired markers", "# Example app\n\n@AGENTS.md\n\n<!-- rndevtools:start -->\nold\n", false},
+		{"a current block", "# Example app\n\n" + AgentsBlock(options.Project), true},
+		{"a stale block", "# Example app\n\n" + stale, false},
+	} {
+		healthPut(t, claude, row.content)
+		if got := routed(); got != row.routed {
+			t.Errorf("%s: Claude routed %v, want %v", row.name, got, row.routed)
+		}
+	}
+	// Setup brings a stale block beside the import up to date, and the check
+	// then agrees with it.
+	healthPut(t, claude, "# Example app\n\n@AGENTS.md\n\n"+stale)
+	apply()
+	if !routed() {
+		t.Fatalf("setup updated the block, yet Claude reads as not routed:\n%s", mustRead(t, claude))
+	}
+}
+
+func TestAgentHealthScopesUseTheClientsDisplayNames(t *testing.T) {
+	// A finding without an explicit scope applies to the user configuration
+	// of its client, named as the desktop names it.
+	options := healthFixture(t)
+	report, err := CheckAgents(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"codex": "All Codex projects", "claude": "All Claude Code projects"}
+	for _, f := range report.Findings {
+		if f.Scope != want[f.Client] {
+			t.Errorf("%s %s has scope %q, want %q", f.Client, f.Rule, f.Scope, want[f.Client])
+		}
 	}
 }

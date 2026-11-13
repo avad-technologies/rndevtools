@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { laneSchemeSchema } from '../shared/lane-protocol';
 import {
@@ -29,7 +29,10 @@ export type WorktreeInspectorPort = {
 		worktreePath: string,
 		signal?: AbortSignal
 	) => Promise<string>;
-	/** Checkout topology only, without running status in each worktree. */
+	/**
+	 * Checkout topology only, without running status in each worktree. A
+	 * repository that is gone, deleted since it was recorded, lists none.
+	 */
 	listWorktrees: (
 		repositoryRoot: string,
 		signal?: AbortSignal
@@ -103,6 +106,20 @@ async function isWorktreeDirty(
 		return (
 			error instanceof SimulatorCommandError && error.kind === 'output-limit'
 		);
+	}
+}
+
+/**
+ * Whether `directory` is gone, as a checkout deleted since it was recorded
+ * is. A directory that is there but cannot be read is not.
+ */
+async function isGone(directory: string): Promise<boolean> {
+	try {
+		await stat(directory);
+		return false;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === 'ENOENT' || code === 'ENOTDIR';
 	}
 }
 
@@ -229,11 +246,20 @@ export function createWorktreeInspector({
 			return first.slice('worktree '.length).trim();
 		},
 		listWorktrees: async (repositoryRoot, signal) => {
-			const output = await git(
-				['worktree', 'list', '--porcelain'],
-				repositoryRoot,
-				signal
-			);
+			let output: string;
+			try {
+				output = await git(
+					['worktree', 'list', '--porcelain'],
+					repositoryRoot,
+					signal
+				);
+			} catch (error) {
+				// git fails on a directory that is gone as it does on one that is
+				// no repository. A repository deleted since it was recorded has no
+				// worktrees left, which is no failure to report on every listing.
+				if (!signal?.aborted && (await isGone(repositoryRoot))) return [];
+				throw error;
+			}
 			return parseWorktreeList(output, repositoryRoot);
 		},
 		readDirty: async (worktreePaths, signal) =>

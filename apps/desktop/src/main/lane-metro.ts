@@ -1,20 +1,34 @@
 import { type SpawnOptions, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync } from 'node:fs';
-import { open, realpath, stat } from 'node:fs/promises';
+import { appendFile, open, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import {
 	MAX_METRO_ENV_VALUE_LENGTH,
 	METRO_ENV_NAME,
 } from '../shared/lane-protocol';
+import {
+	childEnvironmentStrip,
+	childEnvironmentStripProblem,
+} from './agent-harness-env';
 import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
 import { runSimulatorCommand } from './simulator-command-runner';
 
 const METRO_PROBE_TIMEOUT_MS = 750;
 const METRO_LOG_TAIL_BYTES = 256 * 1024;
+const MAX_LOG_NOTE_LENGTH = 4 * 1024;
 const LSOF_PATH = '/usr/sbin/lsof';
 const OWNER_PROBE_TIMEOUT_MS = 3_000;
 const OWNER_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
+/** How long the ps that reads a Metro's command line may take. */
+const COMMAND_PROBE_TIMEOUT_MS = 5_000;
+/**
+ * The longest one ownership proof (verifyMetroOwnership) can take before it
+ * gives up: its ps for the command line, then its lsof for the working
+ * directory, each run into its timeout. Normally it takes milliseconds.
+ */
+export const METRO_OWNERSHIP_PROOF_TIMEOUT_MS =
+	COMMAND_PROBE_TIMEOUT_MS + OWNER_PROBE_TIMEOUT_MS;
 const MAX_LANE_ENV_ENTRIES = 32;
 
 /**
@@ -22,7 +36,9 @@ const MAX_LANE_ENV_ENTRIES = 32;
  * EXPO_PUBLIC_* into every lane's dev bundle, and SUPABASE_*, PG* and
  * RNDEVTOOLS_* would point a worktree's tooling at whatever backend or agent
  * session the desktop happened to be launched from. A lane gets such values
- * only from its environment's metroEnv or its own laneEnv.
+ * only from its environment's metroEnv or its own laneEnv. The variables of
+ * that agent session itself, and whatever the desktop's
+ * RNDEVTOOLS_CHILD_ENV_STRIP names, go too (see agent-harness-env.ts).
  */
 const STRIPPED_INHERITED_ENV = /^(?:EXPO_PUBLIC_|SUPABASE_|PG|RNDEVTOOLS_)/;
 
@@ -53,6 +69,15 @@ export type MetroLaunchInput = {
 
 export type MetroSupervisorPort = {
 	isPortFree: (port: number) => Promise<boolean>;
+	/**
+	 * Why `start` would refuse whatever it is given, the desktop's
+	 * environment being as it is (a malformed RNDEVTOOLS_CHILD_ENV_STRIP), or
+	 * undefined when it would not. The lane service asks before it boots a
+	 * Simulator for a lane whose Metro it must start, new or gone, and before
+	 * it stops a running Metro to replace it, so a replacement that cannot
+	 * start never leaves a lane without its Metro.
+	 */
+	environmentProblem: () => string | undefined;
 	start: (input: MetroLaunchInput) => Promise<number>;
 	/**
 	 * Whether the Metro at `pid` is serving `port`: a packager answers there
@@ -71,9 +96,21 @@ export type MetroSupervisorPort = {
 	 * `appDirectory`. Throws NotLaneMetroError, signalling nothing, once `pid`
 	 * is proven to be some other process, and a plain error, signalling
 	 * nothing either, when it cannot tell whether `pid` is the lane's Metro.
+	 * It sends SIGTERM, or SIGKILL with `force` for a Metro that outlived its
+	 * SIGTERM; either goes only after that same proof.
 	 */
-	stop: (pid: number, port: number, appDirectory: string) => Promise<void>;
+	stop: (
+		pid: number,
+		port: number,
+		appDirectory: string,
+		options?: { force?: boolean }
+	) => Promise<void>;
 	readLogTail: (logPath: string, maxCharacters: number) => Promise<string>;
+	/**
+	 * Adds `note` to the end of a lane's Metro log as one line marked as the
+	 * desktop's: what the desktop did for the lane that Metro cannot report.
+	 */
+	appendLogNote: (logPath: string, note: string) => Promise<void>;
 };
 
 /**
@@ -221,20 +258,26 @@ function checkedLaneEnv(
 
 /**
  * Metro's environment, in this order: the desktop's own environment without
- * the variables a lane must not inherit, its PATH replaced by `toolPath` when
- * there is one, then the environment's metroEnv, then the lane's checked
- * laneEnv, then the fixed keys every lane needs, which nothing overrides.
- * CI is omitted from all layers so development watchers stay enabled.
+ * the variables a lane must not inherit (STRIPPED_INHERITED_ENV and
+ * `stripped`), its PATH replaced by `toolPath` when there is one, then the
+ * environment's metroEnv, then the lane's checked laneEnv, then the fixed
+ * keys every lane needs, which nothing overrides. CI is omitted from all
+ * layers so development watchers stay enabled.
  */
 function metroEnvironment(
 	inherited: NodeJS.ProcessEnv,
 	input: MetroLaunchInput,
 	laneEnv: Record<string, string>,
+	stripped: (name: string) => boolean,
 	toolPath: string | undefined
 ): NodeJS.ProcessEnv {
 	const base: NodeJS.ProcessEnv = {};
 	for (const [name, value] of Object.entries(inherited)) {
-		if (value !== undefined && !STRIPPED_INHERITED_ENV.test(name)) {
+		if (
+			value !== undefined &&
+			!STRIPPED_INHERITED_ENV.test(name) &&
+			!stripped(name)
+		) {
 			base[name] = value;
 		}
 	}
@@ -250,11 +293,21 @@ function metroEnvironment(
 		// Every launch URL and QR code the CLI emits gets the automation
 		// parameters, so agents see the app rather than the launcher sheet.
 		EXPO_NO_DEV_MENU: '1',
+		// Expo advertises every dev server over Bonjour unless CI is set, and
+		// lanes unset CI below. A lane's dev client is sent its own Metro's URL
+		// and a --localhost Metro serves nobody else, yet the advert tells the
+		// network the app's name, slug, bundle identifiers and Expo username,
+		// and lists every lane's server in each lane's dev launcher. In
+		// @expo/cli 57.0.28 this switch defaults to on outside a WebContainer
+		// and is read with getenv's boolish, which takes true, false, 1 or 0
+		// (build/src/utils/env.js:276-277); off, announceAsync returns before
+		// advertising (build/src/start/server/Bonjour.js:70).
+		EXPO_UNSTABLE_BONJOUR: '0',
 		// `--localhost` binds whatever "localhost" resolves to; Node's verbatim
 		// DNS order picks [::1] on macOS while the dev client rewrites its
 		// packager host to 127.0.0.1. Force IPv4 so the app can actually reach
-		// its own Metro.
-		NODE_OPTIONS: [inherited.NODE_OPTIONS, '--dns-result-order=ipv4first']
+		// its own Metro, after whatever inherited options survived stripping.
+		NODE_OPTIONS: [base.NODE_OPTIONS, '--dns-result-order=ipv4first']
 			.filter(Boolean)
 			.join(' '),
 	};
@@ -296,12 +349,15 @@ async function startMetro(
 			`Expo CLI was not found under ${input.worktreePath}/node_modules. Install dependencies in the worktree first.`
 		);
 	}
-	// Refuse a bad laneEnv before the log is created or anything spawns.
+	// Refuse a bad laneEnv, or a malformed list of what to strip, before the
+	// log is created or anything spawns.
 	const laneEnv = checkedLaneEnv(input.laneEnv);
+	const stripped = childEnvironmentStrip(inherited);
 	const env = metroEnvironment(
 		inherited,
 		input,
 		laneEnv,
+		stripped,
 		await toolPath(inherited.PATH)
 	);
 	const log = openSync(input.logPath, 'a', 0o600);
@@ -379,7 +435,9 @@ async function packagerAnswers(
 
 /**
  * Avoid unrelated mount stat/readlink calls that can block lsof past the
- * ownership deadline (-b); incomplete reports still fail closed.
+ * ownership deadline (-b); incomplete reports still fail closed. -b warns on
+ * stderr about every mount it avoids, which the runner counts toward the
+ * output cap, so -w drops those warnings.
  * Whether `pid` itself holds a listening TCP socket on `port`. Expo serves
  * Metro from the CLI process the lane spawned, so the lane's PID is the
  * listener. lsof exits 1 when the process has no such socket; that, and any
@@ -395,6 +453,7 @@ async function listensOn(
 			LSOF_PATH,
 			[
 				'-b',
+				'-w',
 				'-a',
 				'-p',
 				String(pid),
@@ -452,8 +511,9 @@ const LSOF_CWD_REPORT =
 	/^p(\d+)\nfcwd\n(?:D0x([0-9a-f]{1,8})\n)?(?:i(\d{1,20})\n)?n([^\n]+)\n$/;
 
 /**
- * -b skips potentially blocking mount stat/readlink calls. The report still
- * must carry the cwd's device and inode, checked against the app directory.
+ * -b skips potentially blocking mount stat/readlink calls, and -w keeps its
+ * warning about each mount out of the output cap. The report still must
+ * carry the cwd's device and inode, checked against the app directory.
  * The working directory lsof reports for `pid`: its device and inode, and
  * its path as lsof prints it, which the kernel resolved, free of symlinks and
  * spelling each name as the disk stores it. Any other report fails. lsof
@@ -468,7 +528,7 @@ async function processCwd(
 ): Promise<ProcessCwd> {
 	const result = await runCommand(
 		LSOF_PATH,
-		['-b', '-a', '-p', String(pid), '-d', 'cwd', '-FDin'],
+		['-b', '-w', '-a', '-p', String(pid), '-d', 'cwd', '-FDin'],
 		{
 			timeoutMs: OWNER_PROBE_TIMEOUT_MS,
 			maxOutputBytes: OWNER_PROBE_MAX_OUTPUT_BYTES,
@@ -721,7 +781,7 @@ async function verifyMetroOwnership(
 		const result = await runCommand(
 			'/bin/ps',
 			['-p', String(pid), '-o', 'command='],
-			{ timeoutMs: 5_000, maxOutputBytes: 64 * 1024 }
+			{ timeoutMs: COMMAND_PROBE_TIMEOUT_MS, maxOutputBytes: 64 * 1024 }
 		);
 		if (isLaneMetroCommand(result.stdout, port)) {
 			cwd = await processCwd(pid, runCommand);
@@ -758,14 +818,16 @@ async function stopMetro(
 	pid: number,
 	port: number,
 	appDirectory: string,
-	runCommand: CommandRunner
+	runCommand: CommandRunner,
+	force = false
 ): Promise<void> {
 	if (!(await verifyMetroOwnership(pid, port, appDirectory, runCommand)))
 		return;
+	const signal = force ? 'SIGKILL' : 'SIGTERM';
 	try {
-		process.kill(-pid, 'SIGTERM');
+		process.kill(-pid, signal);
 	} catch {
-		process.kill(pid, 'SIGTERM');
+		process.kill(pid, signal);
 	}
 }
 
@@ -804,6 +866,21 @@ export async function readLogTail(
 	}
 }
 
+/**
+ * Appends a note to a lane's Metro log: one line, its line breaks and other
+ * controls turned into spaces, cut to MAX_LOG_NOTE_LENGTH and marked as the
+ * desktop's. Metro writes the log through a descriptor opened for appending,
+ * as this one is, so neither overwrites the other. A log that is gone comes
+ * back readable by its owner alone, as startMetro creates it.
+ */
+async function appendLogNote(logPath: string, note: string): Promise<void> {
+	const line = note
+		.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ')
+		.trim()
+		.slice(0, MAX_LOG_NOTE_LENGTH);
+	await appendFile(logPath, `[RN Devtools] ${line}\n`, { mode: 0o600 });
+}
+
 export function createMetroSupervisor({
 	runCommand = runSimulatorCommand,
 	spawnProcess = spawn,
@@ -824,15 +901,17 @@ export function createMetroSupervisor({
 } = {}): MetroSupervisorPort {
 	return {
 		isPortFree,
+		environmentProblem: () => childEnvironmentStripProblem(environment),
 		start: (input) =>
 			startMetro(input, spawnProcess, environment, toolPath, onExit),
 		isHealthy: (port, pid) => isMetroHealthy(port, pid, probe, runCommand),
 		isProcessRunning,
 		verifyOwnership: (pid, port, appDirectory) =>
 			verifyMetroOwnership(pid, port, appDirectory, runCommand),
-		stop: (pid, port, appDirectory) =>
-			stopMetro(pid, port, appDirectory, runCommand),
+		stop: (pid, port, appDirectory, options) =>
+			stopMetro(pid, port, appDirectory, runCommand, options?.force === true),
 		readLogTail,
+		appendLogNote,
 	};
 }
 

@@ -22,6 +22,7 @@ import {
 	FailureHandoff,
 	failurePrompt,
 	handoffArguments,
+	handoffOpens,
 	subscriptionEnvironment,
 } from './failure-handoff';
 
@@ -46,6 +47,8 @@ describe('local subscription handoff', () => {
 		project = path.join(root, "Project 'quoted' $(touch INJECTED)");
 		await mkdir(project);
 		await mkdir(path.join(root, 'bin'));
+		// Whatever list the shell running the tests exports is not this test's.
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', undefined);
 	});
 	afterEach(async () => {
 		vi.unstubAllEnvs();
@@ -67,7 +70,7 @@ describe('local subscription handoff', () => {
 		const binary = path.join(root, 'bin', client);
 		await writeFile(
 			binary,
-			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(root, 'received.json'))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), api: process.env.ANTHROPIC_API_KEY ?? null, openai: process.env.OPENAI_API_KEY ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, session: process.env.CODEX_THREAD_ID ?? null, home: process.env.HOME, codexHome: process.env.CODEX_HOME ?? null, claudeConfig: process.env.CLAUDE_CONFIG_DIR ?? null }));\n`
+			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(root, 'received.json'))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), api: process.env.ANTHROPIC_API_KEY ?? null, openai: process.env.OPENAI_API_KEY ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, session: process.env.CODEX_THREAD_ID ?? null, claudeSession: process.env.CLAUDE_CODE_SESSION_ID ?? null, messaging: process.env.CLAUDE_CODE_MESSAGING_TOKEN ?? null, agent: process.env.AI_AGENT ?? null, home: process.env.HOME, codexHome: process.env.CODEX_HOME ?? null, claudeConfig: process.env.CLAUDE_CONFIG_DIR ?? null }));\n`
 		);
 		await chmod(binary, 0o700);
 	}
@@ -98,6 +101,10 @@ describe('local subscription handoff', () => {
 						ANTHROPIC_API_KEY: 'example-key',
 						CLAUDE_CODE_OAUTH_TOKEN: 'example-token',
 						CODEX_THREAD_ID: 'old-thread',
+						// The agent session the desktop was launched from.
+						CLAUDE_CODE_SESSION_ID: 'old-session',
+						CLAUDE_CODE_MESSAGING_TOKEN: 'messaging-token',
+						AI_AGENT: 'example-agent',
 					},
 				});
 			});
@@ -111,6 +118,9 @@ describe('local subscription handoff', () => {
 				openai: null,
 				oauth: null,
 				session: null,
+				claudeSession: null,
+				messaging: null,
+				agent: null,
 			});
 			expect(received.args).toEqual(
 				handoffArguments(
@@ -163,6 +173,100 @@ describe('local subscription handoff', () => {
 			codexHome: path.join(root, 'checked-config'),
 			claudeConfig: null,
 		});
+	});
+	it.each(['claude', 'codex'] as const)(
+		'asks for %s with Cancel as the default button, so Return never opens a session',
+		async (client) => {
+			await fakeClient(client);
+			const confirm = vi.fn(async () => false);
+			await make({ confirm }).run(record, request(client, 'fix'));
+			expect(confirm).toHaveBeenCalledWith(
+				expect.objectContaining({
+					buttons: [
+						'Cancel',
+						client === 'claude' ? 'Open Claude Code' : 'Open Codex',
+					],
+					defaultId: 0,
+					cancelId: 0,
+					noLink: true,
+				})
+			);
+		}
+	);
+	it.each(['claude', 'codex'] as const)(
+		'reads the answer that opens %s from the button it shows for that',
+		async (client) => {
+			await fakeClient(client);
+			let dialog:
+				| { buttons: readonly string[]; defaultId: number; cancelId: number }
+				| undefined;
+			await make({
+				confirm: async (options) => {
+					dialog = options;
+					return false;
+				},
+			}).run(record, request(client, 'fix'));
+			if (!dialog) throw new Error('Expected the confirmation to be shown');
+			const open = client === 'claude' ? 'Open Claude Code' : 'Open Codex';
+			// The desktop decodes the message box's answer, the index of the
+			// button pressed, with what the handoff exports, whatever the order.
+			expect(
+				dialog.buttons.map((_label, index) => handoffOpens(index))
+			).toEqual(dialog.buttons.map((label) => label === open));
+			expect(handoffOpens(dialog.defaultId)).toBe(false);
+			expect(handoffOpens(dialog.cancelId)).toBe(false);
+		}
+	);
+	it.each([
+		['codex', 'OpenAI'],
+		['claude', 'Anthropic'],
+	] as const)(
+		'names the evidence %s sends to %s, and its approvals, before it opens',
+		async (client, vendor) => {
+			await fakeClient(client);
+			const confirm = vi.fn(async (_dialog: { detail: string }) => false);
+			const metroExit: FailureRecord = {
+				...record,
+				kind: 'metro-exit',
+				title: 'Metro exited unexpectedly',
+				detail:
+					'No RN Devtools stop request was recorded.\nPID: 1\nPort: 8100\n\nMetro log tail (redacted):\nError: example failure',
+				source: 'Metro child process',
+			};
+			await make({ confirm }).run(metroExit, request(client, 'fix'));
+			await make({ confirm }).run(record, request(client, 'investigate'));
+			const [fix, investigate] = confirm.mock.calls.map(
+				([dialog]) => dialog.detail
+			);
+			expect(fix).toContain(`sends to ${vendor}`);
+			expect(fix).toContain('Metro log tail');
+			expect(fix).not.toContain('symbol');
+			expect(fix).toContain('asks before each edit');
+			expect(investigate).toContain(`sends to ${vendor}`);
+			expect(investigate).toContain('symbol');
+			expect(investigate).not.toContain('Metro log tail');
+		}
+	);
+	it('makes a fix-mode agent ask before each edit, since app output can steer it', () => {
+		const option = (args: string[], name: string) =>
+			args[args.indexOf(name) + 1];
+		const codexFix = handoffArguments('codex', 'fix', 'task');
+		expect(option(codexFix, '--sandbox')).toBe('workspace-write');
+		expect(option(codexFix, '--ask-for-approval')).toBe('untrusted');
+		const codexInvestigate = handoffArguments('codex', 'investigate', 'task');
+		expect(option(codexInvestigate, '--sandbox')).toBe('read-only');
+		expect(option(codexInvestigate, '--ask-for-approval')).toBe('on-request');
+		// Claude Code's default mode is its manual one: it asks before each edit
+		// and command that the user's permission rules do not already allow.
+		expect(
+			option(handoffArguments('claude', 'fix', 'task'), '--permission-mode')
+		).toBe('default');
+		expect(
+			option(
+				handoffArguments('claude', 'investigate', 'task'),
+				'--permission-mode'
+			)
+		).toBe('plan');
 	});
 	it('cancels without writing tasks or opening a terminal', async () => {
 		await fakeClient('codex');
@@ -251,16 +355,86 @@ describe('local subscription handoff', () => {
 			}
 		}
 	);
+	it("checks the login without the launching session's variables, but with the CLIs' configuration", async () => {
+		// Every CLAUDE_* and CODEX_* variable of the session the desktop was
+		// launched from, and what the desktop's own strip list names.
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', 'EXAMPLE_AGENT_*');
+		vi.stubEnv('EXAMPLE_AGENT_TOKEN', 'harness-token');
+		vi.stubEnv('CLAUDE_CODE_SSE_PORT', '4711');
+		vi.stubEnv('CLAUDE_AGENT_SDK_VERSION', '1.0.0');
+		vi.stubEnv('CODEX_SANDBOX', 'seatbelt');
+		vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'old-session');
+		// The subscription login the check verifies lives here.
+		vi.stubEnv('CODEX_HOME', path.join(root, 'codex-config'));
+		vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(root, 'claude-config'));
+		vi.stubEnv('XDG_CONFIG_HOME', path.join(root, 'xdg-config'));
+		vi.stubEnv('EXAMPLE_SETTING', 'kept');
+		const seen = path.join(root, 'login-env.json');
+		const binary = path.join(root, 'bin', 'codex');
+		await writeFile(
+			binary,
+			`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env));\nprocess.stdout.write('Logged in using ChatGPT');\n`
+		);
+		await chmod(binary, 0o700);
+		await make({}, true).run(record, request('codex'));
+		const env = JSON.parse(await readFile(seen, 'utf8')) as Record<
+			string,
+			string
+		>;
+		for (const name of [
+			'EXAMPLE_AGENT_TOKEN',
+			'CLAUDE_CODE_SSE_PORT',
+			'CLAUDE_AGENT_SDK_VERSION',
+			'CODEX_SANDBOX',
+			'CLAUDE_CODE_SESSION_ID',
+		]) {
+			expect(env).not.toHaveProperty(name);
+		}
+		expect(env).toMatchObject({
+			CODEX_HOME: path.join(root, 'codex-config'),
+			CLAUDE_CONFIG_DIR: path.join(root, 'claude-config'),
+			XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
+			EXAMPLE_SETTING: 'kept',
+			PATH: path.join(root, 'bin'),
+		});
+	});
+	it('refuses a malformed RNDEVTOOLS_CHILD_ENV_STRIP before any agent CLI runs', async () => {
+		vi.stubEnv('RNDEVTOOLS_CHILD_ENV_STRIP', 'EXAMPLE TOKEN');
+		await fakeClient('codex');
+		const checkLogin = vi.fn(async () => true);
+		const confirm = vi.fn(async () => true);
+		await expect(
+			make({ checkLogin, confirm }).run(record, request())
+		).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 1 is not a variable name/
+		);
+		expect(checkLogin).not.toHaveBeenCalled();
+		expect(confirm).not.toHaveBeenCalled();
+	});
 	it('keeps normal CLI approval modes and only removes auth/session overrides', () => {
 		expect(
 			subscriptionEnvironment({
 				PATH: '/usr/bin',
 				OPENAI_API_KEY: 'secret',
 				ANTHROPIC_BASE_URL: 'https://example.com',
+				CLAUDE_CODE_USE_BEDROCK: '1',
 				CODEX_THREAD_ID: 'old',
+				CLAUDECODE: '1',
+				CLAUDE_CODE_SESSION_ID: 'old',
+				CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/example-agent.sock',
+				CLAUDE_CODE_MESSAGING_TOKEN: 'messaging-token',
+				AI_AGENT: 'example-agent',
+				// The CLIs' own configuration stays: the handoff re-exports it.
+				CODEX_HOME: '/Users/dev/.codex',
+				CLAUDE_CONFIG_DIR: '/Users/dev/.claude',
 				KEEP: 'yes',
 			})
-		).toEqual({ PATH: '/usr/bin', KEEP: 'yes' });
+		).toEqual({
+			PATH: '/usr/bin',
+			CODEX_HOME: '/Users/dev/.codex',
+			CLAUDE_CONFIG_DIR: '/Users/dev/.claude',
+			KEEP: 'yes',
+		});
 		expect(handoffArguments('codex', 'fix', 'task')).toContain(
 			'workspace-write'
 		);

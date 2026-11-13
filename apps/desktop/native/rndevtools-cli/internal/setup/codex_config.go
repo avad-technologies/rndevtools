@@ -39,15 +39,8 @@ func mergeCodexServer(raw []byte, executable string) ([]byte, error) {
 		delete(wanted, "args")
 	}
 	// A user's longer timeout is intentional. Upgrade only absent/short budgets.
-	switch timeout := server["tool_timeout_sec"].(type) {
-	case int64:
-		if timeout >= codexToolTimeoutSeconds {
-			delete(wanted, "tool_timeout_sec")
-		}
-	case float64:
-		if timeout >= codexToolTimeoutSeconds {
-			delete(wanted, "tool_timeout_sec")
-		}
+	if !codexTimeoutShort(server["tool_timeout_sec"]) {
+		delete(wanted, "tool_timeout_sec")
 	}
 	if len(wanted) == 0 {
 		return raw, nil
@@ -139,6 +132,19 @@ func mergeCodexServer(raw []byte, executable string) ([]byte, error) {
 		return nil, errors.New("rndevtools uses a custom TOML layout; keep it or use a [mcp_servers.rndevtools] table before rerunning setup")
 	}
 	return next, nil
+}
+
+// codexTimeoutShort reports a Codex tool_timeout_sec that setup and the
+// agent-check connection repair raise to codexToolTimeoutSeconds: one that is
+// missing, not a number, or shorter. A longer one is the operator's and stays.
+func codexTimeoutShort(timeout any) bool {
+	switch timeout := timeout.(type) {
+	case int64:
+		return timeout < codexToolTimeoutSeconds
+	case float64:
+		return timeout < codexToolTimeoutSeconds
+	}
+	return true
 }
 
 func tomlNodeKey(node *unstable.Node) []string {

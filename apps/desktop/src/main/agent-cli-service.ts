@@ -477,9 +477,19 @@ export class AgentCliService {
 
 		socket.setTimeout(0);
 		const controller = new AbortController();
+		// The handler's own budget ends with a TimeoutError, as
+		// AbortSignal.timeout() does, so a handler can tell it from the client
+		// hanging up, which aborts with no reason.
+		const timeoutMs = handlerTimeoutMs(request.command);
 		const timer = setTimeout(
-			() => controller.abort(),
-			handlerTimeoutMs(request.command)
+			() =>
+				controller.abort(
+					new DOMException(
+						`RN Devtools stopped waiting after ${timeoutMs / 1_000} s, the most it gives this command.`,
+						'TimeoutError'
+					)
+				),
+			timeoutMs
 		);
 		const onClose = () => controller.abort();
 		socket.once('close', onClose);

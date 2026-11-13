@@ -10,21 +10,35 @@ visible. **Recheck** always reads fresh configuration.
 The check covers Claude Code and Codex default user configuration, the selected
 registered project, RN Devtools MCP registration, routing instructions, its two
 skills, and installed steering hooks. It flags known simulator controllers such
-as SimView, Maestro, Argent, Radon, agent-device and Appium. A registered
-controller is a potential overlap; the check does not start it or claim it has
-interfered with a lane. Hosted Supabase and Expo cloud tools are not disabled.
+as XcodeBuildMCP, iOS Simulator MCP, SimView, Maestro, Argent, Radon,
+agent-device and Appium. A registered controller is a potential overlap; the
+check does not start it or claim it has interfered with a lane. Hosted Supabase
+and Expo cloud tools are not disabled. With a project selected, the skills and
+the routing block that `rndevtools setup --project` installs in that project
+count in place of missing user-level copies: Codex reads the project's
+`AGENTS.md`, and Claude Code reads its `CLAUDE.md`, which may import that file
+with an `@AGENTS.md` line; setup writes that one-line `CLAUDE.md` when the
+project has none. A `CLAUDE.md` that carries RN Devtools markers of its own
+counts only when its block is current, import or not, because Claude Code
+reads that block too and setup keeps it current. An outdated user-level copy
+is still reported, because every project loads it.
 
 Select a repository/worktree to include its overrides. Each finding shows its
 client, source, scope, and available action. Clicking a repair opens a native
-confirmation describing the exact file and effect. The repair revalidates the
-preview against current files, changes one file atomically, and rechecks.
+confirmation describing the exact file and effect; when that file is a link,
+it also names the file the link points to, which is the one written. A
+selected-project repair is not offered when the project's file resolves
+outside the project (for example a committed link to your user settings),
+because it would change every project; change that setting where the file
+lives. The repair revalidates the preview against current files, changes one
+file atomically, and rechecks.
 
 | Fix | Scope |
 | --- | --- |
 | Disable a Codex MCP or plugin | Effective user or selected trusted project configuration |
 | Disable a Claude plugin | All projects, or a local override for the selected project |
 | Disable a Claude MCP | Selected project only; its registration is retained |
-| Repair RN Devtools registration | Existing effective registration, preserving environment and approval policy |
+| Repair RN Devtools registration | Existing effective registration, preserving environment and approval policy; a Codex tool timeout under 240 s is raised to 240, as setup does |
 | Install hooks, routing or RN Devtools skills | The displayed client file; other hooks/instructions remain |
 
 **Undo** restores the touched setting while retaining unrelated later edits.
@@ -37,7 +51,19 @@ dotfiles directory requires a new preview. JSON numbers retain their precision,
 and selective TOML undo recovers value types from the original source snapshot.
 Private previews and original bytes are stored under
 `~/Library/Application Support/RN Devtools/agent-check`, with directory mode
-0700 and file mode 0600. Reports never include environment values or credentials.
+0700 and file mode 0600. Reports never include environment values or
+credentials, but each stored record holds full copies of the client file it
+covers, from before and after its repair, with any environment values or
+credentials that file holds. Records are deleted only by a preview, a repair
+or an undo: the check itself, here, in `rndevtools doctor` and around
+`rndevtools setup` (`--dry-run` included), only reads. A preview that is not
+applied within its five minutes, because it was cancelled or never confirmed,
+therefore stays in that directory with its copies of the file until the next
+preview, repair or undo, however late that comes. Undoing a repair deletes its
+record. Each scope keeps its 32 most recent repairs for undo, listed newest
+first; the next preview, repair or undo in that scope deletes the records past
+that, and any of them deletes a record an earlier build kept for a repair it
+had undone.
 
 Reload the affected client after a change. In Codex, review new hooks with
 `/hooks`. **Test RN Devtools connection** performs MCP initialize, tools/list,
@@ -56,9 +82,13 @@ rndevtools agent-check --operation probe
 ```
 
 Use the same project scope for plan/apply/undo. Previews expire after five
-minutes. Repairs are local CLI/UI actions, not an MCP capability that changes
+minutes. An unknown operation, a plan without `--finding-id`, an apply or undo
+without `--plan-id`, or a relative path is a usage error (`invalid_arguments`,
+exit 2); a check or repair that cannot run is `agent_check_failed` (exit 7). Repairs are local CLI/UI actions, not an MCP capability that changes
 another agent's configuration without a user review. `--config-home` supports
-isolated setup tests without changing the process's home directory.
+isolated setup tests without changing the process's home directory; pass
+`--no-doctor` to `rndevtools setup` in such a test, because its closing doctor
+dials the socket under the real home.
 
 ## Coverage limits
 
@@ -72,7 +102,9 @@ managed instruction block and offer updates when that block is stale.
 
 Custom configuration homes, Codex profiles, ancestor project overrides, managed
 organization policy, unknown wrappers, detailed plugin tool filters, remote
-clients, and currently loaded tool lists are not certified. Hook files being
+clients, and currently loaded tool lists are not certified. Kiro and Cursor
+configuration is not scanned: setup registers RN Devtools there, but a
+simulator controller registered in them needs review in that client. Hook files being
 installed does not prove approval or execution. Shell hooks steer supported
 shell payloads; they are not an MCP firewall.
 

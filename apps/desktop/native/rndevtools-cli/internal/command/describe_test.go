@@ -38,6 +38,16 @@ func TestDescribeMirrorsTheFlagTable(t *testing.T) {
 	}
 }
 
+func TestNativeUsageSaysWhenAPlanLeavesInstalledOut(t *testing.T) {
+	// A plan reports installed only from a listing of the Simulator's apps
+	// that completed: one that is not booted, or whose listing failed, has
+	// no installed field, and the recommendation says why.
+	flat := strings.Join(strings.Fields(Usage(protocol.CommandNative)), " ")
+	if !strings.Contains(flat, "plan leaves installed out when this Simulator's apps cannot be listed") {
+		t.Fatalf("native usage:\n%s", Usage(protocol.CommandNative))
+	}
+}
+
 func TestBuildPlacesTypedArgumentsLikeFlags(t *testing.T) {
 	fromFlags, err := Parse(protocol.CommandInput, []string{
 		"--udid", "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", "--kind", "swipe",
@@ -110,6 +120,33 @@ func TestBuildAttachesAgentToLaneUp(t *testing.T) {
 	}
 	if strings.Contains(string(listed.Command), "agent") {
 		t.Fatalf("agent attached to ls: %s", listed.Command)
+	}
+}
+
+func TestBuildTakesLaneRestartAsABoolean(t *testing.T) {
+	const laneID = "lane-11111111-2222-4333-8444-555555555555"
+	fields, _ := Describe(protocol.CommandLane)
+	var restart *Field
+	for index := range fields {
+		if fields[index].Name == "restart" {
+			restart = &fields[index]
+		}
+	}
+	if restart == nil || restart.Type != "boolean" {
+		t.Fatalf("lane restart field: %+v", restart)
+	}
+	launch, err := Build(protocol.CommandLane, map[string]any{"operation": "launch", "lane-id": laneID, "restart": true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(launch.Command), `"restart":true`) {
+		t.Fatalf("restart not built: %s", launch.Command)
+	}
+	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "launch", "lane-id": laneID, "restart": "true"}, nil); err == nil || !strings.Contains(err.Error(), "boolean") {
+		t.Fatalf("a string restart was accepted: %v", err)
+	}
+	if _, err := Build(protocol.CommandLane, map[string]any{"operation": "log", "lane-id": laneID, "restart": true}, nil); err == nil || !strings.Contains(err.Error(), "only the up and launch operations accept restart") {
+		t.Fatalf("restart on log was accepted: %v", err)
 	}
 }
 

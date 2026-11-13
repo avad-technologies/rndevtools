@@ -169,7 +169,10 @@ func RootUsage() string {
 		fmt.Fprintf(&builder, "  %s\n", name)
 	}
 	builder.WriteString("  mcp\n  setup\n  agent-check\n")
-	builder.WriteString("\nEach command accepts structured flags and an optional bounded JSON object on stdin.\n")
+	builder.WriteString("\nEach command takes structured flags, which are then the whole command, or, given none,\n")
+	builder.WriteString("one bounded JSON object on stdin. A command complete without fields, such as simulators,\n")
+	builder.WriteString("reads that object only with --stdin, and doctor and agents take no fields and never read\n")
+	builder.WriteString("it. --stdin reads both, and --stdin=false never reads stdin.\n")
 	builder.WriteString("Output is one compact rndevtools/1 JSON response.\n")
 	builder.WriteString("`rndevtools mcp` serves the same commands to coding agents as an MCP server on stdio.\n")
 	builder.WriteString("`rndevtools setup` registers that server, the lanes and Supabase skills, and the agent hooks with Claude Code, Codex, Cursor, and Kiro.\n")

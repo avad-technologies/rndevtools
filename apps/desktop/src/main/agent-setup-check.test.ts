@@ -26,9 +26,10 @@ const plan = {
 	expiresAt: Date.now() + 300_000,
 };
 
-function fixture() {
-	const run = vi.fn(async (_exe: string, args: string[]) =>
-		JSON.stringify(args[2] === 'plan' ? plan : report)
+function fixture(environment: NodeJS.ProcessEnv = { HOME: '/fixture' }) {
+	const run = vi.fn(
+		async (_exe: string, args: string[], _env: NodeJS.ProcessEnv) =>
+			JSON.stringify(args[2] === 'plan' ? plan : report)
 	);
 	const confirm = vi.fn(async () => true);
 	const executable = vi.fn(
@@ -40,6 +41,7 @@ function fixture() {
 		projects: () => ['/project'],
 		confirm,
 		run,
+		environment,
 	});
 	return { service, run, confirm, executable };
 }
@@ -67,6 +69,19 @@ describe('agent setup checks', () => {
 			'Preview'
 		);
 		expect(run.mock.calls.map((call) => call[1][2])).toEqual(['plan', 'apply']);
+	});
+	it('names the file a repair writes when a link resolves elsewhere', async () => {
+		const { service, run, confirm } = fixture();
+		const linked = { ...plan, target: '~/dotfiles/codex.toml' };
+		run.mockImplementation(async (_exe: string, args: string[]) =>
+			JSON.stringify(args[2] === 'plan' ? linked : report)
+		);
+		await service.run({ operation: 'plan', findingId });
+		await service.run({ operation: 'apply', planId });
+		expect(confirm).toHaveBeenCalledWith({
+			title: plan.title,
+			detail: `${plan.scope}\n${plan.source}\nWrites ~/dotfiles/codex.toml, the file it resolves to.\n\n${plan.summary}`,
+		});
 	});
 	it('cancel changes nothing; undo checks history and confirms separately', async () => {
 		const { service, run, confirm } = fixture();
@@ -143,6 +158,36 @@ describe('agent setup checks', () => {
 		expect(run).toHaveBeenCalledTimes(4);
 		expect(executable).toHaveBeenCalledTimes(4);
 		expect(run.mock.calls[0]?.[1]).toContain('/fixture');
+	});
+	it('runs the CLI without the agent session the desktop was started from', async () => {
+		// agent-check reads a session's identity from its environment and would
+		// check, repair and dial the desktop as that session.
+		const { service, run } = fixture({
+			HOME: '/fixture',
+			PATH: '/usr/bin:/bin',
+			CLAUDE_CODE_SESSION_ID: 'session-1',
+			CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/example.sock',
+			CODEX_THREAD_ID: 'thread-1',
+			AI_AGENT: 'example',
+			EXAMPLE_AGENT_TOKEN: 'example-secret',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+		});
+		await service.scan();
+		expect(run.mock.lastCall?.[2]).toEqual({
+			HOME: '/fixture',
+			PATH: '/usr/bin:/bin',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+		});
+	});
+	it('runs nothing while RNDEVTOOLS_CHILD_ENV_STRIP cannot be read, and says why', async () => {
+		const { service, run } = fixture({
+			HOME: '/fixture',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_FIRST,EXAMPLE TOKEN',
+		});
+		await expect(service.scan()).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not /
+		);
+		expect(run).not.toHaveBeenCalled();
 	});
 	it('rejects expired previews and validates probe responses', async () => {
 		const { service, run, confirm } = fixture();

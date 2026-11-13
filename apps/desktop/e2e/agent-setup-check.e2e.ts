@@ -23,6 +23,9 @@ test('fresh setup and persistent checks repair and undo both clients without tou
 	try {
 		harness = await DesktopHarness.launch({
 			agentConfigHome: configHome,
+			// Set up runs the real CLI, whose doctor would reach an installed
+			// RN Devtools through the real home's socket, not this desktop.
+			agentSetupDoctor: false,
 			onboarding: true,
 		});
 		const { window, app } = harness;

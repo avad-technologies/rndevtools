@@ -56,6 +56,8 @@ export const agentSetupPlanSchema = z.strictObject({
 	title: text,
 	scope: text,
 	source: text,
+	/** The file the repair writes, when a link at `source` points elsewhere. */
+	target: text.optional(),
 	summary: text,
 	expiresAt: z.number().int().nonnegative(),
 });

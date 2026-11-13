@@ -476,4 +476,60 @@ describe('agent CLI protocol', () => {
 		expect(lane({ operation: 'launch', laneId, backend: 'auto' })).toBe(false);
 		expect(lane({ operation: 'ls', backend: 'auto' })).toBe(false);
 	});
+
+	it('takes restart on lane up and launch only, and not on an up that does not launch', () => {
+		const laneId = 'lane-11111111-2222-4333-8444-555555555555';
+		const lane = (fields: Record<string, unknown>) =>
+			agentCliRequestSchema.safeParse(request({ kind: 'lane', ...fields }));
+		const messages = (fields: Record<string, unknown>) =>
+			lane(fields)
+				.error?.issues.map((issue) => issue.message)
+				.join(' ');
+		expect(
+			agentCliRequestSchema.parse(
+				request({
+					kind: 'lane',
+					operation: 'up',
+					worktreePath: '/Users/dev/app',
+					restart: true,
+				})
+			).command
+		).toMatchObject({ operation: 'up', restart: true });
+		expect(lane({ operation: 'launch', laneId, restart: true }).success).toBe(
+			true
+		);
+		expect(
+			lane({ operation: 'launch', laneId, url: 'checkout', restart: true })
+				.success
+		).toBe(true);
+		expect(
+			lane({
+				operation: 'up',
+				worktreePath: '/Users/dev/app',
+				restart: false,
+				launch: false,
+			}).success
+		).toBe(true);
+		for (const fields of [
+			{ operation: 'ls', restart: true },
+			{ operation: 'down', laneId, restart: true },
+			{ operation: 'log', laneId, restart: false },
+		]) {
+			expect(lane(fields).success).toBe(false);
+			expect(messages(fields)).toMatch(
+				/Only the up and launch operations take restart/
+			);
+		}
+		expect(
+			messages({
+				operation: 'up',
+				worktreePath: '/Users/dev/app',
+				restart: true,
+				launch: false,
+			})
+		).toMatch(/cannot take restart with launch false/);
+		expect(lane({ operation: 'launch', laneId, restart: 'yes' }).success).toBe(
+			false
+		);
+	});
 });

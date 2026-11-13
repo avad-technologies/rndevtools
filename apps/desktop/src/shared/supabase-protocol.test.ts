@@ -2867,6 +2867,11 @@ describe('policy', () => {
 			SUPABASE_POLICY_ERRORS.appEnvReserved,
 		],
 		[
+			{ appEnv: [{ name: 'EXPO_UNSTABLE_BONJOUR', source: 'API_URL' }] },
+			'appEnv.0',
+			SUPABASE_POLICY_ERRORS.appEnvReserved,
+		],
+		[
 			{
 				appEnv: [
 					{

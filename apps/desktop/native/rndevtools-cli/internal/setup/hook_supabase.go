@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/adalloul0928/rndevtools-cli/internal/client"
 )
@@ -111,10 +112,22 @@ func (rules *supabaseRules) homeDirectory() string {
 	return *rules.home
 }
 
-// judge walks a line's segments in the order they run, following each
-// scope's working directory: a `cd` changes it for the segments after it
-// unless it runs in a pipeline or in the background.
+// judge walks a line's segments in the order they run, each from the
+// directory it runs in (see walkDirectories).
 func (rules *supabaseRules) judge(line shellLine, cwd string) HookDecision {
+	return walkDirectories(line, cwd, rules.homeDirectory, func(index int, directory string) HookDecision {
+		return rules.judgeSegment(line, index, directory)
+	})
+}
+
+// walkDirectories visits a line's segments in the order they run, with the
+// directory each runs in ("" when unknown), following each scope's working
+// directory from cwd: a `cd` or `pushd` changes it for the segments after it
+// unless it runs in a pipeline or in the background, and a `popd` makes it
+// unknown. The cd, pushd, and popd themselves are not visited, and neither is
+// RN Devtools' own CLI, which may name commands in its arguments. home is the
+// user's home directory, for `cd` alone and `cd ~/…`.
+func walkDirectories(line shellLine, cwd string, home func() string, visit func(index int, directory string) HookDecision) HookDecision {
 	directories := map[int]string{}
 	var directoryOf func(scope int) string
 	directoryOf = func(scope int) string {
@@ -140,7 +153,7 @@ func (rules *supabaseRules) judge(line shellLine, cwd string) HookDecision {
 		switch program {
 		case "cd", "pushd":
 			if changesDirectory(segment.terminator) {
-				directories[segment.scope] = rules.changeDirectory(directory, words[1:])
+				directories[segment.scope] = changeDirectory(directory, words[1:], home)
 			}
 			continue
 		case "popd":
@@ -152,7 +165,7 @@ func (rules *supabaseRules) judge(line shellLine, cwd string) HookDecision {
 			// RN Devtools' own CLI may name these commands in its arguments.
 			continue
 		}
-		if decision := rules.judgeSegment(line, index, directory); decision.Block {
+		if decision := visit(index, directory); decision.Block {
 			return decision
 		}
 	}
@@ -166,7 +179,7 @@ func changesDirectory(terminator string) bool {
 	return terminator != "|" && terminator != "|&" && terminator != "&"
 }
 
-func (rules *supabaseRules) changeDirectory(current string, arguments []string) string {
+func changeDirectory(current string, arguments []string, home func() string) string {
 	for len(arguments) > 0 && strings.HasPrefix(arguments[0], "-") && arguments[0] != "-" {
 		if arguments[0] == "--" {
 			arguments = arguments[1:]
@@ -175,9 +188,9 @@ func (rules *supabaseRules) changeDirectory(current string, arguments []string) 
 		arguments = arguments[1:]
 	}
 	if len(arguments) == 0 {
-		return rules.homeDirectory()
+		return home()
 	}
-	return rules.resolveDirectory(current, arguments[0])
+	return resolveDirectory(current, arguments[0], home)
 }
 
 // maxPathLength bounds the directories the rules follow: no path of a real
@@ -188,13 +201,19 @@ const maxPathLength = 4096
 // resolveDirectory places target the way the shell would from base, or
 // returns "" (unknown) when it depends on something the hook cannot see.
 func (rules *supabaseRules) resolveDirectory(base string, target string) string {
-	if resolved := rules.placeDirectory(base, target); len(resolved) <= maxPathLength {
+	return resolveDirectory(base, target, rules.homeDirectory)
+}
+
+// resolveDirectory is the rules' resolveDirectory, with home the user's home
+// directory.
+func resolveDirectory(base string, target string, home func() string) string {
+	if resolved := placeDirectory(base, target, home); len(resolved) <= maxPathLength {
 		return resolved
 	}
 	return ""
 }
 
-func (rules *supabaseRules) placeDirectory(base string, target string) string {
+func placeDirectory(base string, target string, home func() string) string {
 	for _, variable := range []string{"$HOME", "${HOME}"} {
 		if target == variable || strings.HasPrefix(target, variable+"/") {
 			target = "~" + strings.TrimPrefix(target, variable)
@@ -212,11 +231,11 @@ func (rules *supabaseRules) placeDirectory(base string, target string) string {
 	case target == "" || target == "-" || strings.ContainsAny(target, "$`*?[{"):
 		return ""
 	case target == "~" || strings.HasPrefix(target, "~/"):
-		home := rules.homeDirectory()
-		if home == "" {
+		directory := home()
+		if directory == "" {
 			return ""
 		}
-		return filepath.Join(home, strings.TrimPrefix(target, "~"))
+		return filepath.Join(directory, strings.TrimPrefix(target, "~"))
 	case strings.HasPrefix(target, "~"):
 		return ""
 	case filepath.IsAbs(target):
@@ -749,6 +768,8 @@ func shellJoin(words []string) string {
 	return strings.Join(quoted, " ")
 }
 
+// shellQuote quotes a word the agent wrote, keeping the expansions it wrote.
+// A filesystem path is pathWord's.
 func shellQuote(word string) string {
 	switch {
 	case word != "" && safeShellWord.MatchString(word):
@@ -758,6 +779,31 @@ func shellQuote(word string) string {
 		return `"` + word + `"`
 	}
 	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+}
+
+// literalShellWord is a word every shell reads as it is: no character of it
+// expands, globs, or starts a tilde, history, or zsh = expansion, wherever it
+// stands.
+var literalShellWord = regexp.MustCompile(`^[A-Za-z0-9_./@%+=:,-]+$`)
+
+// pathWord is a filesystem path as one word of a command the agent may run:
+// bare when nothing in it needs quoting, and otherwise in single quotes,
+// which each single quote of the path closes, escaped, and opens again, so
+// that nothing in it expands. In a path, a `$` is a character of a
+// directory's name, which the checkout controls, and in double quotes the
+// shell would run the `$(…)` it spells.
+// ok is false for a path that displayPath would strip or cut (one with a
+// backtick, a control or format character, a character that shows as
+// nothing, or longer than its bound): a command naming what is left would
+// name another directory.
+func pathWord(path string) (word string, ok bool) {
+	if path == "" || displayPath(path) != path {
+		return "", false
+	}
+	if literalShellWord.MatchString(path) {
+		return path, true
+	}
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'", true
 }
 
 // MARK: - Rules
@@ -821,13 +867,19 @@ func (rules *supabaseRules) judgeSupabase(line shellLine, index int, invocation 
 
 // judgeManaged applies the rules for a worktree RN Devtools runs.
 func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind supabaseCommandKind, command string, root steeringRoot, runDirectory string) HookDecision {
-	worktree := displayPath(root.worktreeRoot)
-	upHint := fmt.Sprintf("the rndevtools `supabase` tool (operation up, worktree %s) or `rndevtools supabase --operation up --worktree %s`", worktree, shellJoin([]string{root.worktreeRoot}))
+	// The root is a repository's path: the commands name it as a word the
+	// shell reads as it is, and a path the reason cannot quote whole as a
+	// placeholder.
+	worktree, word := worktreePlaceholder, worktreePlaceholder
+	if quoted, ok := pathWord(root.worktreeRoot); ok {
+		worktree, word = root.worktreeRoot, quoted
+	}
+	upHint := fmt.Sprintf("the rndevtools `supabase` tool (operation up, worktree %s) or `rndevtools supabase --operation up --worktree %s`", worktree, word)
 	switch kind {
 	case supabaseStart, supabaseRestart, supabasePrepare, supabaseDev:
-		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; lane up does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, root.runner))
+		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead; `rndevtools lane --operation up --worktree %s` does it for a lane. Your `%s … --local` commands (migration up, db reset, gen types) keep working against it.", command, upHint, appDirectory, root.runner))
 	case supabaseStop:
-		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Release it with the rndevtools `supabase` tool (operation down, worktree %s) or `rndevtools supabase --operation down --worktree %s`; it stops once nobody else uses it, and its data is kept.", command, worktree, shellJoin([]string{root.worktreeRoot})))
+		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Release it with the rndevtools `supabase` tool (operation down, worktree %s) or `rndevtools supabase --operation down --worktree %s`; it stops once nobody else uses it, and its data is kept.", command, worktree, word))
 	case supabaseDatabaseStart:
 		return blocked(fmt.Sprintf("Blocked `%s`: RN Devtools runs this worktree's local Supabase. Use %s instead.", command, upHint))
 	}
@@ -835,7 +887,7 @@ func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind sup
 		return blocked(fmt.Sprintf("Blocked `%s --runtime`: RN Devtools chooses this worktree's stack runtime, always native. Use %s to start it.", command, upHint))
 	}
 	if rules.foreignBinary(invocation, root, runDirectory) {
-		return blocked(fmt.Sprintf("Blocked `%s`: a local stack only answers the CLI build that started it, and this one is downloaded or from outside the worktree. Run `%s` from this worktree instead (cli.run in the supabase up result).", shellJoin(invocation.launcher), root.runner))
+		return blocked(fmt.Sprintf("Blocked `%s`: a local stack only answers the CLI build that started it, and this one is downloaded or from outside the worktree. Run `%s` from this worktree instead (cli.run in the result of `rndevtools supabase --operation up`).", shellJoin(invocation.launcher), root.runner))
 	}
 	createsShadow := kind == supabaseShadow || (kind == supabaseDeclarative && invocation.args.targetsLocal())
 	if createsShadow && !rules.stackReady(root) {
@@ -844,8 +896,12 @@ func (rules *supabaseRules) judgeManaged(invocation supabaseInvocation, kind sup
 	return HookDecision{}
 }
 
+// worktreePlaceholder stands for a worktree's path in a reason that cannot
+// name it.
+const worktreePlaceholder = "<this worktree's absolute path>"
+
 func stopOwnStack(directory string, without string) string {
-	worktree := "<this worktree's absolute path>"
+	worktree := worktreePlaceholder
 	if directory != "" {
 		if root := gitWorktreeRoot(directory); root != "" {
 			directory = root
@@ -859,21 +915,26 @@ func killReason(command string) string {
 	return fmt.Sprintf("Blocked `%s`: native Supabase stacks share this Mac's process table, so this kills every agent's database. Stop only this worktree's stack: the rndevtools `supabase` tool (operation down) when RN Devtools manages it, otherwise `supabase stop` from the worktree.", command)
 }
 
-// displayPath bounds a path for a reason and strips anything unprintable.
+// displayPath bounds a path for a reason and keeps only what is quotable.
 func displayPath(path string) string {
 	if path == "" {
 		return "that directory"
 	}
 	var builder strings.Builder
 	for _, character := range path {
-		if character < 0x20 || character == 0x7f || character == '`' {
+		if !quotable(character) {
 			continue
 		}
 		builder.WriteRune(character)
 	}
 	text := builder.String()
 	if len(text) > 200 {
-		text = "…" + text[len(text)-199:]
+		// Keep the tail, from the first character that starts in it.
+		cut := len(text) - 199
+		for cut < len(text) && !utf8.RuneStart(text[cut]) {
+			cut++
+		}
+		text = "…" + text[cut:]
 	}
 	return text
 }

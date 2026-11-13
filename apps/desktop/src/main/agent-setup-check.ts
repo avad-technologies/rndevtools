@@ -10,6 +10,7 @@ import {
 	agentSetupReportSchema,
 	agentSetupRequestSchema,
 } from '../shared/agent-setup-protocol';
+import { inheritedChildEnvironment } from './agent-harness-env';
 
 const execute = promisify(execFile);
 
@@ -18,7 +19,17 @@ type Dependencies = {
 	home: string;
 	projects: () => readonly string[];
 	confirm: (preview: { title: string; detail: string }) => Promise<boolean>;
-	run?: (executable: string, args: string[]) => Promise<string>;
+	run?: (
+		executable: string,
+		args: string[],
+		env: NodeJS.ProcessEnv
+	) => Promise<string>;
+	/**
+	 * What the CLI inherits, less the variables of the agent session the
+	 * desktop may have been started from, which it would otherwise act as
+	 * (agent-harness-env.ts). The desktop's own environment by default.
+	 */
+	environment?: NodeJS.ProcessEnv;
 };
 
 /** One service for setup, the Agents view and doctor. It never probes foreign MCPs. */
@@ -48,11 +59,17 @@ export class AgentSetupCheckService {
 		if (request.project) args.push('--project', request.project);
 		if (request.findingId) args.push('--finding-id', request.findingId);
 		if (request.planId) args.push('--plan-id', request.planId);
+		// Outside the try: a list of what to strip that cannot be read fails
+		// with its own reason, which names no value.
+		const env = inheritedChildEnvironment(
+			this.#dependencies.environment ?? process.env
+		);
 		try {
 			const stdout = this.#dependencies.run
-				? await this.#dependencies.run(executable, args)
+				? await this.#dependencies.run(executable, args, env)
 				: (
 						await execute(executable, args, {
+							env,
 							timeout: 70_000,
 							maxBuffer: 2 * 1024 * 1024,
 						})
@@ -141,7 +158,12 @@ export class AgentSetupCheckService {
 				throw new Error('Preview this fix again before applying it.');
 			}
 			title = entry.plan.title;
-			detail = `${entry.plan.scope}\n${entry.plan.source}\n\n${entry.plan.summary}`;
+			// A config reached through a link, the file itself or a folder on
+			// its path, is edited where it resolves: name that file too.
+			const writes = entry.plan.target
+				? `\nWrites ${entry.plan.target}, the file it resolves to.`
+				: '';
+			detail = `${entry.plan.scope}\n${entry.plan.source}${writes}\n\n${entry.plan.summary}`;
 		} else {
 			const report = await this.scan(project);
 			const receipt = report.repairs.find(

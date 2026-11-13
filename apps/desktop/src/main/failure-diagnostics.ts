@@ -3,25 +3,37 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { redactDiagnosticText } from '@rndevtools/core/redact';
 import type { FailureRecord } from '../shared/failure-protocol';
+import { redactTerminalText } from './supabase/cli-redact';
 
 const UUID = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
 const HOST_PROCESS =
 	/^(?:Simulator|SimulatorTrampoline|SimRenderServer|CoreSimulatorBridge|com\.apple\.CoreSimulator(?:\..+)?)$/;
 const MAX_REPORT_BYTES = 4 * 1024 * 1024;
+/** Heads the Metro output a failure's detail carries after an unexpected exit. */
+export const METRO_LOG_TAIL_HEADING = 'Metro log tail (redacted):';
 
 export function failureId(key: string): string {
 	return `failure-${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
 }
 
+/** `value` cut to `limit` code units, short of a surrogate pair's first half. */
+function cutText(value: string, limit: number): string {
+	if (value.length <= limit) return value;
+	const last = value.charCodeAt(limit - 1);
+	return value.slice(0, last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit);
+}
+
 export function failureText(value: string, limit = 16_384): string {
-	return (
-		redactDiagnosticText(value)
-			.replaceAll(os.homedir(), '~')
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: remove terminal control bytes from untrusted reports.
-			.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
-			.slice(0, limit)
+	// Without its escape sequences and control characters, redacted however
+	// they part or join a credential: in colored output one follows
+	// `\x1b[32m` directly, with no word boundary for the rules to start at
+	// until the sequence is gone, and removing a carriage return joins the
+	// token after it to the word before it. The cut never leaves half of a
+	// surrogate pair.
+	return cutText(
+		redactTerminalText(value, true).replaceAll(os.homedir(), '~'),
+		limit
 	);
 }
 
@@ -59,7 +71,10 @@ export function parseDiagnosticReport(
 		} catch {
 			return undefined;
 		}
-		process = text(body.procName);
+		// A crafted report can hold megabytes in any field, and each one is
+		// redacted, so free fields are cut first, as a text report's are.
+		const field = (value: unknown) => cutText(text(value), 1_024);
+		process = field(body.procName);
 		const identity = `${text(body.coalitionName)} ${text(body.procPath)}`;
 		udid = identity
 			.match(
@@ -101,10 +116,10 @@ export function parseDiagnosticReport(
 				: [];
 		detail = [
 			`Process: ${process}`,
-			`Exception: ${text(exception.type)} ${text(exception.signal)}`,
-			`Termination: ${text(termination.namespace)} ${text(termination.indicator)}`,
-			`Parent: ${text(body.parentProc)}`,
-			`System: ${text(object(body.osVersion).train)} (${text(object(body.osVersion).build)})`,
+			`Exception: ${field(exception.type)} ${field(exception.signal)}`,
+			`Termination: ${field(termination.namespace)} ${field(termination.indicator)}`,
+			`Parent: ${field(body.parentProc)}`,
+			`System: ${field(object(body.osVersion).train)} (${field(object(body.osVersion).build)})`,
 			'Exception/triggered-thread symbols:',
 			...frames
 				.slice(0, 16)
@@ -140,7 +155,7 @@ export function parseDiagnosticReport(
 		]
 			.map((label) => {
 				const value = field(label);
-				return value ? `${label}: ${value.slice(0, 1_024)}` : '';
+				return value ? `${label}: ${cutText(value, 1_024)}` : '';
 			})
 			.filter(Boolean)
 			.join('\n');
@@ -177,14 +192,29 @@ export function parseDiagnosticReport(
 	};
 }
 
+/** What a scan made of one report, valid while its size and mtime hold. */
+type ScannedReport = {
+	size: number;
+	mtimeMs: number;
+	record: FailureRecord | undefined;
+};
+
+/**
+ * Earlier scans' results by report path. A scan given one opens only reports
+ * that are new or changed since, and forgets every report it did not reach.
+ */
+export type DiagnosticReportCache = Map<string, ScannedReport>;
+
 export async function readDiagnosticReports(
 	directories: readonly string[],
-	now: number
+	now: number,
+	cache: DiagnosticReportCache = new Map()
 ): Promise<{ records: FailureRecord[]; issues: string[] }> {
 	const records: FailureRecord[] = [];
 	const issues: string[] = [];
+	const reached = new Set<string>();
 	for (const directory of directories.slice(0, 12)) {
-		const candidates: { name: string; mtime: number }[] = [];
+		const candidates: { name: string; size: number; mtime: number }[] = [];
 		try {
 			let inspected = 0;
 			for await (const entry of await opendir(directory)) {
@@ -200,7 +230,11 @@ export async function readDiagnosticReports(
 					() => undefined
 				);
 				if (metadata?.isFile() && metadata.mtimeMs >= now - 30 * 86_400_000)
-					candidates.push({ name: entry.name, mtime: metadata.mtimeMs });
+					candidates.push({
+						name: entry.name,
+						size: metadata.size,
+						mtime: metadata.mtimeMs,
+					});
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
@@ -215,38 +249,52 @@ export async function readDiagnosticReports(
 				'Only the newest 300 reports per diagnostic folder are inspected.'
 			);
 		let remainingBytes = 16 * 1024 * 1024;
-		for (const { name: filename } of candidates.slice(0, 300)) {
+		for (const { name: filename, size, mtime } of candidates.slice(0, 300)) {
+			if (filename.endsWith('.ips') && size > MAX_REPORT_BYTES) {
+				issues.push('An oversized diagnostic report was skipped (4 MB limit).');
+				continue;
+			}
+			const length = Math.min(
+				size,
+				filename.endsWith('.ips') ? MAX_REPORT_BYTES : 64 * 1024
+			);
+			if (length > remainingBytes) {
+				issues.push('The diagnostic scan reached its 16 MB folder limit.');
+				break;
+			}
+			const file = path.join(directory, filename);
+			const scanned = cache.get(file);
+			if (scanned?.size === size && scanned.mtimeMs === mtime) {
+				// Unchanged since an earlier scan, so it is not opened again. It
+				// still counts against the limits, so the cache never lets a scan
+				// cover more reports than reading them all would.
+				remainingBytes -= length;
+				reached.add(file);
+				if (scanned.record) records.push(scanned.record);
+				continue;
+			}
 			let handle: Awaited<ReturnType<typeof open>> | undefined;
 			try {
-				handle = await open(
-					path.join(directory, filename),
-					constants.O_RDONLY | constants.O_NOFOLLOW
-				);
+				handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
 				const metadata = await handle.stat();
-				if (!metadata.isFile() || metadata.mtimeMs < now - 30 * 86_400_000)
+				// A report that changed since it was listed may still be being
+				// written; it is read on a later scan.
+				if (
+					!metadata.isFile() ||
+					metadata.size !== size ||
+					metadata.mtimeMs !== mtime
+				)
 					continue;
-				if (filename.endsWith('.ips') && metadata.size > MAX_REPORT_BYTES) {
-					issues.push(
-						'An oversized diagnostic report was skipped (4 MB limit).'
-					);
-					continue;
-				}
-				const size = Math.min(
-					metadata.size,
-					filename.endsWith('.ips') ? MAX_REPORT_BYTES : 64 * 1024
-				);
-				if (size > remainingBytes) {
-					issues.push('The diagnostic scan reached its 16 MB folder limit.');
-					break;
-				}
-				remainingBytes -= size;
-				const bytes = Buffer.alloc(size);
+				remainingBytes -= length;
+				const bytes = Buffer.alloc(length);
 				const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
 				const record = parseDiagnosticReport(
 					bytes.subarray(0, bytesRead).toString('utf8'),
 					filename,
-					metadata.mtimeMs
+					mtime
 				);
+				cache.set(file, { size, mtimeMs: mtime, record });
+				reached.add(file);
 				if (record) records.push(record);
 			} catch {
 				/* A report may be moved or still being written; retry on the next scan. */
@@ -255,5 +303,7 @@ export async function readDiagnosticReports(
 			}
 		}
 	}
+	// Reports that vanished, aged out, or fell past a limit.
+	for (const file of cache.keys()) if (!reached.has(file)) cache.delete(file);
 	return { records, issues: [...new Set(issues)].slice(0, 12) };
 }

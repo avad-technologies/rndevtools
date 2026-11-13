@@ -81,8 +81,8 @@ export function verifyVendoredSimSlim(helperDirectory) {
 	);
 
 	const vendorDirectory = resolve(resolvedHelper, 'vendor');
-	const actualFiles = collectRegularFiles(vendorDirectory)
-		.map((filePath) => relativeFromHelper(resolvedHelper, filePath))
+	const actualFiles = collectRegularFiles(vendorDirectory, 'SimSlim')
+		.map((filePath) => relativeFromHelper(resolvedHelper, filePath, 'SimSlim'))
 		.sort();
 	const expectedFiles = [...expected.keys()].sort();
 	if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
@@ -93,7 +93,9 @@ export function verifyVendoredSimSlim(helperDirectory) {
 
 	for (const [relativePath, digest] of expected) {
 		const filePath = resolve(resolvedHelper, relativePath);
-		if (relativeFromHelper(resolvedHelper, filePath) !== relativePath) {
+		if (
+			relativeFromHelper(resolvedHelper, filePath, 'SimSlim') !== relativePath
+		) {
 			throw new Error(
 				`Vendored SimSlim checksum path escaped the helper: ${relativePath}`
 			);
@@ -191,7 +193,10 @@ export function verifyVendoredSimSlim(helperDirectory) {
 	};
 }
 
-function parseChecksumManifest(contents, pattern, label) {
+// The helpers below are shared with verify-vendored-go-toml.mjs; `label` names
+// the vendored source in their errors.
+
+export function parseChecksumManifest(contents, pattern, label) {
 	const entries = new Map();
 	for (const line of contents.trim().split('\n')) {
 		const match = pattern.exec(line);
@@ -205,35 +210,36 @@ function parseChecksumManifest(contents, pattern, label) {
 	return entries;
 }
 
-function collectRegularFiles(directory) {
+export function collectRegularFiles(directory, label) {
 	const files = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		const entryPath = resolve(directory, entry.name);
 		const metadata = lstatSync(entryPath);
 		if (metadata.isSymbolicLink()) {
 			throw new Error(
-				`Vendored SimSlim source contains a symbolic link: ${entryPath}`
+				`Vendored ${label} source contains a symbolic link: ${entryPath}`
 			);
 		}
-		if (metadata.isDirectory()) files.push(...collectRegularFiles(entryPath));
+		if (metadata.isDirectory())
+			files.push(...collectRegularFiles(entryPath, label));
 		else if (metadata.isFile()) files.push(entryPath);
 		else
 			throw new Error(
-				`Vendored SimSlim source contains a non-regular file: ${entryPath}`
+				`Vendored ${label} source contains a non-regular file: ${entryPath}`
 			);
 	}
 	return files;
 }
 
-function relativeFromHelper(helperDirectory, filePath) {
+export function relativeFromHelper(helperDirectory, filePath, label) {
 	const prefix = `${resolve(helperDirectory)}/`;
 	const resolvedPath = resolve(filePath);
 	if (!resolvedPath.startsWith(prefix)) {
-		throw new Error(`Vendored SimSlim path escaped the helper: ${filePath}`);
+		throw new Error(`Vendored ${label} path escaped the helper: ${filePath}`);
 	}
 	return resolvedPath.slice(prefix.length);
 }
 
-function sha256(value) {
+export function sha256(value) {
 	return createHash('sha256').update(value).digest('hex');
 }

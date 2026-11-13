@@ -50,9 +50,10 @@ answers, and Docker stacks listen on every network interface.
 1. **Create or switch to your git branch first.** A stack belongs to a
    worktree and a branch. Switching branches later gives you a fresh database
    that RN Devtools follows; switching back restores the old one.
-2. **For a lane, run `lane up` and stop there.** With `--backend auto`, the
-   development default, `rndevtools lane --operation up --worktree "$PWD"`
-   starts this worktree's stack and hands Metro its URL and publishable key.
+2. **For a lane, run `lane --operation up` and stop there.** With
+   `--backend auto`, the development default,
+   `rndevtools lane --operation up --worktree "$PWD"` starts this worktree's
+   stack and hands Metro its URL and publishable key.
 3. **For database work without a lane:**
 
 ```bash
@@ -71,7 +72,7 @@ rndevtools wait --condition job --job-id <jobId>
 ```
 
 A start queued behind RN Devtools' own automatic start has no `jobId`: wait a
-few seconds, then call `up` again, as for `lane up`.
+few seconds, then call `up` again, as for `lane --operation up`.
 
 `up` is idempotent. Call it again after a branch switch, or whenever unsure.
 

@@ -63,7 +63,8 @@ type Options struct {
 	// without Cursor), plus Claude and Codex always.
 	Agents []Agent
 	// Project, when set, receives .agents/skills, .claude/skills, and an
-	// AGENTS.md block instead of the user-level locations.
+	// AGENTS.md block instead of the user-level locations, and, for Claude
+	// Code, a CLAUDE.md that imports AGENTS.md when it has none.
 	Project string
 	// SkipLink leaves PATH alone.
 	SkipLink bool
@@ -182,6 +183,11 @@ func run(options Options, write bool) (Report, error) {
 	if options.Project != "" {
 		if err := record(installAgentsBlock(options.Project, write)); err != nil {
 			return report, err
+		}
+		if slices.Contains(agents, AgentClaude) {
+			if err := record(installClaudeImport(options.Project, write)); err != nil {
+				return report, err
+			}
 		}
 	}
 	return report, nil
@@ -425,7 +431,8 @@ func hookDocument(executable string) (preToolUse map[string]any, sessionEnd map[
 		"hooks": []any{map[string]any{
 			"type":    "command",
 			"command": hookCommand(executable, "session-end"),
-			// Codex caps SessionEnd at 3 s; the release is one socket round trip.
+			// Codex caps SessionEnd at 3 s; the release is one socket round trip,
+			// which the desktop answers within about 1.5 s.
 			"timeout": 3,
 		}},
 	}
@@ -490,7 +497,7 @@ func installHooks(path string, executable string, write bool) (Change, error) {
 		change.Detail = "rndevtools hooks already installed"
 		return change, nil
 	}
-	change.Detail = "add a PreToolUse hook that redirects simctl boot/shutdown/openurl/install/launch/io and hand-started Metro to rndevtools and, while local Supabase is turned on in RN Devtools, keeps hand-run supabase commands native and off other agents' stacks, and a SessionEnd hook that releases the session's lanes, claims, and stacks"
+	change.Detail = "add a PreToolUse hook that redirects simctl boot/shutdown/openurl/install/launch/terminate/io and hand-started Metro to rndevtools and, while local Supabase is turned on in RN Devtools, keeps hand-run supabase commands native and off other agents' stacks, and a SessionEnd hook that releases the session's lanes, claims, and stacks"
 	document["hooks"] = hooks
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
@@ -636,19 +643,26 @@ const (
 
 // AgentsBlock is the project-instruction text for project ("" for none). It
 // is short on purpose: the MCP tool descriptions and the skills carry the
-// detail; this only has to make an agent reach for them. A project with
-// supabase/config.toml also gets the Local Supabase paragraph, worded for
-// when RN Devtools is not managing a worktree, since agents must then start
-// their own stack the safe way.
+// detail; this only has to make an agent reach for them. Commands are spelled
+// the way the CLI parses them: an operation is the --operation flag, never a
+// positional word. A project with supabase/config.toml also gets the Local
+// Supabase paragraph, worded for when RN Devtools is not managing a worktree,
+// since agents must then start their own stack the safe way.
 func AgentsBlock(project string) string {
 	block := agentsBlockStart + `
 ## iOS Simulators
 
 Simulators on this Mac are managed by RN Devtools. Use the ` + "`rndevtools`" + ` MCP
-tools (or the ` + "`rndevtools`" + ` CLI) for anything involving a Simulator: ` + "`lane up`" + ` runs
-this worktree on its own Simulator with its own Metro port; ` + "`input`" + ` and
-` + "`capture`" + ` drive and observe the device. Never run ` + "`xcrun simctl boot`" + `,
-` + "`shutdown`" + `, ` + "`openurl`" + `, ` + "`install`" + `, ` + "`launch`" + `, or start Metro by hand: other
+tools (or the ` + "`rndevtools`" + ` CLI, where an operation is always the
+` + "`--operation`" + ` flag) for anything involving a Simulator:
+` + "`rndevtools lane --operation up --worktree <app directory>`" + ` runs this
+worktree on its own Simulator with its own Metro port,
+` + "`rndevtools lane --operation launch --worktree <app directory> --restart`" + `
+starts the app fresh, and ` + "`input`" + ` and ` + "`capture`" + ` drive and observe the device.
+Leave out ` + "`--udid`" + ` unless the user named a device or is using one: RN Devtools
+picks a free iPhone. Never run ` + "`xcrun simctl boot`" + `, ` + "`shutdown`" + `, ` + "`openurl`" + `,
+` + "`install`" + `, ` + "`launch`" + `, ` + "`terminate`" + `, or ` + "`io`" + `, and never start Metro by hand
+(` + "`npx expo`" + `, ` + "`expo start`" + `, or ` + "`expo run:ios`" + ` without ` + "`--no-bundler`" + `): other
 agents share these devices and the desktop app owns their ports and claims.
 `
 	if project != "" && isRegularFile(filepath.Join(project, "supabase", "config.toml")) {
@@ -657,8 +671,9 @@ agents share these devices and the desktop app owns their ports and claims.
 
 Each worktree gets its own local Supabase stack (native runtime, loopback
 only). When RN Devtools manages this worktree, use the ` + "`rndevtools`" + ` ` + "`supabase`" + `
-tool (operation up) or ` + "`lane up`" + `, which connects the app; otherwise start it
-yourself from the worktree with ` + "`" + projectRunner(project) + ` start --runtime native` + "`" + `
+tool (operation up) or ` + "`rndevtools lane --operation up --worktree <app directory>`" + `,
+which connects the app; otherwise start it yourself from the worktree with
+` + "`" + projectRunner(project) + ` start --runtime native` + "`" + `
 (never without ` + "`--runtime native`" + `). Use ` + "`supabase … --local`" + ` for migrations,
 ` + "`db reset`" + `, and ` + "`gen types`" + `, against your local stack rather than a hosted
 project unless the user asks. Never run ` + "`supabase stop --all`" + `,
@@ -717,9 +732,87 @@ func agentsBlockSpan(content string) (start int, end int, found bool, ok bool) {
 }
 
 func installAgentsBlock(project string, write bool) (Change, error) {
-	path := filepath.Join(project, "AGENTS.md")
+	return installBlock(filepath.Join(project, "AGENTS.md"), AgentsBlock(project), write)
+}
+
+// installClaudeImport routes Claude Code to the AGENTS.md block, since it
+// reads a project's CLAUDE.md and not its AGENTS.md. A project without a
+// CLAUDE.md gets one that only imports AGENTS.md (@AGENTS.md). A CLAUDE.md the
+// project has is its own: it is left as it is when it is AGENTS.md through a
+// link; a block it carries between the rndevtools markers is kept current as
+// AGENTS.md's is, also beside an import of AGENTS.md, since Claude Code reads
+// both, unless a link takes the file outside the project (projectEscape);
+// without a block it is left as it is when it imports AGENTS.md; otherwise
+// the change says what to add rather than editing it.
+func installClaudeImport(project string, write bool) (Change, error) {
+	path := filepath.Join(project, "CLAUDE.md")
 	change := Change{Path: path}
-	block := AgentsBlock(project)
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		change.Action = "create"
+		change.Detail = "import AGENTS.md (@AGENTS.md), so Claude Code reads its RN Devtools block"
+		return commit(change, path, []byte("@AGENTS.md\n"), 0o644, write)
+	case err != nil:
+		// The rest of setup does not depend on it, so it does not fail.
+		change.Action = "skip"
+		change.Detail = "CLAUDE.md cannot be read; make it a file with a line `@AGENTS.md`, then rerun setup"
+		return change, nil
+	}
+	claude, claudeErr := os.Stat(path)
+	agents, agentsErr := os.Stat(filepath.Join(project, "AGENTS.md"))
+	if claudeErr == nil && agentsErr == nil && os.SameFile(claude, agents) {
+		change.Action = "unchanged"
+		change.Detail = "CLAUDE.md is AGENTS.md through a link"
+		return change, nil
+	}
+	if _, _, found, paired := agentsBlockSpan(string(raw)); found || !paired {
+		// Marker lines: a block to keep current, or markers installBlock
+		// reports as not pairing up. An import of AGENTS.md beside them does
+		// not make them current: Claude Code reads this block too.
+		if target, escapes := projectEscape(project, path); escapes {
+			change.Action = "skip"
+			change.Detail = "CLAUDE.md resolves to " + target + ", outside the project, so its block would reach every project that reads that file; keep the block current there, or make CLAUDE.md a file of the project's own with a line `@AGENTS.md`, then rerun setup"
+			return change, nil
+		}
+		return installBlock(path, AgentsBlock(project), write)
+	}
+	if importsAgentsFile(raw) {
+		change.Action = "unchanged"
+		change.Detail = "CLAUDE.md already imports AGENTS.md"
+		return change, nil
+	}
+	change.Action = "skip"
+	change.Detail = "Claude Code reads CLAUDE.md, which neither imports AGENTS.md nor carries the RN Devtools block; add a line `@AGENTS.md` to it, then rerun setup"
+	return change, nil
+}
+
+// projectEscape names the file an edit of path, a file of project, would
+// write when that file is outside the project, through a link the
+// repository committed (a CLAUDE.md that points at the user's own): the
+// edit would change every project that reads it, so setup leaves the file
+// alone, as agent-check does for its project repairs (healthEscapesProject).
+// The project is compared as resolved, since the target is. A path setup
+// cannot write through at all is commit's to report.
+func projectEscape(project string, path string) (target string, escapes bool) {
+	target, reason := writeTarget(path)
+	if reason != "" {
+		return "", false
+	}
+	if real, err := filepath.EvalSymlinks(project); err == nil {
+		project = real
+	}
+	if healthInside(project, target) {
+		return "", false
+	}
+	return target, true
+}
+
+// installBlock puts block, the text setup owns between the rndevtools
+// markers, into the file at path: in place of the block it has, or after its
+// text.
+func installBlock(path string, block string, write bool) (Change, error) {
+	change := Change{Path: path}
 	raw, err := os.ReadFile(path)
 	var content string
 	switch {
@@ -733,7 +826,7 @@ func installAgentsBlock(project string, write bool) (Change, error) {
 	}
 	if strings.Contains(content, block) {
 		change.Action = "unchanged"
-		change.Detail = "AGENTS.md block already current"
+		change.Detail = filepath.Base(path) + " block already current"
 		return change, nil
 	}
 	start, end, found, ok := agentsBlockSpan(content)

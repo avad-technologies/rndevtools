@@ -296,7 +296,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 			if (value.operation === 'install' && value.udid === undefined) {
 				context.addIssue({
 					code: 'custom',
-					message: 'native install requires udid.',
+					message: 'The install operation requires udid.',
 				});
 			}
 		}),
@@ -369,6 +369,14 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 			preferredPort: z.number().int().min(1_024).max(65_535).optional(),
 			launch: z.boolean().optional(),
 			/**
+			 * For `up` and `launch`: terminate the lane's app on its Simulator
+			 * before the dev client or `url` opens, so it starts fresh with this
+			 * lane's Metro alone. A lane does that on its first dev-client launch
+			 * by itself; a `launch` with `url` and without restart never
+			 * terminates, and leaves that first launch to come.
+			 */
+			restart: z.boolean().optional(),
+			/**
 			 * SimSlim profile to apply to the lane's Simulator before Metro starts.
 			 * The desktop applies it when SimSlim is enabled, the device's
 			 * compatibility tuple allows it, and the device is free or held by this
@@ -389,6 +397,29 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 			agent: laneAgentSchema.pick({ kind: true, sessionId: true }).optional(),
 		})
 		.superRefine((value, context) => {
+			if (
+				value.restart !== undefined &&
+				value.operation !== 'up' &&
+				value.operation !== 'launch'
+			) {
+				context.addIssue({
+					code: 'custom',
+					message: 'Only the up and launch operations take restart.',
+				});
+				return;
+			}
+			if (
+				value.operation === 'up' &&
+				value.restart === true &&
+				value.launch === false
+			) {
+				context.addIssue({
+					code: 'custom',
+					message:
+						'restart terminates the app for the launch that follows it, so the up operation cannot take restart with launch false.',
+				});
+				return;
+			}
 			const only = (allowed: readonly string[]) =>
 				Object.entries(value)
 					.filter(([key, field]) => field !== undefined && key !== 'kind')
@@ -403,6 +434,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 						'environment',
 						'preferredPort',
 						'launch',
+						'restart',
 						'slimProfileId',
 						'backend',
 						'agent',
@@ -413,7 +445,14 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 				(value.operation === 'ls' && only(['operation'])) ||
 				(value.operation === 'launch' &&
 					(value.laneId !== undefined) !== (value.worktreePath !== undefined) &&
-					only(['operation', 'laneId', 'worktreePath', 'url', 'agent'])) ||
+					only([
+						'operation',
+						'laneId',
+						'worktreePath',
+						'url',
+						'restart',
+						'agent',
+					])) ||
 				(value.operation === 'log' &&
 					(value.laneId !== undefined) !== (value.worktreePath !== undefined) &&
 					only(['operation', 'laneId', 'worktreePath', 'maxCharacters']));
@@ -485,7 +524,7 @@ const agentCliCommandSchema = z.discriminatedUnion('kind', [
 				context.addIssue({
 					code: 'custom',
 					message:
-						'waitMs is for supabase up, seed for reset, services, tail, and since for log, and note for destroy and reset.',
+						'waitMs is for up, seed for reset, services, tail, and since for log, and note for destroy and reset.',
 				});
 			}
 		}),

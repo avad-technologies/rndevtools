@@ -16,7 +16,8 @@ import type { Lane } from './lane-protocol';
  * hold whose holder has gone away (its agent session exited) is **abandoned**
  * and still enforced until its releaseAt, {@link DEVICE_HOLD_GRACE_MS} after
  * a confirmed exit, when the desktop releases it. Codex recency is not
- * exit evidence: an unlisted Codex holder is retained until explicit release.
+ * exit evidence: an unlisted Codex holder is retained until explicit release,
+ * as is a holder of kind other, whose session nothing can see.
  *
  * A lane start holds its Simulator from the moment it reserves it, before
  * its lane is stored, but yields to a claim that was there first.
@@ -153,8 +154,12 @@ export function resolveHolderLiveness(
 	// Codex's SQLite query is a bounded recent-activity list, not a process
 	// registry. An idle/open chat, long tool call, or older result outside its
 	// LIMIT must never be treated as an exit and terminate its resources.
+	// Nothing at all discovers sessions of kind other, known only by their
+	// RNDEVTOOLS_AGENT_SESSION_ID, so no clock ever starts for them either.
 	// Explicit release/session-end remains authoritative.
-	if (holder.kind === 'codex') return { live: false, unconfirmed: true };
+	if (holder.kind === 'codex' || holder.kind === 'other') {
+		return { live: false, unconfirmed: true };
+	}
 	const since =
 		inputs.missingSince.get(holderClockKey(holder, directory)) ?? inputs.now;
 	return {

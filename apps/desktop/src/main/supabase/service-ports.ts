@@ -55,7 +55,7 @@ export function describeSupabaseLaneBackend(
 			status,
 			reason,
 			appEnvNames: [],
-			reasonText: `${message} Run lane up to recover this lane's backend.`,
+			reasonText: `${message} Run \`rndevtools lane --operation up --worktree <app directory>\` to recover this lane's backend.`,
 		};
 	};
 	if (!state.feature.enabled)
