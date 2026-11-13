@@ -1187,13 +1187,13 @@ export class LaneService {
 		})();
 		const tail = Promise.allSettled([previous, run]).then(() => undefined);
 		this.#startsByApp.set(appDirectory, tail);
-		try {
-			return await run;
-		} finally {
+		// A cancelled waiter can return before the operation ahead of it.
+		void tail.then(() => {
 			if (this.#startsByApp.get(appDirectory) === tail) {
 				this.#startsByApp.delete(appDirectory);
 			}
-		}
+		});
+		return run;
 	}
 
 	async #startReserved(
@@ -2396,11 +2396,9 @@ export class LaneService {
 				}
 			}
 		} finally {
-			// As many as one job keeps, each cut to a log note's length.
-			await this.#noteInLog(
-				lane,
-				[...openWarnings].slice(0, MAX_SIMULATOR_JOB_WARNINGS)
-			);
+			const notes = [...openWarnings].slice(0, MAX_SIMULATOR_JOB_WARNINGS);
+			for (const note of notes) warn(warnings, note);
+			await this.#noteInLog(lane, notes);
 		}
 		// The checks and the open awaited, and a stop or a Metro restart may
 		// have run meanwhile: write onto the lane as it is now. A lane stopped

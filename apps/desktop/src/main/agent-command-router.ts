@@ -1253,7 +1253,10 @@ function laneReceiptResult(
 			: receipt.timedOut
 				? 'timed_out'
 				: 'lane_failed';
-		const error = receipt.error ?? 'The lane operation did not complete.';
+		const error = [
+			receipt.error ?? 'The lane operation did not complete.',
+			...(receipt.warnings ?? []),
+		].join(' ');
 		const lane = receipt.lane;
 		if (!asked || !lane) {
 			throw new AgentCliError({ code, message: error, retryable: true });
@@ -1884,26 +1887,29 @@ function createRoutes({
 						if (target.state !== 'booted') {
 							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (\`rndevtools lane --operation up --worktree ${shellWord(command.worktreePath)} --udid ${target.udid} --launch=false\` boots it).`;
 						} else {
-							const listing = (await runSimulatorAction(
-								simulator,
-								{
-									actionId: actionId(context.requestId),
-									kind: 'app.list',
-									udid: target.udid,
-								},
-								context.signal
-							)) as SimulatorJob;
-							if (listing.status === 'complete') {
+							if (context.signal.aborted) throw abortError();
+							const listing = simulator.runAction({
+								actionId: actionId(context.requestId),
+								kind: 'app.list',
+								udid: target.udid,
+							});
+							const job =
+								listing.accepted && listing.jobId
+									? await waitForJob(simulator, listing.jobId, context.signal, {
+											abortError,
+										})
+									: undefined;
+							if (job?.status === 'complete') {
 								const wanted = bundle.toLowerCase();
 								installed = (
 									simulator.getState().appsByDevice[target.udid] ?? []
 								).some((app) => app.bundleIdentifier.toLowerCase() === wanted);
 							} else {
 								installedUnknown = `installed is left out: listing this Simulator's apps failed (${sanitizeDialogText(
-									listing.message,
+									job?.message ?? listing.error,
 									{
 										maxLength: MAX_LISTING_FAILURE_LENGTH,
-										fallback: listing.status,
+										fallback: job?.status ?? 'action rejected',
 									}
 								)}).`;
 							}
@@ -1914,9 +1920,9 @@ function createRoutes({
 				// 8081, on every interface) whenever --configuration Debug is passed,
 				// --no-bundler or not. Name the configuration only when it is another.
 				const configurationFlag =
-					plan.configuration === 'Debug'
+					command.configuration === 'Debug'
 						? ''
-						: ` --configuration ${plan.configuration}`;
+						: ` --configuration ${command.configuration}`;
 				// Expo CLI refuses --port with --no-bundler (BAD_ARGS from
 				// build/src/run/resolveBundlerProps.js in @expo/cli 57, before it
 				// builds anything), and even --no-bundler opens the app it
@@ -1951,7 +1957,7 @@ function createRoutes({
 					let advice: string;
 					if (plan.cache === 'hit') {
 						advice = target
-							? `install: a cached binary matches this fingerprint; run \`rndevtools native --operation install --worktree ${shellWord(command.worktreePath)} --udid ${target.udid}\` to put it on the Simulator without building.`
+							? `install: a cached binary matches this fingerprint; run \`rndevtools native --operation install --worktree ${shellWord(command.worktreePath)} --udid ${target.udid}${configurationFlag}\` to put it on the Simulator without building.`
 							: 'cached: a binary for this fingerprint exists; pass --udid to install it.';
 					} else {
 						const step = await buildStep();

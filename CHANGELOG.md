@@ -211,14 +211,15 @@
   launch.
 - Before a lane opens a URL in its own scheme, it approves that scheme for its
   app, by its bundle identifier, on the Simulator, so the iOS 26 "Open in"
-  prompt no longer stalls the dev client. A failed approval is a job warning
-  and a lane log line.
+  prompt no longer stalls the dev client. A failed approval appears in the
+  Simulator job, lane log, and launch response.
 - Stopping a lane waits up to 5 s for its Metro to exit, then sends SIGKILL
   once the PID is proven again to be the lane's Metro; a Metro that survives,
   or cannot be proven, keeps its lane. A second stop of a lane waits for the
   first. Quitting waits up to 24 s for the lane stops under way. A recorded
   Metro PID that now names another process leaves its lane stopped instead of
-  failing every lane up and launch.
+  failing every lane up and launch. Cancelling a queued lane operation keeps
+  later requests behind the work already running for that app.
 - Lane Metros, the native build plan, the `rndevtools` CLI runs for agent
   setup and its checks, the login shell asked for a PATH, and a failure
   handoff's login check no longer inherit the variables of an agent session
@@ -238,8 +239,9 @@
   bundle identifier, and with the dev client's full URL for a lane without a
   URL scheme. It waits up to 15 s for a lane that is still starting, leaves
   `installed` out when the Simulator is not booted or its apps cannot be
-  listed, gives a cache hit's install as a whole `rndevtools` command, and no
-  longer fails when the desktop was started with `DEBUG`.
+  listed, and includes the build configuration in the cache hit's install
+  command when it differs from Debug. Fingerprinting also works when the
+  desktop starts with `DEBUG`.
 - Agent discovery keeps running while every window is hidden, so a session
   that ended without its session-end hook still has its holds released.
 - Failure text, native plan errors and local Supabase output (CLI messages

@@ -2220,12 +2220,13 @@ describe('LaneService', () => {
 		);
 
 		it.each([
-			{ failures: 1, code: 60, completed: true },
-			{ failures: 1, code: 61, completed: false },
-			{ failures: 2, code: 60, completed: false },
+			{ failures: 0, code: 60, completed: true, warnings: 1 },
+			{ failures: 1, code: 60, completed: true, warnings: 1 },
+			{ failures: 1, code: 61, completed: false, warnings: 1 },
+			{ failures: 2, code: 60, completed: false, warnings: 2 },
 		])(
-			'notes in the lane log what each open could not do, the failed ones included: $code / $failures',
-			async ({ failures, code, completed }) => {
+			'reports URL approval warnings in the receipt and lane log: $code / $failures',
+			async ({ failures, code, completed, warnings }) => {
 				const started = await startLane();
 				const warning = (attempt: number) =>
 					`The exampleapp URL scheme could not be approved for com.example.app (attempt ${attempt}), so iOS may ask "Open in …?" before the app opens.`;
@@ -2234,10 +2235,8 @@ describe('LaneService', () => {
 				simulator.runAction = (action) => {
 					if (action.kind === 'url.open') {
 						opens += 1;
-						// Each failed attempt warns of something of its own; a retry
-						// that opens warns of nothing.
 						simulator.openWarnings =
-							opens <= failures ? [warning(opens), warning(opens)] : undefined;
+							opens <= warnings ? [warning(opens), warning(opens)] : undefined;
 						if (opens <= failures) {
 							simulator.failNext = `xcrun failed with exit code ${code}.`;
 						}
@@ -2250,11 +2249,14 @@ describe('LaneService', () => {
 					laneId: started.lane?.id as string,
 				});
 				expect(result.completed).toBe(completed);
-				// Each warning once, from every attempt that ran.
+				const expected = Array.from({ length: warnings }, (_, index) =>
+					warning(index + 1)
+				);
+				expect(result.warnings).toEqual(expected);
 				expect(metro.notes).toEqual(
-					Array.from({ length: Math.min(opens, failures) }, (_, index) => ({
+					expected.map((note) => ({
 						logPath: started.lane?.logPath,
-						note: warning(index + 1),
+						note,
 					}))
 				);
 			}
@@ -3182,15 +3184,22 @@ describe('LaneService', () => {
 			await store.addRepository(REPO);
 		});
 
-		function up(worktreePath: string, extra: Record<string, unknown> = {}) {
-			return service.runOperation({
-				actionId: `op-race-${Math.random().toString(16).slice(2)}`,
-				kind: 'lane.start',
-				worktreePath,
-				environment: 'development',
-				launch: false,
-				...extra,
-			});
+		function up(
+			worktreePath: string,
+			extra: Record<string, unknown> = {},
+			signal?: AbortSignal
+		) {
+			return service.runOperation(
+				{
+					actionId: `op-race-${Math.random().toString(16).slice(2)}`,
+					kind: 'lane.start',
+					worktreePath,
+					environment: 'development',
+					launch: false,
+					...extra,
+				},
+				signal
+			);
 		}
 
 		function lanesOf(receipts: LaneOperationReceipt[]): Lane[] {
@@ -3243,6 +3252,35 @@ describe('LaneService', () => {
 			expect(second?.lane?.id).toBe(first?.lane?.id);
 			expect(metro.started).toHaveLength(1);
 			expect(service.getState().lanes).toHaveLength(1);
+		});
+
+		it('keeps the active lane up in the queue when a waiter cancels', async () => {
+			const entered = deferred<void>();
+			const release = deferred<void>();
+			const repositoryRoot = worktrees.repositoryRoot;
+			const discover = vi
+				.spyOn(worktrees, 'repositoryRoot')
+				.mockImplementationOnce(async (directory) => {
+					entered.resolve();
+					await release.promise;
+					return repositoryRoot(directory);
+				});
+			const first = up(WORKTREE);
+			await entered.promise;
+			const controller = new AbortController();
+			const cancelled = up(WORKTREE, {}, controller.signal);
+			controller.abort();
+			const cancelledReceipt = await cancelled;
+			const third = up(WORKTREE);
+			const discoveriesBeforeRelease = discover.mock.calls.length;
+			release.resolve();
+
+			const [started, resumed] = await Promise.all([first, third]);
+			expect(cancelledReceipt.cancelled).toBe(true);
+			expect(discoveriesBeforeRelease).toBe(1);
+			expect(started.completed).toBe(true);
+			expect(resumed.lane?.id).toBe(started.lane?.id);
+			expect(metro.started).toHaveLength(1);
 		});
 
 		it("keep a resuming lane's port from a fresh start", async () => {

@@ -2478,6 +2478,34 @@ describe('agent command router', () => {
 			);
 		});
 
+		it('keeps the requested configuration in its cached install command', async () => {
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: port,
+				nativePlan: async () => ({
+					...(await plan('hit')()),
+					configuration: 'Release',
+				}),
+			});
+			const result = await handler(
+				{
+					kind: 'native',
+					operation: 'plan',
+					configuration: 'Release',
+					worktreePath: '/Users/dev/app',
+					udid: UDID,
+				},
+				context
+			);
+			expect(result).toMatchObject({
+				recommendation: expect.stringContaining(
+					`native --operation install --worktree /Users/dev/app --udid ${UDID} --configuration Release\``
+				),
+			});
+		});
+
 		it.each([
 			['hit', /^install: /],
 			['miss', /^build: /],
@@ -2552,34 +2580,55 @@ describe('agent command router', () => {
 			}
 		);
 
-		it("leaves installed out when listing a booted Simulator's apps fails", async () => {
-			const { dependencies } = fixture();
-			const { port, actions } = simulatorWithApps(['com.example.app'], {
-				listFailure: 'simctl listapps timed out.\nRetry later.',
-			});
-			const handler = createAgentCommandRouter({
-				...dependencies,
-				simulator: port,
-				nativePlan: plan('hit'),
-			});
-			const result = (await handler(
-				{
-					kind: 'native',
-					operation: 'plan',
-					configuration: 'Debug',
-					worktreePath: '/Users/dev/app',
-					udid: UDID,
-				},
-				context
-			)) as Record<string, unknown>;
-			expect(result).not.toHaveProperty('installed');
-			const recommendation = String(result.recommendation);
-			expect(recommendation).toMatch(/^install: /);
-			expect(recommendation).toMatch(
-				/ installed is left out: listing this Simulator's apps failed \(simctl listapps timed out\. Retry later\.\)\.$/
-			);
-			expect(actions.map(({ action }) => action.kind)).toEqual(['app.list']);
-		});
+		it.each(['failed', 'rejected'] as const)(
+			'leaves installed out when app.list is %s',
+			async (outcome) => {
+				const { dependencies } = fixture();
+				const { port, actions } = simulatorWithApps(['com.example.app'], {
+					listFailure: 'simctl listapps timed out.\nRetry later.',
+				});
+				const simulator =
+					outcome === 'failed'
+						? port
+						: {
+								...port,
+								runAction: (action: SimulatorAction) => ({
+									actionId: action.actionId,
+									accepted: false,
+									error: 'This Xcode installation does not support apps.',
+								}),
+							};
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator,
+					nativePlan: plan('hit'),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result).not.toHaveProperty('installed');
+				const recommendation = String(result.recommendation);
+				expect(recommendation).toMatch(/^install: /);
+				const reason =
+					outcome === 'failed'
+						? 'simctl listapps timed out. Retry later.'
+						: 'This Xcode installation does not support apps.';
+				expect(recommendation).toContain(
+					` installed is left out: listing this Simulator's apps failed (${reason}).`
+				);
+				if (outcome === 'failed')
+					expect(actions.map(({ action }) => action.kind)).toEqual([
+						'app.list',
+					]);
+			}
+		);
 
 		it('installs without listing the apps first, and fails as app.install does on a Simulator that is not booted', async () => {
 			const { dependencies } = fixture();
@@ -4379,6 +4428,18 @@ describe('agent command router', () => {
 			'rndevtools lane --operation up --worktree /Users/dev/app-feature';
 		const launchAgain = `rndevtools lane --operation launch --lane-id ${lane.id}`;
 		const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
+
+		it('includes a Simulator warning in the failed launch response', async () => {
+			const error = 'xcrun failed with exit code 60.';
+			const warning = 'The exampleapp URL scheme could not be approved.';
+			const result = await failure(
+				{ completed: false, error, lane, warnings: [warning] },
+				launchCommand
+			);
+			expect(result.message).toBe(
+				`Lane ${lane.id} did not launch: ${error} ${warning}`
+			);
+		});
 
 		it('retries a lane up that failed to launch as itself, which starts an exited Metro again', async () => {
 			const up = await failure(
