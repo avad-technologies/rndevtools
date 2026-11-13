@@ -7,6 +7,12 @@ const verifyNativeResources = require('./verify-native-resources.cjs');
 const { refreshNativeResourceManifest } = verifyNativeResources;
 
 const execFileAsync = promisify(execFile);
+const adHocEntitlements = path.join(
+	__dirname,
+	'..',
+	'build',
+	'entitlements.mac.adhoc.plist'
+);
 
 const fuseOptions = Object.freeze({
 	version: FuseVersion.V1,
@@ -52,7 +58,7 @@ module.exports = async function afterPack(context) {
 		const signing = await resolveNativeSigning(context);
 		if (
 			process.env.RNDEVTOOLS_RELEASE_MODE === 'public' &&
-			(!signing?.builderIdentity.name.startsWith('Developer ID Application:') ||
+			(!signing.builderIdentity.name.startsWith('Developer ID Application:') ||
 				!signing.hardenedRuntime ||
 				signing.timestamp === 'none')
 		) {
@@ -60,11 +66,10 @@ module.exports = async function afterPack(context) {
 				'Public releases require a Developer ID Application identity, hardened runtime and secure timestamps.'
 			);
 		}
-		const helperSigning = signing || localAdHocSigning();
 		for (const helper of Object.values(manifest.helpers)) {
 			await signNativeHelper(
 				path.join(nativeResourcesPath, helper.file),
-				helperSigning
+				signing
 			);
 		}
 
@@ -81,11 +86,15 @@ module.exports = async function afterPack(context) {
 
 		// A distribution build is signed by electron-builder after this hook. Its
 		// signing pass excludes the finalized, already-hashed native executables.
-		// When certificate discovery is explicitly disabled, run that same signing
-		// implementation here with an ad-hoc identity so Electron's nested
-		// entitlements and code requirements remain internally consistent on a true
-		// cold launch.
-		if (signing?.localAdHoc) {
+		// Ad-hoc signatures lack a team ID. Sign the app and Electron helpers
+		// with local entitlements so macOS can load the bundled framework.
+		if (signing.identity === '-') {
+			// The standard pass can run again with an explicit ad-hoc identity.
+			// It needs the same entitlements as the pass here.
+			Object.assign(
+				context.packager.platformSpecificBuildOptions,
+				signing.config
+			);
 			const signOptions = await context.packager.helper.buildSignOptions(
 				appPath,
 				signing.builderIdentity,
@@ -100,70 +109,54 @@ module.exports = async function afterPack(context) {
 				signing.config,
 				signing.builderIdentity
 			);
-		} else if (!signing) {
-			// Flipping fuses invalidates Electron's upstream ad-hoc signature. When
-			// no distribution identity is configured or discoverable, always reseal
-			// the complete app so a local package remains launchable.
-			await execFileAsync('/usr/bin/codesign', [
-				'--force',
-				'--deep',
-				'--sign',
-				'-',
-				appPath,
-			]);
 		}
 	}
 };
 
 module.exports.fuseOptions = fuseOptions;
 
-function localAdHocSigning() {
-	return {
-		identity: '-',
-		keychainFile: null,
-		hardenedRuntime: false,
-		timestamp: 'none',
-	};
-}
-
 async function resolveNativeSigning(context) {
 	const packager = context.packager;
 	const config = packager.platformSpecificBuildOptions;
-	if (config.identity === null) {
-		return null;
-	}
 	const signingInfo = await packager.codeSigningInfo.value;
 	const type = config.type || 'distribution';
-	let identity = await packager.helper.findSigningIdentity(
-		false,
-		type === 'development',
-		config.identity,
-		signingInfo.keychainFile,
-		config
-	);
-	let localAdHoc = false;
-	if (!identity && process.env.CSC_IDENTITY_AUTO_DISCOVERY === 'false') {
-		identity = await packager.helper.findSigningIdentity(
-			false,
-			type === 'development',
-			'-',
-			signingInfo.keychainFile,
-			config
-		);
-		localAdHoc = true;
+	const keychainFile = signingInfo.keychainFile;
+	const identity =
+		config.identity === null || config.identity === '-'
+			? null
+			: await packager.helper.findSigningIdentity(
+					false,
+					type === 'development',
+					config.identity,
+					keychainFile,
+					config
+				);
+	if (identity && identity.name !== '-') {
+		return {
+			identity: identity.hash || identity.name,
+			builderIdentity: identity,
+			config,
+			keychainFile,
+			hardenedRuntime: config.hardenedRuntime !== false,
+			timestamp: config.timestamp,
+			type,
+		};
 	}
-	return identity
-		? {
-				identity: identity.hash || identity.name,
-				builderIdentity: identity,
-				config,
-				keychainFile: signingInfo.keychainFile,
-				hardenedRuntime: config.hardenedRuntime !== false,
-				localAdHoc,
-				timestamp: identity.name === '-' ? 'none' : config.timestamp,
-				type,
-			}
-		: null;
+	const localConfig = {
+		...config,
+		entitlements: adHocEntitlements,
+		entitlementsInherit: adHocEntitlements,
+		timestamp: 'none',
+	};
+	return {
+		identity: '-',
+		builderIdentity: { name: '-' },
+		config: localConfig,
+		keychainFile,
+		hardenedRuntime: localConfig.hardenedRuntime !== false,
+		timestamp: localConfig.timestamp,
+		type,
+	};
 }
 
 async function signNativeHelper(helperPath, signing) {

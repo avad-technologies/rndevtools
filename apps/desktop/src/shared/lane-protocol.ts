@@ -29,6 +29,10 @@ const MAX_ENVIRONMENTS = 16;
 /** How many device requests lane state lists; main never keeps more. */
 export const MAX_DEVICE_REQUESTS = 16;
 const MAX_LOG_CHARACTERS = 64 * 1024;
+/** How many warnings one lane receipt carries; main never adds more. */
+export const MAX_RECEIPT_WARNINGS = 4;
+/** The longest warning a lane receipt carries. */
+export const MAX_RECEIPT_WARNING_LENGTH = MAX_SHORT_TEXT_LENGTH;
 
 export const LANE_METRO_HEALTH_TIMEOUT_MS = 15_000;
 
@@ -185,6 +189,11 @@ export const laneSchema = z.strictObject({
 		.optional(),
 	scheme: laneSchemeSchema.optional(),
 	startedAt: timestampSchema,
+	/**
+	 * When the lane last opened its dev client against its Metro. A deep link
+	 * is no such launch: it opens the app as it is, pointed wherever it was.
+	 * Until there is one, the lane's next dev-client launch is its first.
+	 */
 	lastLaunchedAt: timestampSchema.optional(),
 	agent: laneAgentSchema.optional(),
 	slim: laneSlimSchema.optional(),
@@ -241,6 +250,8 @@ const laneDeviceRequestSchema = z.strictObject({
 	environment: laneEnvironmentIdSchema,
 	preferredPort: portSchema.optional(),
 	launch: z.boolean(),
+	/** The start asked to restart the app, kept for when it runs. */
+	restart: z.boolean().optional(),
 	slimProfileId: identifierSchema.optional(),
 	/** The backend policy the start asked for, kept for when it runs. */
 	backend: laneBackendPolicySchema.optional(),
@@ -289,6 +300,17 @@ export const laneOperationSchema = z.discriminatedUnion('kind', [
 		/** Open the dev client against the leased Metro once it is healthy. */
 		launch: z.boolean().default(true),
 		/**
+		 * Terminate the lane's app on its Simulator before the dev client
+		 * opens, so it starts fresh with this lane's Metro alone. A lane does
+		 * that on its first dev-client launch anyway, as far as the Simulator
+		 * lets it; this asks for it, so a terminate that fails fails the
+		 * launch, and asks for it when the start resumes a lane whose dev
+		 * client has opened before. It needs the bundle identifier the
+		 * worktree's app.json declared when the lane started, and a start that
+		 * does not launch ignores it.
+		 */
+		restart: z.boolean().optional(),
+		/**
 		 * Apply this SimSlim profile to the Simulator before Metro starts, so the
 		 * dev client's first launch lands on a device whose services are already
 		 * trimmed. See `laneSlimSchema` for the gates that still apply.
@@ -320,6 +342,13 @@ export const laneOperationSchema = z.discriminatedUnion('kind', [
 		laneId: laneIdSchema,
 		/** A bare path uses the lane's scheme; a full URL passes through. */
 		url: z.string().min(1).max(2_048).optional(),
+		/**
+		 * Terminate the lane's app before opening the dev client or `url`; a
+		 * terminate that fails fails the launch. Without it only the lane's
+		 * first dev-client launch terminates the app, best effort; a deep link
+		 * keeps the app's state and leaves that first launch to come.
+		 */
+		restart: z.boolean().optional(),
 		agent: laneAgentSchema.pick({ kind: true, sessionId: true }).optional(),
 	}),
 	z.strictObject({
@@ -368,8 +397,30 @@ export const laneOperationReceiptSchema = z.strictObject({
 		'lane.remove-repository',
 	]),
 	completed: z.boolean(),
+	/**
+	 * The operation stopped because it was cancelled: its caller's signal
+	 * aborted, or the user closed the repository dialog.
+	 */
 	cancelled: z.boolean().optional(),
+	/**
+	 * The operation stopped because its caller's deadline passed: its signal
+	 * aborted with a TimeoutError, as the agent socket's does once a command
+	 * outlasts the most it gives it (230 s for lane up and launch). Never
+	 * set together with `cancelled`.
+	 */
+	timedOut: z.boolean().optional(),
 	error: shortTextSchema.optional(),
+	/**
+	 * The lane the operation produced or acted on. A `lane.start`,
+	 * `lane.provide-device`, or `lane.launch` whose launch (of the dev client
+	 * or a deep link) failed on a stored lane (`completed: false`) names it
+	 * too, so the caller can open that lane again; its `metro` reads
+	 * `stopped` when Metro exited, which only a lane start brings back. So
+	 * does a `lane.start` that resumed a stored lane and failed or was
+	 * cancelled before its launch: booting the lane's Simulator, slimming,
+	 * ensuring its backend, or starting its Metro again. A lane that is
+	 * stopping is not named.
+	 */
 	lane: laneViewSchema.optional(),
 	/**
 	 * The lane's local backend after a `lane.start` or `lane.provide-device`,
@@ -382,6 +433,14 @@ export const laneOperationReceiptSchema = z.strictObject({
 	 * the settled request.
 	 */
 	deviceRequest: laneDeviceRequestSchema.optional(),
+	/**
+	 * What a `lane.start`, `lane.provide-device`, or `lane.launch` could not
+	 * do of what it does unasked: the lane's first dev-client launch
+	 * terminates a copy of the app already running, so the app starts fresh
+	 * with this lane's Metro, and it could not, or had no bundle identifier
+	 * to name the app by. The launch went ahead. The lane log says it too.
+	 */
+	warnings: z.array(shortTextSchema).max(MAX_RECEIPT_WARNINGS).optional(),
 	log: z.string().max(MAX_LOG_CHARACTERS).optional(),
 	state: laneStateSchema.optional(),
 });
@@ -412,6 +471,36 @@ export function laneDevClientLaunchUrl(
 		disableAutoLaunch: '1',
 	});
 	return `${scheme}://expo-development-client/?${params.toString()}`;
+}
+
+/** The hosts a dev client reaches a lane's loopback-only Metro at. */
+const LANE_METRO_HOSTS: ReadonlySet<string> = new Set([
+	'127.0.0.1',
+	'localhost',
+]);
+
+/**
+ * Whether `url` opens a dev client against the lane Metro on `port`: an
+ * `expo-development-client` URL, in any scheme, whose `url` parameter is that
+ * Metro, as laneDevClientLaunchUrl builds one. A lane that started without a
+ * URL scheme opens its dev client only through such a URL, given in full.
+ * Anything else, another Metro's dev-client URL included, is a deep link.
+ */
+export function opensLaneDevClient(url: string, port: number): boolean {
+	try {
+		const parsed = new URL(url);
+		if (parsed.hostname.toLowerCase() !== 'expo-development-client') {
+			return false;
+		}
+		const metro = new URL(parsed.searchParams.get('url') ?? '');
+		return (
+			metro.protocol === 'http:' &&
+			LANE_METRO_HOSTS.has(metro.hostname) &&
+			metro.port === String(port)
+		);
+	} catch {
+		return false;
+	}
 }
 
 /**

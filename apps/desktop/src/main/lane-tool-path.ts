@@ -6,6 +6,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { inheritedChildEnvironment } from './agent-harness-env';
 
 // Version-manager initialization can take several seconds on a busy Mac.
 const LOGIN_SHELL_TIMEOUT_MS = 15_000;
@@ -85,8 +86,11 @@ function betweenMarkers(output: string, marker: string): string | undefined {
  * up: `$SHELL -ilc`, printing the value between two random markers so that
  * whatever the rc files print is ignored. Only PATH is taken from the shell.
  * The shell runs in its own process group with no stdin, and is killed with
- * that group once it runs past `timeoutMs` or prints too much. Anything that
- * goes wrong reads as undefined.
+ * that group once it runs past `timeoutMs` or prints too much. Its rc files
+ * run whatever they run, so it gets `env` without the variables of the agent
+ * session the desktop may have been started from (agent-harness-env.ts),
+ * and while RNDEVTOOLS_CHILD_ENV_STRIP cannot be read no shell is asked.
+ * Anything that goes wrong reads as undefined.
  */
 export function readLoginShellPath({
 	env = process.env,
@@ -99,6 +103,12 @@ export function readLoginShellPath({
 } = {}): Promise<string | undefined> {
 	const shell = loginShell(env);
 	if (!shell) return Promise.resolve(undefined);
+	let shellEnvironment: NodeJS.ProcessEnv;
+	try {
+		shellEnvironment = inheritedChildEnvironment(env);
+	} catch {
+		return Promise.resolve(undefined);
+	}
 	const marker = `__rndevtools_path_${randomUUID().replaceAll('-', '')}__`;
 	return new Promise((resolve) => {
 		let output = '';
@@ -122,7 +132,11 @@ export function readLoginShellPath({
 			child = spawnProcess(
 				shell,
 				['-ilc', `printf '%s%s%s' '${marker}' "$PATH" '${marker}'`],
-				{ detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...env } }
+				{
+					detached: true,
+					stdio: ['ignore', 'pipe', 'ignore'],
+					env: shellEnvironment,
+				}
 			);
 		} catch {
 			finish(undefined);

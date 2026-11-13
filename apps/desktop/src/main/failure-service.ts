@@ -15,8 +15,10 @@ import {
 import type { Lane } from '../shared/lane-protocol';
 import type { SimulatorState } from '../shared/simulator-protocol';
 import {
+	type DiagnosticReportCache,
 	failureId,
 	failureText,
+	METRO_LOG_TAIL_HEADING,
 	readDiagnosticReports,
 } from './failure-diagnostics';
 import { type MetroExit, readLogTail } from './lane-metro';
@@ -30,6 +32,13 @@ const contextSchema = z.strictObject({
 	endedAt: z.number().finite().nonnegative().optional(),
 	metroPid: z.number().int().positive().optional(),
 	port: z.number().int().positive(),
+	/**
+	 * When RN Devtools asked this context's Metro to stop. It is kept with
+	 * the lane rather than in the capped history, so a lane listed as stopped
+	 * for days still has its stop on record, and it ends with the context:
+	 * once the lane is gone or runs another Metro.
+	 */
+	stopRequestedAt: z.number().finite().nonnegative().optional(),
 });
 type LaneContext = z.infer<typeof contextSchema>;
 const storedSchema = z.strictObject({
@@ -41,6 +50,12 @@ type Handoff = (
 	record: FailureRecord,
 	request: Extract<FailureRequest, { operation: 'handoff' }>
 ) => Promise<{ message?: string; cancelled?: boolean }>;
+
+/** A context once its lane is gone or runs another Metro; no stop is pending. */
+function ended(context: LaneContext, at: number): LaneContext {
+	const { stopRequestedAt: _stopRequestedAt, ...rest } = context;
+	return { ...rest, endedAt: at };
+}
 
 /** Local, bounded history. A diagnostic is evidence, never an automatic repair command. */
 export class FailureService {
@@ -57,6 +72,8 @@ export class FailureService {
 	#canSave = true;
 	#queue: Promise<void> = Promise.resolve();
 	#scan: Promise<FailureState> | undefined;
+	/** What earlier scans parsed, so a scan opens only new or changed reports. */
+	readonly #reports: DiagnosticReportCache = new Map();
 	#timer: NodeJS.Timeout | undefined;
 	#stopped = false;
 
@@ -82,6 +99,10 @@ export class FailureService {
 		this.#now = now;
 	}
 
+	/**
+	 * Loads the stored history. Diagnostic reports are not read until
+	 * `startScanning`, so a slow report folder never holds up startup.
+	 */
 	async start(): Promise<void> {
 		try {
 			await ensurePrivateDirectory(this.#directory, 'Failure history', {
@@ -112,7 +133,16 @@ export class FailureService {
 					'Previous failure history could not be read. It has been preserved; new events are in memory only. Check the failures folder in app data.';
 			}
 		}
-		await this.scan();
+	}
+
+	/**
+	 * Scans the diagnostic report folders in the background, now and every
+	 * 30 s. The first scan parses every recent report, so the desktop calls
+	 * this once its window is open; later scans open only new or changed ones.
+	 */
+	startScanning(): void {
+		if (this.#stopped || this.#timer) return;
+		void this.scan();
 		this.#timer = setInterval(() => {
 			void this.scan();
 		}, 30_000);
@@ -138,7 +168,20 @@ export class FailureService {
 		});
 	}
 
-	#remember(lane: LaneContext): void {
+	/**
+	 * Records the lane as it runs now, ending the context of the Metro it ran
+	 * before. A stop request already on record for this very Metro stays;
+	 * `stopRequestedAt` records a new one.
+	 */
+	#remember(lane: LaneContext, stopRequestedAt?: number): void {
+		const same = (value: LaneContext) =>
+			value.id === lane.id &&
+			value.metroPid === lane.metroPid &&
+			value.startedAt === lane.startedAt;
+		const requestedAt =
+			lane.metroPid === undefined
+				? undefined
+				: (stopRequestedAt ?? this.#contexts.find(same)?.stopRequestedAt);
 		const context = contextSchema.parse({
 			id: lane.id,
 			simulatorUdid: lane.simulatorUdid,
@@ -146,22 +189,29 @@ export class FailureService {
 			startedAt: lane.startedAt,
 			metroPid: lane.metroPid,
 			port: lane.port,
+			...(requestedAt !== undefined ? { stopRequestedAt: requestedAt } : {}),
 		});
 		this.#contexts = [
 			context,
 			...this.#contexts
-				.filter(
-					(value) =>
-						value.id !== lane.id ||
-						value.metroPid !== lane.metroPid ||
-						value.startedAt !== lane.startedAt
-				)
+				.filter((value) => !same(value))
 				.map((value) =>
 					value.id === lane.id && value.endedAt === undefined
-						? { ...value, endedAt: context.startedAt ?? this.#now() }
+						? ended(value, context.startedAt ?? this.#now())
 						: value
 				),
 		].slice(0, 64);
+	}
+
+	/** Whether RN Devtools asked the Metro the lane lists to stop. */
+	#stopRequested(lane: Pick<Lane, 'id' | 'metroPid'>): boolean {
+		return this.#contexts.some(
+			(value) =>
+				value.id === lane.id &&
+				value.metroPid === lane.metroPid &&
+				value.endedAt === undefined &&
+				value.stopRequestedAt !== undefined
+		);
 	}
 
 	#context(lane: LaneContext | undefined): Partial<FailureRecord> {
@@ -245,7 +295,7 @@ export class FailureService {
 	}
 
 	async laneIntent(lane: Lane, reason: string): Promise<void> {
-		this.#remember(lane);
+		this.#remember(lane, this.#now());
 		if (lane.metroPid)
 			this.#expected.set(lane.metroPid, { reason, at: this.#now() });
 		this.#add({
@@ -281,7 +331,7 @@ export class FailureService {
 			title: intentional
 				? 'Managed Metro stopped'
 				: 'Metro exited unexpectedly',
-			detail: `${intentional ? expected.reason : 'No RN Devtools stop request was recorded.'}\nPID: ${exit.pid}\nPort: ${exit.port}\nExit code: ${exit.code ?? 'none'}\nSignal: ${exit.signal ?? 'none'}${log ? `\n\nMetro log tail (redacted):\n${failureText(log, 8_192)}` : ''}`,
+			detail: `${intentional ? expected.reason : 'No RN Devtools stop request was recorded.'}\nPID: ${exit.pid}\nPort: ${exit.port}\nExit code: ${exit.code ?? 'none'}\nSignal: ${exit.signal ?? 'none'}${log ? `\n\n${METRO_LOG_TAIL_HEADING}\n${failureText(log, 8_192)}` : ''}`,
 			source: 'Metro child process',
 			metroPid: exit.pid,
 			port: exit.port,
@@ -306,6 +356,7 @@ export class FailureService {
 				previous.startedAt !== lane.startedAt ||
 				previous.endedAt !== undefined
 			) {
+				if (previous) changed = this.#forgotMetro(lane, previous) || changed;
 				this.#remember(lane);
 				changed = true;
 			}
@@ -313,9 +364,18 @@ export class FailureService {
 				lane.metro === 'stopped' &&
 				lane.metroPid &&
 				!this.#expected.has(lane.metroPid) &&
+				// RN Devtools asked this Metro to stop. The lane can keep it listed
+				// as stopped long after the intent window, as a required lane whose
+				// backend failed to attach does, and across desktop restarts. The
+				// request is kept with the lane's context, which newer events
+				// cannot push out of the capped history.
+				!this.#stopRequested(lane) &&
 				!this.#records.some(
 					(record) =>
-						record.metroPid === lane.metroPid && record.kind === 'metro-exit'
+						record.metroPid === lane.metroPid &&
+						(record.kind === 'metro-exit' ||
+							// A history saved before stops were kept with the context.
+							(record.kind === 'lane-lifecycle' && record.laneId === lane.id))
 				)
 			) {
 				changed =
@@ -327,7 +387,7 @@ export class FailureService {
 						severity: 'error',
 						title: 'Metro is no longer running',
 						detail:
-							'The stored Metro PID is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane log and nearby diagnostic reports.',
+							"The stored Metro PID is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane's log and nearby diagnostic reports.",
 						source: 'Lane health check',
 					}) || changed;
 			}
@@ -339,7 +399,7 @@ export class FailureService {
 			)
 				return context;
 			changed = true;
-			return { ...context, endedAt: this.#now() };
+			return ended(context, this.#now());
 		});
 		this.#records = this.#records.map((record) => {
 			if (
@@ -354,6 +414,44 @@ export class FailureService {
 			return { ...context, ...record };
 		});
 		if (changed) void this.#save();
+	}
+
+	/**
+	 * Records a Metro the lane forgot. The lane service drops a recorded PID
+	 * only once it names some other process, and marks the lane stopped in
+	 * the same write, so the stopped lane never lists the PID that went: the
+	 * context it ran under still does. Whether that Metro crashed is not
+	 * known, and the record says so. A Metro RN Devtools asked to stop, or
+	 * whose exit is on record, is not reported.
+	 */
+	#forgotMetro(lane: Lane, previous: LaneContext): boolean {
+		const pid = previous.metroPid;
+		if (
+			lane.metro !== 'stopped' ||
+			lane.metroPid !== undefined ||
+			pid === undefined ||
+			previous.endedAt !== undefined ||
+			previous.stopRequestedAt !== undefined ||
+			this.#expected.has(pid) ||
+			this.#records.some(
+				(record) =>
+					record.metroPid === pid &&
+					(record.kind === 'metro-exit' ||
+						(record.kind === 'lane-lifecycle' && record.laneId === lane.id))
+			)
+		)
+			return false;
+		return this.#add({
+			...this.#context(previous),
+			id: failureId(`metro-missing:${pid}:${lane.id}`),
+			at: this.#now(),
+			kind: 'metro-exit',
+			severity: 'error',
+			title: 'Metro is no longer running',
+			detail:
+				"The stored Metro PID now names another process, so the lane forgot it: its own Metro is gone. Its exit code and signal were not observed by this desktop process; no crash cause is inferred. Check the lane's log and nearby diagnostic reports.",
+			source: 'Lane health check',
+		});
 	}
 
 	observeSimulator(state: SimulatorState): void {
@@ -396,7 +494,8 @@ export class FailureService {
 		try {
 			const result = await readDiagnosticReports(
 				this.#directories,
-				this.#now()
+				this.#now(),
+				this.#reports
 			);
 			let changed = false;
 			for (const record of result.records) {

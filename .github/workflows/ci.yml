@@ -64,15 +64,15 @@ jobs:
           package-manager-cache: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: apps/desktop/native/rndevtools-sim-helper/go.mod
+          go-version: '1.27.4'
           cache-dependency-path: apps/desktop/native/rndevtools-sim-helper/go.mod
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       # These scripts use only Node builtins, so the project's real Go gate
       # (gofmt, vet, race tests, govulncheck, module allowlist), the check that
       # the Swift host's generated HelperVersion.swift matches package.json, and
-      # the SimSlim provenance check run with no install and no secrets. Fork
-      # contributors get the same coverage as maintainers.
+      # the SimSlim and go-toml provenance checks run with no install and no
+      # secrets. Fork contributors get the same coverage as maintainers.
       - name: Go helper checks
         working-directory: apps/desktop
         run: node scripts/check-native-helpers.mjs --go
@@ -89,6 +89,9 @@ jobs:
       - name: Vendored SimSlim provenance
         working-directory: apps/desktop
         run: node --test scripts/verify-vendored-simslim.node-test.mjs
+      - name: Vendored go-toml provenance
+        working-directory: apps/desktop
+        run: node --test scripts/verify-vendored-go-toml.node-test.mjs
 
   desktop:
     name: Desktop

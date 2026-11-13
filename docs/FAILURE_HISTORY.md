@@ -17,6 +17,10 @@ are shown in the UI. Unreadable history is preserved instead of overwritten.
 A resource diagnostic (for example, CoreSimulator disk writes with “Action taken:
 none”) is shown as a warning, not proof of a crash. A disappeared Metro adopted
 from an earlier desktop session has an unknown exit code/signal; the UI says so.
+So does one whose recorded PID now names another process, as after a reboot:
+the lane forgets that PID, and the history still records its Metro as gone.
+A Metro that RN Devtools asked to stop is not reported as missing: the request
+is kept with its lane's context, not among the latest 200 events.
 An OS crash is evidence to investigate, not proof that application code is wrong.
 Reports are associated with a known lane only within its observed lifetime.
 Failed simulator operations use the operation's start time for association, even
@@ -27,9 +31,26 @@ unknown lane lifetimes remain unassigned; choose the project explicitly.
 
 Install Codex CLI or Claude Code, then sign in with **ChatGPT** or **Claude.ai**.
 Track the relevant repository in Lanes. Select the failure, registered project,
-and client. **Investigate** opens read-only/plan mode; **Fix with Codex/Claude**
-opens the normal interactive coding mode with the client's approval prompts.
-A native confirmation shows the project and action before Terminal opens.
+and client. **Investigate** opens Codex in a read-only sandbox, or Claude Code in
+plan mode, which edits no file. **Fix with Codex/Claude** lets the client edit
+the project, but it asks before each edit and each command not already allowed:
+Codex runs with `--sandbox workspace-write --ask-for-approval untrusted`, so
+only its read-only commands and those your Codex rules allow run unasked, and
+Claude Code runs in its default (manual) permission mode, so only what your
+Claude Code permission rules allow runs unasked.
+
+A native confirmation comes first, with **Cancel** as the default button, so
+Return never opens a session. It shows the failure, the project and the action,
+and lists what the prompt sends, as untrusted evidence, and to whom (OpenAI for
+Codex, Anthropic for Claude Code):
+
+- the failure's title, kind, time, source and detail, with its lane, port and
+  Simulator when known;
+- the Metro log tail, when the failure carries one: up to 8 KB of the lane's
+  Metro output, redacted, including the app's own console logs;
+- for a crash report, its fields and stack symbol names, which the crashing app
+  can influence;
+- the project path.
 
 RN Devtools verifies the client's subscription login, clears inherited API-key,
 provider, and stale session overrides, and passes the diagnostic as quoted data

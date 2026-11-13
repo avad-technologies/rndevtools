@@ -336,6 +336,7 @@ describe.skipIf(!enabled)('Supabase service against a real CLI', () => {
 			await engine.refreshList();
 			const managed = live(engine);
 			for (const stackId of managed) {
+				if (stackOf(stackId)?.state === 'stopped') continue;
 				try {
 					await run({ kind: 'stop', stackIds: [stackId] });
 				} catch (error) {
@@ -439,6 +440,9 @@ describe.skipIf(!enabled)('Supabase service against a real CLI', () => {
 			await run({ kind: 'unpin', stackId });
 			await run({ kind: 'reset', stackId, seed: true }, CONFIRMED);
 			expect(stackOf(stackId)?.state).toBe('running');
+			// Reset requires an unpinned stack. Keep this fixture alive again:
+			// preparing the second stack can outlast the unheld stop delay.
+			await run({ kind: 'pin', stackId });
 		},
 		START_TIMEOUT_MS
 	);
@@ -495,6 +499,18 @@ describe.skipIf(!enabled)('Supabase service against a real CLI', () => {
 			expect(summary.status).toBe('ready');
 			expect(summary.stackId).toBe(await stackIdOf(worktree));
 			expect(summary.stackId).not.toBe(await stackIdOf(repository));
+			const first = stackOf(await stackIdOf(repository));
+			const second = stackOf(await stackIdOf(worktree));
+			for (const stack of [first, second]) {
+				expect(stack).toMatchObject({
+					state: 'running',
+					runtime: 'native',
+					exposure: { verdict: 'loopback' },
+					ports: { api: expect.any(Number), db: expect.any(Number) },
+				});
+			}
+			expect(second?.ports.api).not.toBe(first?.ports.api);
+			expect(second?.ports.db).not.toBe(first?.ports.db);
 			const env = result.laneEnv ?? (await result.lateAttach)?.laneEnv ?? {};
 			expect(env.EXPO_PUBLIC_SUPABASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/);
 			expect(JSON.stringify(env)).not.toMatch(/sb_secret_|postgres/);

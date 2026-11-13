@@ -207,12 +207,19 @@ func TestAgentHealthFailedWriteKeepsRecoverablePreparedReceipt(t *testing.T) {
 	if err = os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = UndoAgentFix(options, plan.ID); err != nil {
+	report, err := UndoAgentFix(options, plan.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	j, err = healthLoad(options, plan.ID)
-	if err != nil || j.Receipt.Status != "undone" {
-		t.Fatalf("recovery not completed: %+v %v", j.Receipt, err)
+	// Recovered: the record, and its copy of the original file, are gone,
+	// and the repair is no longer offered for undo.
+	if _, err = healthLoad(options, plan.ID); err == nil {
+		t.Fatal("recovery kept the repair record")
+	}
+	for _, repair := range report.Repairs {
+		if repair.ID == plan.ID {
+			t.Fatalf("recovered repair still listed: %+v", repair)
+		}
 	}
 	if string(mustRead(t, file)) != original {
 		t.Fatal("recovery changed untouched configuration")

@@ -12,6 +12,7 @@ import {
 	laneSchema,
 	laneSlimSummary,
 	laneStateSchema,
+	opensLaneDevClient,
 } from './lane-protocol';
 
 const UDID = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
@@ -203,6 +204,68 @@ describe('lane backends on the wire', () => {
 		});
 		expect(state.deviceRequests[0]?.backend).toBe('required');
 	});
+
+	it('takes restart on lane.start and lane.launch, and leaves an omitted one omitted', () => {
+		expect(
+			laneOperationSchema.parse({
+				actionId: 'op-1',
+				kind: 'lane.start',
+				worktreePath: '/Users/dev/app',
+				restart: true,
+			})
+		).toMatchObject({ kind: 'lane.start', launch: true, restart: true });
+		expect(
+			laneOperationSchema.parse({
+				actionId: 'op-2',
+				kind: 'lane.launch',
+				laneId: lane().id,
+				url: 'checkout',
+				restart: true,
+			})
+		).toMatchObject({ kind: 'lane.launch', url: 'checkout', restart: true });
+		for (const kind of ['lane.start', 'lane.launch'] as const) {
+			expect(
+				laneOperationSchema.parse({
+					actionId: 'op-3',
+					kind,
+					...(kind === 'lane.start'
+						? { worktreePath: '/Users/dev/app' }
+						: { laneId: lane().id }),
+				})
+			).not.toHaveProperty('restart');
+		}
+		for (const kind of ['lane.stop', 'lane.log'] as const) {
+			expect(
+				laneOperationSchema.safeParse({
+					actionId: 'op-4',
+					kind,
+					laneId: lane().id,
+					restart: true,
+				}).success
+			).toBe(false);
+		}
+	});
+
+	it('keeps an asked-for restart on a parked device request', () => {
+		const state = laneStateSchema.parse({
+			...emptyState,
+			deviceRequests: [
+				{
+					id: 'device-request-1',
+					status: 'pending',
+					requestedAt: 1,
+					updatedAt: 1,
+					message: 'All 2 available Simulators are in use.',
+					worktreePath: '/Users/dev/app-feature-c',
+					branch: 'feature-c',
+					environment: 'development',
+					launch: true,
+					restart: true,
+				},
+			],
+		});
+		expect(state.deviceRequests[0]?.restart).toBe(true);
+	});
 });
 
 describe('laneDevClientLaunchUrl', () => {
@@ -211,6 +274,40 @@ describe('laneDevClientLaunchUrl', () => {
 		expect(url).toBe(
 			'exampleapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8123&disableOnboarding=1&disableAutoLaunch=1'
 		);
+	});
+});
+
+describe('opensLaneDevClient', () => {
+	it("reads a dev-client URL in any scheme that points at the lane's Metro", () => {
+		expect(
+			opensLaneDevClient(laneDevClientLaunchUrl('exp+example', 8_100), 8_100)
+		).toBe(true);
+		expect(
+			opensLaneDevClient(
+				'exp+example://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8100',
+				8_100
+			)
+		).toBe(true);
+		expect(
+			opensLaneDevClient(
+				'EXP+Example://Expo-Development-Client/?url=http://127.0.0.1:8100',
+				8_100
+			)
+		).toBe(true);
+	});
+
+	it("reads anything else as a deep link, another Metro's dev-client URL included", () => {
+		for (const url of [
+			laneDevClientLaunchUrl('exp+example', 8_101),
+			'exp+example://expo-development-client/?url=http%3A%2F%2F192.168.1.5%3A8100',
+			'exp+example://expo-development-client/',
+			'exp+example://expo-development-client/?url=not%20a%20url',
+			'exampleapp://checkout?url=http%3A%2F%2F127.0.0.1%3A8100',
+			'https://example.com/expo-development-client/?url=http://127.0.0.1:8100',
+			'not a url',
+		]) {
+			expect(opensLaneDevClient(url, 8_100)).toBe(false);
+		}
 	});
 });
 

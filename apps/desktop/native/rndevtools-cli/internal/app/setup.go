@@ -30,14 +30,16 @@ for Simulators instead of raw simctl:
     agent discovers skills
   * adds hooks for Claude Code (~/.claude/settings.json) and Codex
     (~/.codex/hooks.json): PreToolUse redirects simctl boot/shutdown/openurl/
-    install/launch/io and hand-started Metro to rndevtools and, while local
-    Supabase is turned on in RN Devtools, keeps hand-run supabase commands
-    native and off other agents' stacks; SessionEnd releases the session's
-    lanes, claims, and stacks. Codex runs new hooks only after you trust them
-    once with /hooks
+    install/launch/terminate/io and hand-started Metro to rndevtools and,
+    while local Supabase is turned on in RN Devtools, keeps hand-run supabase
+    commands native and off other agents' stacks; SessionEnd releases the
+    session's lanes, claims, and stacks. Codex runs new hooks only after you
+    trust them once with /hooks
   * with --project, also installs the skills into that repository and adds an
     "iOS Simulators" block to its AGENTS.md, plus a "Local Supabase"
-    paragraph when the project has supabase/config.toml
+    paragraph when the project has supabase/config.toml, and for Claude Code,
+    which reads CLAUDE.md, a CLAUDE.md that imports it (@AGENTS.md) when the
+    project has none
 
 Everything is idempotent and additive; unknown configuration is preserved.
 Finishes with the doctor check so a mis-registered path shows up now.
@@ -50,6 +52,9 @@ Flags:
   --dry-run                          Print the plan; change nothing.
   --no-link                          Do not touch ~/.local/bin.
   --no-hook                          Do not install the agent hooks.
+  --no-doctor                        Skip the closing doctor check (for tests:
+                                     it dials the desktop under your real
+                                     home, whatever --config-home says).
   --executable <path>                Register this binary instead of the
                                      running one (for packaged installs).
   --config-home <dir>                Absolute configuration home (for testing).
@@ -63,6 +68,7 @@ func runSetup(config Config) int {
 	dryRun := flags.Bool("dry-run", false, "")
 	noLink := flags.Bool("no-link", false, "")
 	noHook := flags.Bool("no-hook", false, "")
+	noDoctor := flags.Bool("no-doctor", false, "")
 	executable := flags.String("executable", "", "")
 	configHome := flags.String("config-home", "", "")
 	help := flags.Bool("help", false, "")
@@ -123,7 +129,10 @@ func runSetup(config Config) int {
 		writeLocalError(config.Stderr, "setup_failed", err.Error(), false, "", "")
 		return ExitInternal
 	}
-	health := setupDoctor(config)
+	health := map[string]any{"ok": false, "skipped": true, "message": "The desktop connection check was skipped (--no-doctor)."}
+	if !*noDoctor {
+		health = setupDoctor(config)
+	}
 	after, _ := setup.CheckAgents(checkOptions)
 	writeJSON(config.Stdout, map[string]any{
 		"dryRun":              *dryRun,
@@ -217,7 +226,10 @@ JSON payload on stdin.
 
   pre-tool-use   Exit 2 (block, reason on stderr) when a Bash command drives a
                  Simulator around RN Devtools: simctl boot/shutdown/openurl/
-                 install/launch/io and friends, or a hand-started Metro.
+                 install/launch/terminate/io and friends, or a hand-started
+                 Metro (expo start, a bare npx expo, which Expo runs as start,
+                 expo run:ios without --no-bundler, or a package script such
+                 as npm start that runs one of those).
                  While local Supabase is turned on in RN Devtools (steering.json
                  in the agent socket directory says so), it also blocks
                  commands that reach other agents' stacks (stop --all, a stop
@@ -228,7 +240,10 @@ JSON payload on stdin.
                  rndevtools supabase. Anything it cannot read runs.
   session-end    Release everything the ending session holds: stop its lanes,
                  drop its claims, release its stacks. Devices return to the
-                 pool at once instead of after the grace period.
+                 pool at once; without it a Claude Code session's holds go
+                 10 minutes after its process exits, and those of a Codex
+                 session, or of one known only by RNDEVTOOLS_AGENT_SESSION_ID,
+                 stay until it releases them.
 
 Any other event exits 0 with a note on stderr: only a block exits 2.
 `

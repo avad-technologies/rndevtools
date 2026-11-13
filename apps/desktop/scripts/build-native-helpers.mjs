@@ -16,6 +16,7 @@ import {
 	nativeHostVersionDrift,
 	syncNativeHostVersionSource,
 } from './native-host-version.mjs';
+import { verifyVendoredGoToml } from './verify-vendored-go-toml.mjs';
 import {
 	SIMSLIM_PATCH_SET,
 	SIMSLIM_PATCH_SHA256,
@@ -49,6 +50,7 @@ const packageManifest = JSON.parse(
 );
 const catalogVersion = 'simslim-v0.14.0-7e374b38-rndevtools.1-presets.3';
 verifyVendoredSimSlim(goPackage);
+verifyVendoredGoToml(cliPackage);
 // The Go helpers take the version through -ldflags below; the Swift host
 // compiles it from a committed generated source. Regenerate that source before
 // hashing the source identity so no build yields a host whose handshake
@@ -336,6 +338,7 @@ function nativeSourceIdentity() {
 			'--',
 			'native',
 			'scripts/build-native-helpers.mjs',
+			'scripts/verify-vendored-go-toml.mjs',
 			'scripts/verify-vendored-simslim.mjs',
 		],
 		desktopDirectory,
@@ -347,6 +350,7 @@ function nativeSourceIdentity() {
 		cliPackage,
 		swiftPackage,
 		resolve(scriptDirectory, 'build-native-helpers.mjs'),
+		resolve(scriptDirectory, 'verify-vendored-go-toml.mjs'),
 		resolve(scriptDirectory, 'verify-vendored-simslim.mjs'),
 	]);
 	return `${commit}-dirty:${digest}`;

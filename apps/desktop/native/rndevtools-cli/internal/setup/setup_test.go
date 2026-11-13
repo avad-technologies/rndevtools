@@ -320,6 +320,148 @@ func TestProjectModeInstallsSkillAndAgentsBlock(t *testing.T) {
 	}
 }
 
+func TestProjectModeRoutesClaudeCodeToTheAgentsBlock(t *testing.T) {
+	// Claude Code reads a project's CLAUDE.md, not its AGENTS.md. A project
+	// without one gets a CLAUDE.md that only imports AGENTS.md; a CLAUDE.md
+	// the project has stays as it is, its block (if it carries one) kept
+	// current, also beside an import of AGENTS.md, since Claude Code reads
+	// both, and setup says what to add when it neither imports AGENTS.md nor
+	// carries the block.
+	home := t.TempDir()
+	run := func(project string, write bool, agents ...Agent) Change {
+		t.Helper()
+		options := Options{Home: home, Executable: "/x/rndevtools", Project: project, Agents: agents, SkipLink: true, SkipHook: true}
+		report, err := Plan(options)
+		if write {
+			report, err = Apply(options)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range report.Changes {
+			if change.Path == filepath.Join(project, "CLAUDE.md") {
+				return change
+			}
+		}
+		return Change{}
+	}
+	fresh := filepath.Join(home, "fresh")
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claude := filepath.Join(fresh, "CLAUDE.md")
+	if change := run(fresh, false, AgentClaude); change.Action != "create" || exists(claude) {
+		t.Fatalf("a plan lists the import and writes nothing: %+v", change)
+	}
+	if change := run(fresh, true, AgentCodex); change.Action != "" || exists(claude) {
+		t.Fatalf("without Claude Code there is no CLAUDE.md to write: %+v", change)
+	}
+	if change := run(fresh, true, AgentClaude, AgentCodex); change.Action != "create" || string(mustRead(t, claude)) != "@AGENTS.md\n" {
+		t.Fatalf("a project without CLAUDE.md gets one importing AGENTS.md: %+v", change)
+	}
+	if change := run(fresh, true, AgentClaude); change.Action != "unchanged" {
+		t.Fatalf("a rerun leaves the import alone: %+v", change)
+	}
+	// A CLAUDE.md setup cannot read fails nothing else.
+	unreadable := filepath.Join(home, "unreadable")
+	if err := os.MkdirAll(filepath.Join(unreadable, "CLAUDE.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if change := run(unreadable, true, AgentClaude); change.Action != "skip" || !strings.Contains(change.Detail, "@AGENTS.md") || !exists(filepath.Join(unreadable, "AGENTS.md")) {
+		t.Fatalf("an unreadable CLAUDE.md is skipped: %+v", change)
+	}
+	stale := "<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n"
+	for name, row := range map[string]struct{ content, action, detail string }{
+		"an import":          {"# Example app\n\n@./AGENTS.md\n", "unchanged", ""},
+		"no import":          {"# Example app\n\nOur own rules.\n", "skip", "@AGENTS.md"},
+		"a block of its own": {"# Example app\n\n" + stale, "update", ""},
+		// Claude Code reads a block beside the import as well as the one it
+		// imports, so a stale one is updated, and markers setup cannot pair
+		// are reported, as without the import.
+		"an import and a stale block":    {"# Example app\n\n@AGENTS.md\n\n" + stale, "update", ""},
+		"an import and a current block":  {"# Example app\n\n@AGENTS.md\n\n" + AgentsBlock(""), "unchanged", "block already current"},
+		"an import and unpaired markers": {"# Example app\n\n@AGENTS.md\n\n<!-- rndevtools:start -->\nold\n", "skip", "do not pair up"},
+	} {
+		project := filepath.Join(home, strings.ReplaceAll(name, " ", "-"))
+		file := filepath.Join(project, "CLAUDE.md")
+		write(t, file, row.content)
+		change := run(project, true, AgentClaude)
+		if change.Action != row.action || !strings.Contains(change.Detail, row.detail) {
+			t.Errorf("%s: %+v, want %s", name, change, row.action)
+		}
+		got := string(mustRead(t, file))
+		if row.action == "update" {
+			if want := strings.Replace(row.content, stale, AgentsBlock(project), 1); got != want {
+				t.Errorf("%s: the block must be replaced in place and the rest kept:\n%s", name, got)
+			}
+		} else if got != row.content {
+			t.Errorf("%s: CLAUDE.md was rewritten:\n%s", name, got)
+		}
+	}
+}
+
+func TestProjectModeLeavesAClaudeMDThatLinksOutsideTheProject(t *testing.T) {
+	// A project's CLAUDE.md may be a link the repository committed. One that
+	// resolves outside the project, such as to the user's own
+	// ~/.claude/CLAUDE.md, would carry this project's block into every
+	// project that reads that file, so setup leaves it and names the file,
+	// as agent-check refuses its project repairs there. A link inside the
+	// project is written through, as before.
+	home := t.TempDir()
+	run := func(project string, write bool) Change {
+		t.Helper()
+		options := Options{Home: home, Executable: "/x/rndevtools", Project: project, Agents: []Agent{AgentClaude}, SkipLink: true, SkipHook: true}
+		report, err := Plan(options)
+		if write {
+			report, err = Apply(options)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range report.Changes {
+			if change.Path == filepath.Join(project, "CLAUDE.md") {
+				return change
+			}
+		}
+		return Change{}
+	}
+	stale := "<!-- rndevtools:start -->\nold\n<!-- rndevtools:end -->\n"
+	user := filepath.Join(home, ".claude", "CLAUDE.md")
+	write(t, user, "# Mine\n\n"+stale)
+	project := filepath.Join(home, "code", "example-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(user, filepath.Join(project, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	for _, write := range []bool{false, true} {
+		change := run(project, write)
+		if change.Action != "skip" || !strings.Contains(change.Detail, "outside the project") || !strings.Contains(change.Detail, "CLAUDE.md") {
+			t.Errorf("write %v: a CLAUDE.md that resolves outside the project must be left: %+v", write, change)
+		}
+		if got := string(mustRead(t, user)); got != "# Mine\n\n"+stale {
+			t.Fatalf("write %v: the file outside the project was rewritten:\n%s", write, got)
+		}
+	}
+	if !exists(filepath.Join(project, "AGENTS.md")) {
+		t.Fatal("the project's own AGENTS.md block is still written")
+	}
+	// A link inside the project, even under a temporary directory that is
+	// itself reached through a link, is the project's own file.
+	inside := filepath.Join(home, "code", "linked-app")
+	write(t, filepath.Join(inside, "docs", "CLAUDE.md"), "# Example app\n\n"+stale)
+	if err := os.Symlink(filepath.Join("docs", "CLAUDE.md"), filepath.Join(inside, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	if change := run(inside, true); change.Action != "update" {
+		t.Fatalf("a CLAUDE.md linked inside the project is kept current: %+v", change)
+	}
+	if got := string(mustRead(t, filepath.Join(inside, "docs", "CLAUDE.md"))); got != "# Example app\n\n"+AgentsBlock(inside) {
+		t.Fatalf("the block must be written through the link:\n%s", got)
+	}
+}
+
 func TestEveryEmbeddedSkillIsInstalled(t *testing.T) {
 	names := skillNames()
 	if len(names) != 2 || names[0] != "rndevtools-lanes" || names[1] != "rndevtools-supabase" {
@@ -338,7 +480,7 @@ func TestEveryEmbeddedSkillIsInstalled(t *testing.T) {
 	supabase, _ := skillFiles.ReadFile("skills/rndevtools-supabase/SKILL.md")
 	for _, phrase := range []string{
 		"Supabase", "local database", "Postgres", "migration", "seed", "reset", "Studio", "logs",
-		`rndevtools supabase --operation up --worktree "$PWD"`, "lane up", "--local",
+		`rndevtools supabase --operation up --worktree "$PWD"`, "`lane --operation up`", "--local",
 		"--runtime native", "release --all", "Create or switch to your git branch first",
 		"Never start or stop Supabase by hand while RN Devtools manages",
 	} {
@@ -400,9 +542,9 @@ func TestAgentTextsAgreeOnAStartingBackendWithoutAJobId(t *testing.T) {
 		tools[tool.Name] = flat(tool.Description)
 	}
 	for _, row := range []struct{ text, name, phrase string }{
-		{skill("rndevtools-lanes"), "the lanes skill", "has none: wait a few seconds, then call `lane up` again"},
+		{skill("rndevtools-lanes"), "the lanes skill", "has none: wait a few seconds, then call `lane --operation up` again"},
 		{skill("rndevtools-supabase"), "the supabase skill", "has no `jobId`: wait a few seconds, then call `up` again"},
-		{tools["lane"], "the lane tool", "without one call lane up again in a few seconds"},
+		{tools["lane"], "the lane tool", "without one call up again in a few seconds"},
 		{tools["supabase"], "the supabase tool", "without one (the start is queued behind RN Devtools' own automatic start) call up again in a few seconds"},
 	} {
 		if !strings.Contains(row.text, row.phrase) {
@@ -444,8 +586,9 @@ func TestAgentsBlockAddsLocalSupabaseOnlyForSupabaseProjects(t *testing.T) {
 		}
 		agents, _ := os.ReadFile(filepath.Join(project, "AGENTS.md"))
 		block := string(agents)
-		for _, phrase := range []string{"## iOS Simulators", "## Local Supabase", "`" + runner + " start --runtime native`", "`supabase stop --all`", "`supabase status --env`", "`lane up`"} {
-			if !strings.Contains(block, phrase) {
+		flat := strings.Join(strings.Fields(block), " ")
+		for _, phrase := range []string{"## iOS Simulators", "## Local Supabase", "`" + runner + " start --runtime native`", "`supabase stop --all`", "`supabase status --env`", "or `rndevtools lane --operation up --worktree <app directory>`, which connects the app"} {
+			if !strings.Contains(flat, phrase) {
 				t.Fatalf("%s: AGENTS.md lacks %q:\n%s", lockfile, phrase, block)
 			}
 		}

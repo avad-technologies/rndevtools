@@ -26,6 +26,7 @@ import type {
 	SimulatorState,
 } from '../shared/simulator-protocol';
 import {
+	MAX_SIMULATOR_JOB_WARNINGS,
 	simulatorActionSchema,
 	simulatorStateSchema,
 	udidSchema,
@@ -184,6 +185,20 @@ function errorText(error: unknown): string {
 	return redactDiagnosticText(source)
 		.replaceAll(/([a-z][a-z0-9+.-]*:\/\/[^\s?]+)\?[^\s]*/gi, '$1?<redacted>')
 		.slice(0, MAX_JOB_ERROR_LENGTH);
+}
+
+/**
+ * Whether `simctl terminate` failed only because the app was not running.
+ * The Simulator's FrontBoard refuses that request with "found nothing to
+ * terminate", which simctl prints in the error it writes to stderr; a
+ * cancelled or timed-out command never counts.
+ */
+function foundNothingToTerminate(error: unknown): boolean {
+	return (
+		error instanceof SimulatorCommandError &&
+		error.kind === 'failed' &&
+		/found nothing to terminate/i.test(`${error.stderr}\n${error.stdout}`)
+	);
 }
 
 function actionDeviceUdid(action: SimulatorAction): string | undefined {
@@ -1027,15 +1042,34 @@ export class SimulatorService {
 			message: 'Running simulator action…',
 		};
 		this.#touch();
+		// Published as soon as it is recorded, so whatever the job ends in
+		// carries it.
+		const onWarning = (warning: string) => {
+			const warnings = job.public.warnings ?? [];
+			if (warnings.length >= MAX_SIMULATOR_JOB_WARNINGS) return;
+			job.public = { ...job.public, warnings: [...warnings, warning] };
+			this.#touch();
+		};
 		try {
 			const capture = mutatesInventory(action)
 				? await this.#withInventoryMutation(job.controller.signal, () =>
-						this.#execute(action, context, job.controller.signal, (udid) => {
-							job.public = { ...job.public, deviceUdid: udid };
-							this.#touch();
-						})
+						this.#execute(
+							action,
+							context,
+							job.controller.signal,
+							onWarning,
+							(udid) => {
+								job.public = { ...job.public, deviceUdid: udid };
+								this.#touch();
+							}
+						)
 					)
-				: await this.#execute(action, context, job.controller.signal);
+				: await this.#execute(
+						action,
+						context,
+						job.controller.signal,
+						onWarning
+					);
 			if (job.controller.signal.aborted) {
 				job.public = {
 					...job.public,
@@ -1149,6 +1183,50 @@ export class SimulatorService {
 		return result.stdout;
 	}
 
+	/**
+	 * Lets `simctl openurl` open `url` in `bundleIdentifier` without iOS first
+	 * asking "Open in …?", as `expo run:ios` does for its dev client. iOS keeps
+	 * that answer per scheme for CoreSimulatorBridge, the process openurl goes
+	 * through, in the device's launch-services scheme approvals. The device's
+	 * own `defaults` (found on its PATH, not the host's) writes it, so a
+	 * preferences daemon that already read the domain sees the change. This is
+	 * best effort: if the write fails the URL still opens and iOS asks. The
+	 * failure comes back as a warning for the job, without the URL, which may
+	 * carry a token, so that iOS asking after a clean write reads as iOS
+	 * ignoring the approval rather than the write failing.
+	 */
+	async #approveUrlScheme(
+		udid: string,
+		url: string,
+		bundleIdentifier: string,
+		signal: AbortSignal
+	): Promise<string | undefined> {
+		const scheme = new URL(url).protocol.slice(0, -1);
+		try {
+			await this.#run(
+				[
+					'spawn',
+					udid,
+					'defaults',
+					'write',
+					'com.apple.launchservices.schemeapproval',
+					`com.apple.CoreSimulator.CoreSimulatorBridge-->${scheme}`,
+					'-string',
+					bundleIdentifier,
+				],
+				signal,
+				{ timeoutMs: 15_000 }
+			);
+			return undefined;
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return `The ${scheme} URL scheme could not be approved for ${bundleIdentifier} (${errorText(error)}), so iOS may ask "Open in …?" before the app opens.`.slice(
+				0,
+				MAX_JOB_ERROR_LENGTH
+			);
+		}
+	}
+
 	async #refreshInventory(signal: AbortSignal): Promise<void> {
 		this.#inventory = await this.#provider.inventory(signal);
 	}
@@ -1161,6 +1239,8 @@ export class SimulatorService {
 		action: SimulatorAction,
 		context: SimulatorActionContext,
 		signal: AbortSignal,
+		/** Records what a best-effort step could not do; the action goes on. */
+		onWarning: (warning: string) => void,
 		onCreated?: (udid: string) => void
 	): Promise<SimulatorCapture | undefined> {
 		if (action.kind === 'device.create') {
@@ -1489,10 +1569,15 @@ export class SimulatorService {
 			return undefined;
 		}
 		if (action.kind === 'app.terminate') {
-			await this.#run(
-				['terminate', action.udid, action.bundleIdentifier],
-				signal
-			);
+			try {
+				await this.#run(
+					['terminate', action.udid, action.bundleIdentifier],
+					signal
+				);
+			} catch (error) {
+				// An app that is not running is already where a terminate leaves it.
+				if (!foundNothingToTerminate(error)) throw error;
+			}
 			return undefined;
 		}
 		if (action.kind === 'app.openUniversalLink') {
@@ -1553,6 +1638,15 @@ export class SimulatorService {
 			return undefined;
 		}
 		if (action.kind === 'url.open') {
+			if (action.bundleIdentifier) {
+				const warning = await this.#approveUrlScheme(
+					action.udid,
+					action.url,
+					action.bundleIdentifier,
+					signal
+				);
+				if (warning) onWarning(warning);
+			}
 			await this.#run(['openurl', action.udid, action.url], signal);
 			return undefined;
 		}

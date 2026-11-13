@@ -38,6 +38,8 @@ export class LaneStore {
 	readonly #file: string;
 	#data: StoredLanes = { version: 1, lanes: [], repositories: [] };
 	#writeQueue: Promise<void> = Promise.resolve();
+	/** The last write failed, so lanes.json is behind what is held here. */
+	#unsaved = false;
 
 	constructor(root: string) {
 		this.#root = path.resolve(root);
@@ -172,6 +174,17 @@ export class LaneStore {
 		return true;
 	}
 
+	/**
+	 * Writes lanes.json again when the last write failed. A change is held
+	 * here before it is written and is not taken back when the write fails,
+	 * so without this it stays unsaved until some later change writes the
+	 * file, which may never come. Rejects while the disk still refuses it.
+	 */
+	async flush(): Promise<void> {
+		await this.#writeQueue.catch(() => undefined);
+		if (this.#unsaved) await this.#persist();
+	}
+
 	async #quarantine(): Promise<void> {
 		await rename(this.#file, `${this.#file}.corrupt-${Date.now()}`).catch(
 			() => undefined
@@ -180,9 +193,20 @@ export class LaneStore {
 
 	#persist(): Promise<void> {
 		const snapshot = JSON.stringify(this.#data, null, '\t');
-		this.#writeQueue = this.#writeQueue
+		const write = this.#writeQueue
 			.catch(() => undefined)
 			.then(() => writeFileAtomic(this.#file, snapshot, 'lanes'));
-		return this.#writeQueue;
+		this.#writeQueue = write;
+		// Writes settle in order and each one holds the whole file, so the
+		// last to settle says whether lanes.json matches what is held here.
+		write.then(
+			() => {
+				this.#unsaved = false;
+			},
+			() => {
+				this.#unsaved = true;
+			}
+		);
+		return write;
 	}
 }

@@ -118,8 +118,9 @@ var commandFields = map[protocol.Command][]fieldSpec{
 		{flagName: "environment", path: []string{"environment"}, kind: fieldString, usage: "Lane environment id; selects the Metro port range (up)."},
 		{flagName: "preferred-port", path: []string{"preferredPort"}, kind: fieldInteger, usage: "Specific Metro port inside the environment range (up)."},
 		{flagName: "launch", path: []string{"launch"}, kind: fieldBoolean, usage: "Open the dev client once Metro is ready (up; default true)."},
+		{flagName: "restart", path: []string{"restart"}, kind: fieldBoolean, usage: "Terminate the lane's app on its Simulator before the dev client (or url) opens, so it starts fresh with this lane's Metro alone (up, launch); a terminate that fails fails the launch. A lane does that on its first dev-client launch by itself, as far as it can (the result's warnings say when it could not, or, for a launch held back for the local backend, only the lane's log); pass restart when a lane whose dev client already opened resumes or relaunches an app another lane or a person started: a dev client only re-pointed at a new Metro stays registered as a debug target on the Metro it came from. launch with a deep-link url and without restart keeps the app's state and leaves that first restart to the next dev-client launch; a url that opens the dev client against this lane's Metro is that dev-client launch, as for a lane started without a URL scheme. Needs ios.bundleIdentifier in the worktree's app.json when the lane starts."},
 		{flagName: "slim", path: []string{"slimProfileId"}, kind: fieldString, usage: "SimSlim profile to apply to the Simulator before Metro starts (up). Applied when SimSlim is enabled in RN Devtools and the device is free or yours; otherwise lane.slim says why it was skipped."},
-		{flagName: "backend", path: []string{"backend"}, kind: fieldString, usage: "This worktree's local Supabase (up): auto (the development default) starts it when RN Devtools manages the worktree's Supabase project and hands Metro its URL and publishable key; required fails the lane when it cannot start; off skips it. lane.backend in the result says ready, starting (the app launches once it is ready; follow its jobId with wait when it has one, otherwise call lane up again in a few seconds), skipped, shadowed (the app's own .env files override the URL), refused, or failed, and why."},
+		{flagName: "backend", path: []string{"backend"}, kind: fieldString, usage: "This worktree's local Supabase (up): auto (the development default) starts it when RN Devtools manages the worktree's Supabase project and hands Metro its URL and publishable key; required fails the lane when it cannot start; off skips it. lane.backend in the result says ready, starting (the app launches once it is ready; follow its jobId with wait when it has one, otherwise call up again in a few seconds), skipped, shadowed (the app's own .env files override the URL), refused, or failed, and why."},
 		{flagName: "lane-id", path: []string{"laneId"}, kind: fieldString, usage: "Lane identifier (down, launch, log)."},
 		{flagName: "url", path: []string{"url"}, kind: fieldString, usage: "Path or full URL to open through the lane scheme (launch)."},
 		{flagName: "max-characters", path: []string{"maxCharacters"}, kind: fieldInteger, usage: "Log tail size (log; 256..64000)."},
@@ -163,7 +164,7 @@ var commandFields = map[protocol.Command][]fieldSpec{
 	protocol.CommandNative: {
 		{flagName: "operation", path: []string{"operation"}, kind: fieldString, usage: "plan (fingerprint + cache + installed state, builds nothing) or install (put a cached binary on the Simulator)."},
 		{flagName: "worktree", path: []string{"worktreePath"}, kind: fieldString, usage: "Absolute path of the Expo app directory to fingerprint.", cwdRelative: true},
-		{flagName: "udid", path: []string{"udid"}, kind: fieldString, usage: "Simulator UDID to check or install on (required for install)."},
+		{flagName: "udid", path: []string{"udid"}, kind: fieldString, usage: "Simulator UDID to check or install on (required for install). plan leaves installed out when this Simulator's apps cannot be listed: it is not booted, or the listing failed."},
 		{flagName: "configuration", path: []string{"configuration"}, kind: fieldString, usage: "Debug (default) or Release."},
 	},
 }
@@ -227,6 +228,10 @@ func ParseWithEnvironment(
 	}
 	requestTimeout := &optionValue{kind: fieldInteger}
 	flags.Var(requestTimeout, "request-timeout-ms", "CLI socket deadline (100..660000).")
+	fromStdin := &optionValue{kind: fieldBoolean}
+	if len(specs) > 0 {
+		flags.Var(fromStdin, "stdin", stdinUsage)
+	}
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return Parsed{}, ErrHelp
@@ -238,16 +243,26 @@ func ParseWithEnvironment(
 	}
 
 	command := map[string]any{}
-	// A command with no fields (doctor, agents) has nothing to read, so it
-	// never waits for stdin to end: `ssh host rndevtools doctor`, or a parent
-	// that leaves the pipe open, would otherwise hang.
-	readStdin := stdinAvailable && len(specs) > 0
-	if kind == protocol.CommandSimulator && values["operation"].set && values["udid"].set {
-		// An automation parent may leave stdin open. These two flags fully
-		// specify a lifecycle request, so it can start without reading stdin.
-		readStdin = false
+	// Reading stdin waits for it to end, and a parent may never end it: some
+	// agent harnesses run commands with a pipe or a socket for stdin that
+	// stays open, and so does `ssh host rndevtools …`. So stdin is read only
+	// when the command cannot do without it. Field flags are the whole
+	// command, so a command given one never reads stdin. Given none, a
+	// command that needs fields (a bare lane) reads it unless it is a
+	// terminal, and one complete without any (doctor, agents, simulators)
+	// never does. --stdin reads it either way, beside the flags, and
+	// --stdin=false never does.
+	readStdin := stdinAvailable && !completeWithoutFields(kind)
+	for _, value := range values {
+		if value.set {
+			readStdin = false
+			break
+		}
 	}
-	if readStdin {
+	if fromStdin.set {
+		readStdin = fromStdin.value.(bool)
+	}
+	if readStdin && len(specs) > 0 {
 		input, err := readInputObject(stdin)
 		if err != nil {
 			return Parsed{}, err
@@ -295,6 +310,14 @@ func ParseWithEnvironment(
 	return Parsed{Command: encoded, Timeout: timeout}, nil
 }
 
+// completeWithoutFields reports whether `kind` given no field at all is a
+// whole command, as doctor, agents and simulators are: its schema requires
+// none. Such a command never waits on stdin unless --stdin asks.
+func completeWithoutFields(kind protocol.Command) bool {
+	encoded, err := json.Marshal(map[string]string{"kind": string(kind)})
+	return err == nil && Validate(encoded, kind) == nil
+}
+
 // resolveAgainstWorkingDirectory turns a relative path flag (`--worktree .`)
 // into the absolute path the desktop requires. Absolute and empty values pass
 // through unchanged; validation rejects whatever is still not absolute.
@@ -310,20 +333,31 @@ func resolveAgainstWorkingDirectory(value any) any {
 	return absolute
 }
 
+// stdinUsage is the --stdin flag's line in a command's usage.
+const stdinUsage = "Read the JSON command object on stdin beside the field flags; --stdin=false never reads stdin."
+
 func Usage(kind protocol.Command) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Usage: rndevtools %s [flags]\n", kind)
-	if kind == protocol.CommandSimulator {
-		builder.WriteString("Pass --operation and --udid to run without reading stdin. Alternatively, supply the missing\n")
-		builder.WriteString("fields in one JSON command object on stdin and close the input.\n\nFlags:\n")
-	} else if len(commandFields[kind]) == 0 {
+	switch {
+	case len(commandFields[kind]) == 0:
 		builder.WriteString("Takes no fields, so it never reads stdin.\n\nFlags:\n")
-	} else {
-		builder.WriteString("Accepts an optional JSON command object on stdin. Flags and stdin may\n")
-		builder.WriteString("supply different fields; defining the same field twice is rejected.\n\nFlags:\n")
+	case completeWithoutFields(kind):
+		builder.WriteString("It is a whole command without any field, so it reads stdin only with --stdin,\n")
+		builder.WriteString("which reads one JSON command object there, to the end of the input, beside the\n")
+		builder.WriteString("flags (defining the same field twice is rejected).\n\nFlags:\n")
+	default:
+		builder.WriteString("With any field flag below, the flags are the whole command and stdin is never read.\n")
+		builder.WriteString("With none, it reads one JSON command object on stdin, to the end of the input,\n")
+		builder.WriteString("unless stdin is a terminal. --stdin reads that object beside the flags, which may\n")
+		builder.WriteString("add different fields (defining the same field twice is rejected); --stdin=false\n")
+		builder.WriteString("never reads stdin.\n\nFlags:\n")
 	}
 	for _, spec := range commandFields[kind] {
 		fmt.Fprintf(&builder, "  --%-22s %s\n", spec.flagName, spec.usage)
+	}
+	if len(commandFields[kind]) > 0 {
+		fmt.Fprintf(&builder, "  --%-22s %s\n", "stdin", stdinUsage)
 	}
 	builder.WriteString("  --request-timeout-ms   CLI socket deadline (100..660000).\n")
 	return builder.String()

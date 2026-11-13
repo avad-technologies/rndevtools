@@ -1,7 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentCliCommand } from '../shared/agent-cli-protocol';
 import type { AgentOperation, AgentState } from '../shared/agent-protocol';
 import { createDemoDevice } from '../shared/demo-data';
 import {
@@ -374,7 +375,11 @@ describe('agent command router', () => {
 		agentSetup.mockRejectedValueOnce(new Error('private failure detail'));
 		const result = await handler({ kind: 'doctor' }, context);
 		expect(result).toMatchObject({
-			agentSetup: { status: 'not-checked' },
+			agentSetup: {
+				status: 'not-checked',
+				// The path the desktop shows: Lanes, then Agents.
+				message: expect.stringContaining('Lanes → Agents → Agent setup checks'),
+			},
 			broker: { status: 'listening' },
 		});
 		expect(JSON.stringify(result)).not.toContain('private failure detail');
@@ -1769,11 +1774,39 @@ describe('agent command router', () => {
 	});
 
 	describe('native plan and install', () => {
-		/** Simulator port whose app.list/app.install jobs complete and update appsByDevice. */
-		function simulatorWithApps(initial: string[]) {
+		/**
+		 * Simulator port that remembers `initial` as the apps it last listed.
+		 * Its app.list/app.install jobs complete and update appsByDevice. On a
+		 * device that is not booted they fail as the service's do, and so does
+		 * every listing given `listFailure`, leaving the remembered apps.
+		 */
+		function simulatorWithApps(
+			initial: string[],
+			{
+				deviceState = 'booted',
+				listFailure,
+			}: {
+				deviceState?: SimulatorState['devices'][number]['state'];
+				listFailure?: string;
+			} = {}
+		) {
 			let apps = [...initial];
 			const listeners = new Set<(state: SimulatorState) => void>();
-			let state = simulatorState();
+			const listed = () => ({
+				[UDID]: apps.map((bundleIdentifier) => ({
+					bundleIdentifier,
+					displayName: bundleIdentifier,
+					isSystem: false,
+				})),
+			});
+			let state = simulatorStateSchema.parse({
+				...simulatorState(),
+				devices: simulatorState().devices.map((device) => ({
+					...device,
+					state: deviceState,
+				})),
+				appsByDevice: listed(),
+			});
 			const actions: Array<{
 				action: SimulatorAction;
 				context: { selectedPath?: string } | undefined;
@@ -1788,26 +1821,26 @@ describe('agent command router', () => {
 					actions.push({ action, context: actionContext });
 					const jobId = `job-${actions.length}`;
 					queueMicrotask(() => {
-						if (action.kind === 'app.install')
+						const failure =
+							deviceState !== 'booted'
+								? 'Simulator must be booted for this action.'
+								: action.kind === 'app.list'
+									? listFailure
+									: undefined;
+						if (!failure && action.kind === 'app.install')
 							apps = [...apps, 'com.example.app'];
 						state = simulatorStateSchema.parse({
 							...state,
-							appsByDevice: {
-								[UDID]: apps.map((bundleIdentifier) => ({
-									bundleIdentifier,
-									displayName: bundleIdentifier,
-									isSystem: false,
-								})),
-							},
+							...(failure ? {} : { appsByDevice: listed() }),
 							jobs: [
 								{
 									id: jobId,
 									actionId: action.actionId,
 									kind: action.kind,
-									status: 'complete',
+									status: failure ? 'failed' : 'complete',
 									progressSequence: 1,
-									phase: 'complete',
-									message: 'done',
+									phase: failure ? 'failed' : 'complete',
+									message: failure ?? 'done',
 									createdAt: now,
 									finishedAt: now + 1,
 									deviceUdid: UDID,
@@ -1826,23 +1859,36 @@ describe('agent command router', () => {
 			};
 			return { port, actions };
 		}
-		function buildLanes(appPath?: string) {
-			const state: LaneState = {
+		const BUILD_LANE_ID = 'lane-11111111-2222-4333-8444-555555555555';
+		/**
+		 * The worktree's lane, with the identity its app.json gave it when it
+		 * started: by default a bundle identifier and a scheme.
+		 */
+		function buildLanes(
+			appPath?: string,
+			metro: LaneState['lanes'][number]['metro'] = 'ready',
+			identity: { bundleIdentifier?: string; scheme?: string } = {
+				bundleIdentifier: 'com.example.app',
+				scheme: 'exampleapp',
+			}
+		) {
+			let state: LaneState = {
 				revision: 1,
 				updatedAt: now,
 				environments: [...DEFAULT_LANE_ENVIRONMENTS],
 				lanes: [
 					{
-						id: 'lane-11111111-2222-4333-8444-555555555555',
+						id: BUILD_LANE_ID,
 						worktreePath: '/Users/dev/app',
 						...(appPath ? { appPath } : {}),
 						branch: 'main',
 						simulatorUdid: UDID,
 						environment: 'development',
 						port: 8107,
-						metro: 'ready',
+						metro,
 						logPath: '/Users/dev/lane.log',
 						startedAt: now,
+						...identity,
 					},
 				],
 				worktrees: [],
@@ -1854,6 +1900,13 @@ describe('agent command router', () => {
 				refresh: async () => state,
 				runOperation: async (): Promise<LaneOperationReceipt> => {
 					throw new Error('unused');
+				},
+				/** Moves the lane's Metro on, as the lane service's reconcile does. */
+				setMetro: (next: LaneState['lanes'][number]['metro']) => {
+					state = {
+						...state,
+						lanes: state.lanes.map((lane) => ({ ...lane, metro: next })),
+					};
 				},
 			};
 		}
@@ -1953,7 +2006,7 @@ describe('agent command router', () => {
 				context
 			)) as Record<string, unknown>;
 			expect(String(result.recommendation)).toMatch(
-				/expo run:ios --configuration Release --device .* --port 8107 --no-bundler/
+				/expo run:ios --configuration Release --device \S+ --no-bundler`/
 			);
 		});
 
@@ -1982,9 +2035,157 @@ describe('agent command router', () => {
 					context
 				)) as Record<string, unknown>;
 				expect(result.recommendation).toContain(
-					`expo run:ios --device ${UDID} --port 8107 --no-bundler`
+					`\`npx expo run:ios --device ${UDID} --no-bundler\``
+				);
+				expect(result.recommendation).toContain(
+					`lane ${BUILD_LANE_ID}'s Metro on port 8107`
 				);
 				expect(result.recommendation).not.toContain('--configuration Debug');
+			}
+		);
+
+		it('gives a build command Expo CLI accepts, then the restart that points the app at the lane', async () => {
+			// @expo/cli 57 refuses --port with --no-bundler (BAD_ARGS from
+			// build/src/run/resolveBundlerProps.js) before it builds anything, and
+			// with --no-bundler it opens the app it installed against port 8081.
+			// So the build names no port, and a lane launch with restart reopens
+			// the app with the lane's own Metro.
+			const restart = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID} --restart\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler, and the restart reopens it with lane ${BUILD_LANE_ID}'s Metro on port 8107`;
+			const build = `npx expo run:ios --device ${UDID} --no-bundler`;
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const route = (cache: 'miss' | 'no-provider') =>
+				createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(),
+					nativePlan: plan(cache),
+				});
+			const native = {
+				kind: 'native',
+				configuration: 'Debug',
+				worktreePath: '/Users/dev/app',
+				udid: UDID,
+			} as const;
+			const miss = (await route('miss')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(miss.recommendation).toBe(
+				`build: no cached binary for this fingerprint; run \`${build}\` once (the build cache will store it for every other worktree), ${restart}.`
+			);
+			const uncached = (await route('no-provider')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(uncached.recommendation).toBe(
+				`build: this project declares no buildCacheProvider, so every worktree builds; run \`${build}\`, ${restart}.`
+			);
+			await expect(
+				route('miss')({ ...native, operation: 'install' }, context)
+			).rejects.toMatchObject({
+				code: 'cache_miss',
+				recovery: `Run \`${build}\`, ${restart}.`,
+			});
+			// The command itself never names a port.
+			for (const text of [miss.recommendation, uncached.recommendation]) {
+				expect(text).not.toMatch(/`npx expo run:ios[^`]*--port/);
+			}
+		});
+
+		it('gives a lane with no bundle identifier the launch without restart, and what quits the app before it', async () => {
+			// The lane service refuses a restart for a lane whose app.json named
+			// no ios.bundleIdentifier when it started: it has nothing to
+			// terminate the app by.
+			const afterward = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID}\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler. Lane ${BUILD_LANE_ID} cannot restart the app, as the worktree's app.json declared no ios.bundleIdentifier when the lane started, so quit the app before that launch with \`rndevtools simulator --operation shutdown --udid ${UDID}\`, then \`rndevtools simulator --operation boot --udid ${UDID}\`, which keep the lane, its Metro and the Simulator's data; the launch then opens it with lane ${BUILD_LANE_ID}'s Metro on port 8107. Or declare ios.bundleIdentifier in app.json and replace the lane with \`rndevtools lane --operation down --lane-id ${BUILD_LANE_ID}\` and \`rndevtools lane --operation up --worktree /Users/dev/app\`, whose first launch restarts the app, or ask the user to quit the app before that launch`;
+			const build = `npx expo run:ios --device ${UDID} --no-bundler`;
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const route = (cache: 'miss' | 'no-provider') =>
+				createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(undefined, 'ready', { scheme: 'exampleapp' }),
+					nativePlan: plan(cache),
+				});
+			const native = {
+				kind: 'native',
+				configuration: 'Debug',
+				worktreePath: '/Users/dev/app',
+				udid: UDID,
+			} as const;
+			const miss = (await route('miss')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(miss.recommendation).toBe(
+				`build: no cached binary for this fingerprint; run \`${build}\` once (the build cache will store it for every other worktree), ${afterward}.`
+			);
+			const uncached = (await route('no-provider')(
+				{ ...native, operation: 'plan' },
+				context
+			)) as Record<string, unknown>;
+			expect(uncached.recommendation).toBe(
+				`build: this project declares no buildCacheProvider, so every worktree builds; run \`${build}\`, ${afterward}.`
+			);
+			await expect(
+				route('miss')({ ...native, operation: 'install' }, context)
+			).rejects.toMatchObject({
+				code: 'cache_miss',
+				recovery: `Run \`${build}\`, ${afterward}.`,
+			});
+			for (const text of [miss.recommendation, uncached.recommendation]) {
+				expect(text).not.toContain('--restart');
+			}
+		});
+
+		it.each([
+			['exampleapp', 'exampleapp', ''],
+			[
+				undefined,
+				'<scheme>',
+				', with <scheme> the URL scheme the app registers',
+			],
+		] as const)(
+			"gives a lane with no URL scheme the dev client's full URL after a build (plan scheme %s)",
+			async (planScheme, scheme, placeholder) => {
+				// A lane reads its scheme from app.json only when it starts, and
+				// one with none opens its dev client only through a full URL.
+				const url = `'${scheme}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8107&disableOnboarding=1&disableAutoLaunch=1'`;
+				const afterward = `then \`rndevtools lane --operation launch --lane-id ${BUILD_LANE_ID} --url ${url} --restart\`: the build opens the app against port 8081, since Expo refuses --port with --no-bundler, and the restart reopens it with lane ${BUILD_LANE_ID}'s Metro on port 8107. Lane ${BUILD_LANE_ID} has no URL scheme, as the worktree's app.json gave none when the lane started, so that launch names its dev client's full URL${placeholder}`;
+				const build = `npx expo run:ios --device ${UDID} --no-bundler`;
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const route = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(undefined, 'ready', {
+						bundleIdentifier: 'com.example.app',
+					}),
+					nativePlan: async () => {
+						const { scheme: _scheme, ...planned } = await plan('miss')();
+						return planScheme ? { ...planned, scheme: planScheme } : planned;
+					},
+				});
+				const native = {
+					kind: 'native',
+					configuration: 'Debug',
+					worktreePath: '/Users/dev/app',
+					udid: UDID,
+				} as const;
+				const planned = (await route(
+					{ ...native, operation: 'plan' },
+					context
+				)) as Record<string, unknown>;
+				expect(planned.recommendation).toBe(
+					`build: no cached binary for this fingerprint; run \`${build}\` once (the build cache will store it for every other worktree), ${afterward}.`
+				);
+				await expect(
+					route({ ...native, operation: 'install' }, context)
+				).rejects.toMatchObject({
+					code: 'cache_miss',
+					recovery: `Run \`${build}\`, ${afterward}.`,
+				});
 			}
 		);
 
@@ -2009,6 +2210,221 @@ describe('agent command router', () => {
 			)) as Record<string, unknown>;
 			expect(result.recommendation).toContain('launch=false');
 			expect(result.recommendation).not.toContain('expo run:ios');
+		});
+
+		it.each([
+			['ready', `expo run:ios --device ${UDID} --no-bundler`],
+			// A stopped lane has given its port up; lane up claims it again.
+			['stopped', 'Call lane with operation up'],
+		] as const)(
+			'advises at once for a lane whose Metro is %s',
+			async (metro, advice) => {
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes: buildLanes(undefined, metro),
+					nativePlan: plan('miss'),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(String(result.recommendation)).toMatch(/^build: /);
+				expect(result.recommendation).toContain(advice);
+				if (metro === 'stopped')
+					expect(result.recommendation).not.toContain('expo run:ios');
+			}
+		);
+
+		describe('with a lane whose Metro is still starting', () => {
+			// `lane up --launch=false` returns while a new lane is starting; the
+			// lane service marks it ready only once the Metro answering on its
+			// port is proven to be the lane's own.
+			beforeEach(() => {
+				vi.useFakeTimers();
+			});
+			afterEach(() => {
+				vi.useRealTimers();
+			});
+
+			function planFor(
+				lanes: ReturnType<typeof buildLanes>,
+				{
+					cache = 'miss',
+					operation = 'plan',
+					signal = context.signal,
+				}: {
+					cache?: 'hit' | 'miss';
+					operation?: 'plan' | 'install';
+					signal?: AbortSignal;
+				} = {}
+			) {
+				const { dependencies } = fixture();
+				const { port } = simulatorWithApps([]);
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					lanes,
+					nativePlan: plan(cache),
+				});
+				const settled: { value?: unknown; error?: unknown; done: boolean } = {
+					done: false,
+				};
+				const pending = handler(
+					{
+						kind: 'native',
+						operation,
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					{ ...context, signal }
+				).then(
+					(value) => {
+						Object.assign(settled, { value, done: true });
+					},
+					(error: unknown) => {
+						Object.assign(settled, { error, done: true });
+					}
+				);
+				return { settled, pending };
+			}
+
+			it('waits for it to turn ready, then gives its build command', async () => {
+				const lanes = buildLanes(undefined, 'starting');
+				const { settled, pending } = planFor(lanes);
+				await vi.advanceTimersByTimeAsync(4_000);
+				expect(settled.done).toBe(false);
+				lanes.setMetro('ready');
+				// The next read of the lane state, one poll later, sees it.
+				await vi.advanceTimersByTimeAsync(500);
+				expect(settled.done).toBe(true);
+				await pending;
+				const recommendation = String(
+					(settled.value as Record<string, unknown>).recommendation
+				);
+				expect(recommendation).toMatch(/^build: /);
+				expect(recommendation).toContain(
+					`expo run:ios --device ${UDID} --no-bundler`
+				);
+			});
+
+			it('still gives the build command to one that turns ready after 12 s', async () => {
+				// The lane service marks a lane ready on a reconcile, every 5 s,
+				// and one that finds its Metro still loading leaves the lane
+				// starting until the next.
+				const lanes = buildLanes(undefined, 'starting');
+				const { settled, pending } = planFor(lanes);
+				await vi.advanceTimersByTimeAsync(12_000);
+				expect(settled.done).toBe(false);
+				lanes.setMetro('ready');
+				await vi.advanceTimersByTimeAsync(500);
+				expect(settled.done).toBe(true);
+				await pending;
+				expect(
+					String((settled.value as Record<string, unknown>).recommendation)
+				).toContain(`expo run:ios --device ${UDID} --no-bundler`);
+			});
+
+			it('holds the build command back from one that never turns ready', async () => {
+				// A Metro the lane service could not prove is the lane's own (an
+				// adoption that failed, a stop to retry) stays starting while
+				// another packager may answer on the port. A lane whose PID is
+				// some other process's now reads stopped instead.
+				const { settled, pending } = planFor(buildLanes(undefined, 'starting'));
+				// Nothing answers before the full 15 s, and the answer comes then.
+				await vi.advanceTimersByTimeAsync(14_999);
+				expect(settled.done).toBe(false);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(settled.done).toBe(true);
+				await pending;
+				const recommendation = String(
+					(settled.value as Record<string, unknown>).recommendation
+				);
+				expect(recommendation).toBe(
+					`build: Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the launch that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native with operation plan again.`
+				);
+				expect(vi.getTimerCount()).toBe(0);
+			});
+
+			it('gives the lane up advice once it stops while waited for', async () => {
+				const lanes = buildLanes(undefined, 'starting');
+				const { settled, pending } = planFor(lanes);
+				await vi.advanceTimersByTimeAsync(2_000);
+				lanes.setMetro('stopped');
+				await vi.advanceTimersByTimeAsync(500);
+				expect(settled.done).toBe(true);
+				await pending;
+				const recommendation = String(
+					(settled.value as Record<string, unknown>).recommendation
+				);
+				expect(recommendation).toMatch(/^build: Call lane with operation up/);
+				expect(recommendation).not.toContain('expo run:ios');
+			});
+
+			it('recovers an install on a cache miss with what the lane needs first', async () => {
+				const { settled, pending } = planFor(
+					buildLanes(undefined, 'starting'),
+					{
+						operation: 'install',
+					}
+				);
+				await vi.advanceTimersByTimeAsync(14_999);
+				expect(settled.done).toBe(false);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(settled.done).toBe(true);
+				await pending;
+				expect(settled.error).toMatchObject({
+					code: 'cache_miss',
+					recovery: expect.stringMatching(
+						new RegExp(
+							`^Metro for lane ${BUILD_LANE_ID} on port 8107 is not ready`
+						)
+					),
+				});
+				expect((settled.error as AgentCliError).recovery).not.toContain(
+					'expo run:ios'
+				);
+			});
+
+			it('stops waiting when the request is cancelled', async () => {
+				const request = new AbortController();
+				const { settled, pending } = planFor(
+					buildLanes(undefined, 'starting'),
+					{
+						signal: request.signal,
+					}
+				);
+				await vi.advanceTimersByTimeAsync(1_000);
+				request.abort();
+				await vi.advanceTimersByTimeAsync(0);
+				await pending;
+				expect(settled.error).toMatchObject({ code: 'cancelled' });
+				expect(vi.getTimerCount()).toBe(0);
+			});
+
+			it('does not wait for it on a cache hit', async () => {
+				const { settled, pending } = planFor(
+					buildLanes(undefined, 'starting'),
+					{
+						cache: 'hit',
+					}
+				);
+				await vi.advanceTimersByTimeAsync(0);
+				await pending;
+				expect(settled.done).toBe(true);
+				expect(
+					String((settled.value as Record<string, unknown>).recommendation)
+				).toMatch(/^install: /);
+			});
 		});
 
 		it('plans with a device and reports installed state from the Simulator app list', async () => {
@@ -2056,7 +2472,190 @@ describe('agent command router', () => {
 				context
 			)) as Record<string, unknown>;
 			expect(result).toMatchObject({ cache: 'hit', installed: false });
-			expect(String(result.recommendation)).toMatch(/^install: /);
+			// The install, as the CLI takes it: its worktree and its Simulator.
+			expect(result.recommendation).toBe(
+				`install: a cached binary matches this fingerprint; run \`rndevtools native --operation install --worktree /Users/dev/app --udid ${UDID}\` to put it on the Simulator without building.`
+			);
+		});
+
+		it('keeps the requested configuration in its cached install command', async () => {
+			const { dependencies } = fixture();
+			const { port } = simulatorWithApps([]);
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: port,
+				nativePlan: async () => ({
+					...(await plan('hit')()),
+					configuration: 'Release',
+				}),
+			});
+			const result = await handler(
+				{
+					kind: 'native',
+					operation: 'plan',
+					configuration: 'Release',
+					worktreePath: '/Users/dev/app',
+					udid: UDID,
+				},
+				context
+			);
+			expect(result).toMatchObject({
+				recommendation: expect.stringContaining(
+					`native --operation install --worktree /Users/dev/app --udid ${UDID} --configuration Release\``
+				),
+			});
+		});
+
+		it.each([
+			['hit', /^install: /],
+			['miss', /^build: /],
+		] as const)(
+			'leaves installed out on a Simulator that is not booted, whatever it last listed (cache %s)',
+			async (cache, verb) => {
+				const { dependencies } = fixture();
+				const { port, actions } = simulatorWithApps(['com.example.app'], {
+					deviceState: 'shutdown',
+				});
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					nativePlan: plan(cache),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result).toMatchObject({ cache, simulatorUdid: UDID });
+				expect(result).not.toHaveProperty('installed');
+				const recommendation = String(result.recommendation);
+				expect(recommendation).toMatch(verb);
+				// The lane up that boots it names the app directory and the
+				// Simulator, as the CLI requires, and reserves the lane without
+				// launching an app that may not be installed.
+				const unknown = ` installed is left out: this Simulator is shut down, and its apps can be listed only while it is booted (\`rndevtools lane --operation up --worktree /Users/dev/app --udid ${UDID} --launch=false\` boots it).`;
+				expect(recommendation.slice(-unknown.length)).toBe(unknown);
+				// A Simulator that is not booted has nothing to list.
+				expect(actions).toHaveLength(0);
+			}
+		);
+
+		it.each([
+			['booting', 'still booting'],
+			['shuttingDown', 'shutting down'],
+			['creating', 'still being created'],
+			['unknown', 'in an unknown state'],
+		] as const)(
+			'says in words why installed is left out on a Simulator that is %s',
+			async (deviceState, words) => {
+				const { dependencies } = fixture();
+				const { port, actions } = simulatorWithApps(['com.example.app'], {
+					deviceState,
+				});
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator: port,
+					nativePlan: plan('hit'),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result).not.toHaveProperty('installed');
+				expect(String(result.recommendation)).toContain(
+					` installed is left out: this Simulator is ${words}, and its apps can be listed only while it is booted`
+				);
+				expect(actions).toHaveLength(0);
+			}
+		);
+
+		it.each(['failed', 'rejected'] as const)(
+			'leaves installed out when app.list is %s',
+			async (outcome) => {
+				const { dependencies } = fixture();
+				const { port, actions } = simulatorWithApps(['com.example.app'], {
+					listFailure: 'simctl listapps timed out.\nRetry later.',
+				});
+				const simulator =
+					outcome === 'failed'
+						? port
+						: {
+								...port,
+								runAction: (action: SimulatorAction) => ({
+									actionId: action.actionId,
+									accepted: false,
+									error: 'This Xcode installation does not support apps.',
+								}),
+							};
+				const handler = createAgentCommandRouter({
+					...dependencies,
+					simulator,
+					nativePlan: plan('hit'),
+				});
+				const result = (await handler(
+					{
+						kind: 'native',
+						operation: 'plan',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)) as Record<string, unknown>;
+				expect(result).not.toHaveProperty('installed');
+				const recommendation = String(result.recommendation);
+				expect(recommendation).toMatch(/^install: /);
+				const reason =
+					outcome === 'failed'
+						? 'simctl listapps timed out. Retry later.'
+						: 'This Xcode installation does not support apps.';
+				expect(recommendation).toContain(
+					` installed is left out: listing this Simulator's apps failed (${reason}).`
+				);
+				if (outcome === 'failed')
+					expect(actions.map(({ action }) => action.kind)).toEqual([
+						'app.list',
+					]);
+			}
+		);
+
+		it('installs without listing the apps first, and fails as app.install does on a Simulator that is not booted', async () => {
+			const { dependencies } = fixture();
+			const { port, actions } = simulatorWithApps(['com.example.app'], {
+				deviceState: 'shutdown',
+			});
+			const handler = createAgentCommandRouter({
+				...dependencies,
+				simulator: port,
+				nativePlan: plan('hit'),
+			});
+			await expect(
+				handler(
+					{
+						kind: 'native',
+						operation: 'install',
+						configuration: 'Debug',
+						worktreePath: '/Users/dev/app',
+						udid: UDID,
+					},
+					context
+				)
+			).rejects.toMatchObject({
+				code: 'action_failed',
+				message: 'Simulator must be booted for this action.',
+			});
+			expect(actions.map(({ action }) => action.kind)).toEqual(['app.install']);
 		});
 
 		it('installs the cached artifact through app.install with the artifact as the selected path', async () => {
@@ -2081,6 +2680,9 @@ describe('agent command router', () => {
 				action: 'installed-from-cache',
 				installed: true,
 			});
+			// An install refreshes the binary whatever is there, so it lists
+			// nothing first, on a booted Simulator as on one that is not.
+			expect(actions.map(({ action }) => action.kind)).toEqual(['app.install']);
 			const install = actions.find(
 				({ action }) => action.kind === 'app.install'
 			);
@@ -2954,6 +3556,8 @@ describe('agent command router', () => {
 			).rejects.toEqual(
 				expect.objectContaining<Partial<AgentCliError>>({
 					code: 'simulator_not_booted',
+					// The CLI takes lane operations as flags, never positionally.
+					recovery: `Boot it with \`rndevtools simulator --operation boot --udid ${UDID}\` when this session holds it (its lane's or its claim's), or start a lane on it with \`rndevtools lane --operation up --worktree <app directory> --udid ${UDID}\`, then retry.`,
 				})
 			);
 		});
@@ -3367,7 +3971,11 @@ describe('agent command router', () => {
 			id: 'device-request-1',
 			status: 'pending',
 		});
-		expect(result.next).toMatch(/Poll lane --operation ls/);
+		expect(result.next).toContain('Poll `rndevtools lane --operation ls`');
+		// A request can be fulfilled by a lane whose launch then failed.
+		expect(result.next).toContain(
+			'reports fulfilled with a laneId, or dismissed. A fulfilled request whose lane did not launch says so in its message, with the command that launches it again.'
+		);
 		expect(result.next).toContain('device-request-1');
 
 		// `ls` carries the requests so the agent can follow the outcome.
@@ -3603,6 +4211,25 @@ describe('agent command router', () => {
 		).rejects.toEqual(
 			expect.objectContaining<Partial<AgentCliError>>({
 				code: 'lane_not_found',
+				recovery:
+					'Run `rndevtools lane --operation ls` to see live lanes, or `rndevtools lane --operation up --worktree <app directory>` to start one.',
+			})
+		);
+		// A lane named by its app directory gets the lane up for that directory.
+		await expect(
+			handler(
+				{
+					kind: 'lane',
+					operation: 'log',
+					worktreePath: '/Users/dev/app-feature',
+				},
+				context
+			)
+		).rejects.toEqual(
+			expect.objectContaining<Partial<AgentCliError>>({
+				code: 'lane_not_found',
+				recovery:
+					'Run `rndevtools lane --operation ls` to see live lanes, or `rndevtools lane --operation up --worktree /Users/dev/app-feature` to start one.',
 			})
 		);
 	});
@@ -3654,6 +4281,503 @@ describe('agent command router', () => {
 				retryable: true,
 			})
 		);
+	});
+
+	describe('lane restarts and failed launches', () => {
+		const lane: Lane = {
+			id: 'lane-11111111-2222-4333-8444-555555555555',
+			worktreePath: '/Users/dev/app-feature',
+			branch: 'feature',
+			simulatorUdid: UDID,
+			environment: 'development',
+			port: 8_100,
+			metroPid: 42,
+			metro: 'starting',
+			logPath: '/Users/dev/lane.log',
+			scheme: 'exampleapp',
+			bundleIdentifier: 'com.example.app',
+			startedAt: now,
+		};
+		const state: LaneState = {
+			revision: 1,
+			updatedAt: now,
+			environments: [...DEFAULT_LANE_ENVIRONMENTS],
+			lanes: [lane],
+			worktrees: [],
+			repositories: [],
+			deviceRequests: [],
+		};
+
+		/** A lane service that answers every operation with `outcome`. */
+		function lanesAnswering(
+			outcome: Omit<LaneOperationReceipt, 'actionId' | 'kind'>
+		) {
+			const operations: LaneOperation[] = [];
+			return {
+				operations,
+				lanes: {
+					getState: () => state,
+					refresh: async () => state,
+					runOperation: async (
+						operation: LaneOperation
+					): Promise<LaneOperationReceipt> => {
+						operations.push(operation);
+						return {
+							actionId: operation.actionId,
+							kind: operation.kind,
+							...outcome,
+						};
+					},
+				},
+			};
+		}
+
+		it('passes restart to lane up and launch only when the caller asks', async () => {
+			const { dependencies } = fixture();
+			const { lanes, operations } = lanesAnswering({ completed: true, lane });
+			const handler = createAgentCommandRouter({ ...dependencies, lanes });
+			const up = {
+				kind: 'lane',
+				operation: 'up',
+				worktreePath: '/Users/dev/app-feature',
+			} as const;
+			const launch = {
+				kind: 'lane',
+				operation: 'launch',
+				laneId: lane.id,
+			} as const;
+			await handler({ ...up, restart: true }, context);
+			await handler(up, context);
+			await handler({ ...up, restart: false }, context);
+			await handler({ ...launch, url: 'checkout', restart: true }, context);
+			await handler({ ...launch, url: 'checkout' }, context);
+			expect(operations[0]).toMatchObject({
+				kind: 'lane.start',
+				restart: true,
+			});
+			expect(operations[1]).not.toHaveProperty('restart');
+			expect(operations[2]).not.toHaveProperty('restart');
+			expect(operations[3]).toMatchObject({
+				kind: 'lane.launch',
+				laneId: lane.id,
+				url: 'checkout',
+				restart: true,
+			});
+			expect(operations[4]).not.toHaveProperty('restart');
+		});
+
+		it('hands lane up and launch what their launch could not do unasked', async () => {
+			const { dependencies } = fixture();
+			const warning =
+				"com.example.app could not be terminated before the lane's first launch (xcrun failed with exit code 1.). If a copy was already running, it stays registered as a debug target on the Metro it came from; run `rndevtools lane --operation launch --lane-id lane-11111111-2222-4333-8444-555555555555 --restart` to start it fresh.";
+			const { lanes } = lanesAnswering({
+				completed: true,
+				lane,
+				warnings: [warning],
+			});
+			const handler = createAgentCommandRouter({ ...dependencies, lanes });
+			for (const command of [
+				{
+					kind: 'lane',
+					operation: 'up',
+					worktreePath: '/Users/dev/app-feature',
+				},
+				{ kind: 'lane', operation: 'launch', laneId: lane.id },
+			] as const) {
+				expect(await handler(command, context)).toMatchObject({
+					completed: true,
+					warnings: [warning],
+				});
+			}
+		});
+
+		/** The typed error a lane command fails with when the lane service answers `outcome`. */
+		function failure(
+			outcome: Omit<LaneOperationReceipt, 'actionId' | 'kind'>,
+			command: AgentCliCommand
+		): Promise<AgentCliError> {
+			const { dependencies } = fixture();
+			const { lanes } = lanesAnswering(outcome);
+			const handler = createAgentCommandRouter({ ...dependencies, lanes });
+			return handler(command, context).then(
+				() => {
+					throw new Error('the lane command should have failed');
+				},
+				(rejected: unknown) => rejected as AgentCliError
+			);
+		}
+
+		const timedOut =
+			"Metro on port 8100 did not become ready within 15s. Read the lane's log for the bundler error.";
+		const exited =
+			"Metro for feature exited before it became ready. Read the lane's log for the bundler error.";
+		const upCommand = {
+			kind: 'lane',
+			operation: 'up',
+			worktreePath: '/Users/dev/app-feature',
+			udid: UDID,
+		} as const;
+		const launchCommand = {
+			kind: 'lane',
+			operation: 'launch',
+			worktreePath: '/Users/dev/app-feature',
+		} as const;
+		// Like a first lane up, the retry leaves the udid out: lane up for the
+		// worktree resumes its lane on whichever Simulator the lane runs on.
+		const upAgain =
+			'rndevtools lane --operation up --worktree /Users/dev/app-feature';
+		const launchAgain = `rndevtools lane --operation launch --lane-id ${lane.id}`;
+		const log = `\`rndevtools lane --operation log --lane-id ${lane.id}\` shows Metro's output.`;
+
+		it('includes a Simulator warning in the failed launch response', async () => {
+			const error = 'xcrun failed with exit code 60.';
+			const warning = 'The exampleapp URL scheme could not be approved.';
+			const result = await failure(
+				{ completed: false, error, lane, warnings: [warning] },
+				launchCommand
+			);
+			expect(result.message).toBe(
+				`Lane ${lane.id} did not launch: ${error} ${warning}`
+			);
+		});
+
+		it('retries a lane up that failed to launch as itself, which starts an exited Metro again', async () => {
+			const up = await failure(
+				{ completed: false, error: timedOut, lane },
+				upCommand
+			);
+			expect(up).toMatchObject({
+				code: 'lane_failed',
+				retryable: true,
+				message: `Lane ${lane.id} did not launch: ${timedOut}`,
+			});
+			expect(up.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Once the cause is fixed, run \`${upAgain}\` to launch it again; it starts Metro again first if Metro exited. ${log}`
+			);
+			const restarted = await failure(
+				{ completed: false, error: timedOut, lane },
+				{ ...upCommand, restart: true }
+			);
+			expect(restarted.recovery).toContain(
+				`run \`${upAgain} --restart\` to launch it again`
+			);
+			// The same command fits a lane whose Metro exited.
+			const dead = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...lane, metro: 'stopped' },
+				},
+				upCommand
+			);
+			expect(dead.message).toBe(`Lane ${lane.id} did not launch: ${exited}`);
+			expect(dead.recovery).toContain(`run \`${upAgain}\` to launch it again`);
+		});
+
+		it('retries a lane launch as itself while its Metro runs, and through lane up once Metro exited', async () => {
+			const linked = await failure(
+				{ completed: false, error: timedOut, lane },
+				{ ...launchCommand, url: 'checkout', restart: true }
+			);
+			expect(linked.message).toBe(
+				`Lane ${lane.id} did not launch: ${timedOut}`
+			);
+			expect(linked.recovery).toBe(
+				`The lane keeps its Simulator and its Metro on port 8100. Once the cause is fixed, run \`${launchAgain} --restart\` with the same --url to open it again. ${log}`
+			);
+
+			// lane launch never starts Metro, so retrying it would fail at once.
+			const stopped = { ...lane, metro: 'stopped' as const };
+			const dead = await failure(
+				{ completed: false, error: exited, lane: stopped },
+				launchCommand
+			);
+			expect(dead.message).toBe(`Lane ${lane.id} did not launch: ${exited}`);
+			expect(dead.recovery).toBe(
+				`Metro for lane ${lane.id} is not running, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain}\` to start Metro again and open the dev client. ${log}`
+			);
+			// lane up opens the dev client and restarts the app, so only the
+			// deep link is left for a lane launch after it.
+			const deadLink = await failure(
+				{ completed: false, error: exited, lane: stopped },
+				{ ...launchCommand, url: 'checkout', restart: true }
+			);
+			expect(deadLink.recovery).toContain(
+				`run \`${upAgain} --restart\` to start Metro again and open the dev client, then \`${launchAgain}\` with the same --url.`
+			);
+		});
+
+		it("retries a lane outside the default environment, for an app inside a monorepo, on the lane's own terms", async () => {
+			const nested = {
+				...lane,
+				appPath: '/Users/dev/app-feature/apps/mobile',
+				environment: 'staging',
+				port: 8_200,
+			};
+			const up = await failure(
+				{ completed: false, error: timedOut, lane: nested },
+				upCommand
+			);
+			expect(up.recovery).toContain(
+				'run `rndevtools lane --operation up --worktree /Users/dev/app-feature/apps/mobile --environment staging` to launch it again'
+			);
+			expect(up.recovery).toContain('keeps its Simulator and port 8200');
+			// A path a shell would split or expand stays one word.
+			const spaced = {
+				...lane,
+				worktreePath: "/Users/dev/Example App's $HOME",
+			};
+			const quoted = await failure(
+				{ completed: false, error: timedOut, lane: spaced },
+				upCommand
+			);
+			expect(quoted.recovery).toContain(
+				"run `rndevtools lane --operation up --worktree '/Users/dev/Example App'\\''s $HOME'` to launch it again"
+			);
+		});
+
+		it('reports a cancelled launch as cancelled, still naming the lane', async () => {
+			const cancelled = await failure(
+				{
+					completed: false,
+					cancelled: true,
+					error: 'Lane operation cancelled.',
+					lane,
+				},
+				upCommand
+			);
+			expect(cancelled).toMatchObject({
+				code: 'cancelled',
+				retryable: true,
+				message: `Lane ${lane.id} did not launch: Lane operation cancelled.`,
+			});
+			expect(cancelled.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Run \`${upAgain}\` to launch it again; it starts Metro again first if Metro exited. ${log}`
+			);
+			// A cancel before any lane was stored stays a plain cancel.
+			const early = await failure(
+				{
+					completed: false,
+					cancelled: true,
+					error: 'Lane operation cancelled.',
+				},
+				upCommand
+			);
+			expect(early).toMatchObject({
+				code: 'cancelled',
+				message: 'Lane operation cancelled.',
+			});
+			expect(early.recovery).toBeUndefined();
+		});
+
+		it('reports a launch the desktop stopped at its deadline as timed out, still naming the lane', async () => {
+			const timed = await failure(
+				{
+					completed: false,
+					timedOut: true,
+					error: 'Lane operation timed out.',
+					lane,
+				},
+				upCommand
+			);
+			expect(timed).toMatchObject({
+				code: 'timed_out',
+				retryable: true,
+				message: `Lane ${lane.id} did not launch: Lane operation timed out.`,
+			});
+			expect(timed.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Run \`${upAgain}\` to launch it again; it starts Metro again first if Metro exited. ${log}`
+			);
+			// One that timed out before any lane was stored is a plain timeout.
+			const early = await failure(
+				{
+					completed: false,
+					timedOut: true,
+					error: 'Lane operation timed out.',
+				},
+				upCommand
+			);
+			expect(early).toMatchObject({
+				code: 'timed_out',
+				message: 'Lane operation timed out.',
+			});
+		});
+
+		it('names the lane whose required backend stopped its launch, and sends lane launch to lane up', async () => {
+			const backend: NonNullable<LaneOperationReceipt['backend']> = {
+				policy: 'required',
+				status: 'failed',
+				reason: 'failed',
+				appEnvNames: [],
+				warnings: [],
+				reasonText:
+					'Run `rndevtools lane --operation up --worktree <app directory>` to recover this lane before launching.',
+			};
+			const error =
+				'This lane requires its local backend, which is failed (failed). Run `rndevtools lane --operation up --worktree <app directory>` to recover this lane before launching.';
+			const up = await failure(
+				{ completed: false, error, lane, backend },
+				upCommand
+			);
+			expect(up).toMatchObject({
+				code: 'lane_failed',
+				message: `Lane ${lane.id} did not launch: ${error}`,
+				recovery: expect.stringContaining('backend auto'),
+			});
+			const launch = await failure(
+				{ completed: false, error, lane, backend },
+				launchCommand
+			);
+			expect(launch.message).toBe(`Lane ${lane.id} did not launch: ${error}`);
+			expect(launch.recovery).toBe(
+				`Lane ${lane.id} requires its local backend, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain}\` to start the backend and open the dev client. ${log}`
+			);
+		});
+
+		it('retries a lane up without launch that failed on its resumed lane as itself', async () => {
+			// A lane up resuming a stored lane names it when its Simulator boot,
+			// slim, backend or Metro fails, before any launch.
+			const resumed = await failure(
+				{ completed: false, error: 'CoreSimulator refused to boot.', lane },
+				{ ...upCommand, launch: false }
+			);
+			expect(resumed).toMatchObject({
+				code: 'lane_failed',
+				retryable: true,
+				message: `Lane ${lane.id} did not start: CoreSimulator refused to boot.`,
+			});
+			// The retry keeps launch=false: the caller did not ask for the app.
+			expect(resumed.recovery).toBe(
+				`The lane keeps its Simulator and port 8100. Once the cause is fixed, run \`${upAgain} --launch=false\` to start it again; it starts Metro again first if Metro exited. ${log}`
+			);
+		});
+
+		it('sends a lane with no URL scheme to a launch with a full URL, which lane up cannot take', async () => {
+			const { scheme: _scheme, ...bare } = lane;
+			const error = `Lane ${lane.id} has no URL scheme: the worktree's app.json gave none when the lane started, so its dev client has no launch URL. Open it with \`${launchAgain} --url <full launch URL>\`; the up operation takes no URL.`;
+			const url =
+				"'<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'";
+			const recovery = `Lane ${lane.id} has no URL scheme for its dev client: the worktree's app.json gave none when the lane started, and a lane keeps what it started with. Only a launch with a full URL opens it: \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers. Or declare a scheme in app.json and replace the lane: \`rndevtools lane --operation down --lane-id ${lane.id}\`, then \`${upAgain}\`. ${log}`;
+			const up = await failure(
+				{ completed: false, error, lane: bare },
+				upCommand
+			);
+			expect(up.message).toBe(`Lane ${lane.id} did not launch: ${error}`);
+			expect(up.recovery).toBe(recovery);
+			const launched = await failure(
+				{ completed: false, error, lane: bare },
+				launchCommand
+			);
+			expect(launched.recovery).toBe(recovery);
+			// A restart asked for goes with that launch.
+			const restarted = await failure(
+				{ completed: false, error, lane: bare },
+				{ ...upCommand, restart: true }
+			);
+			expect(restarted.recovery).toContain(
+				`\`${launchAgain} --url ${url} --restart\``
+			);
+			// A Metro that is gone comes back from a lane up that launches nothing.
+			const stopped = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				launchCommand
+			);
+			expect(stopped.recovery).toContain(
+				`Only a launch with a full URL opens it, once \`${upAgain} --launch=false\` has started Metro again: \`${launchAgain} --url ${url}\``
+			);
+			// A deep link of its own needs no scheme, and is retried as before.
+			const linked = await failure(
+				{ completed: false, error: timedOut, lane: bare },
+				{ ...launchCommand, url: 'exampleapp://checkout' }
+			);
+			expect(linked.recovery).toContain(
+				`run \`${launchAgain}\` with the same --url to open it again`
+			);
+		});
+
+		it('brings back the Metro of a lane with no URL scheme for a deep link without a lane up that opens nothing', async () => {
+			const { scheme: _scheme, ...bare } = lane;
+			const url =
+				"'<scheme>://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100&disableOnboarding=1&disableAutoLaunch=1'";
+			const deepLink = { ...launchCommand, url: 'exampleapp://checkout' };
+			// Lane up cannot open its dev client, so it starts Metro alone, and
+			// the dev client opens through its full URL before the deep link.
+			const stopped = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				deepLink
+			);
+			expect(stopped.recovery).toBe(
+				`Metro for lane ${lane.id} is not running, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain} --launch=false\` to start Metro again, then open its dev client with \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers, and then \`${launchAgain}\` with the same --url: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`
+			);
+			const restarted = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				{ ...deepLink, restart: true }
+			);
+			expect(restarted.recovery).toContain(
+				`then open its dev client with \`${launchAgain} --url ${url} --restart\``
+			);
+			// A launch that was itself the dev client's full URL is retried as
+			// itself once Metro is back.
+			const opening = await failure(
+				{
+					completed: false,
+					error: exited,
+					lane: { ...bare, metro: 'stopped' },
+				},
+				{
+					...launchCommand,
+					url: 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100',
+				}
+			);
+			expect(opening.recovery).toBe(
+				`Metro for lane ${lane.id} is not running, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain} --launch=false\` to start Metro again, then \`${launchAgain}\` with the same --url to open its dev client: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`
+			);
+			const backend: NonNullable<LaneOperationReceipt['backend']> = {
+				policy: 'required',
+				status: 'failed',
+				reason: 'failed',
+				appEnvNames: [],
+				warnings: [],
+			};
+			const backendFailed = await failure(
+				{
+					completed: false,
+					error:
+						'This lane requires its local backend, which is failed (failed).',
+					lane: bare,
+					backend,
+				},
+				deepLink
+			);
+			expect(backendFailed.recovery).toBe(
+				`Lane ${lane.id} requires its local backend, and the launch operation does not start it. Once the cause is fixed, run \`${upAgain} --launch=false\` to start the backend, then open its dev client with \`${launchAgain} --url ${url}\`, with <scheme> the URL scheme the app registers, and then \`${launchAgain}\` with the same --url: the up operation cannot open the dev client of a lane with no URL scheme. ${log}`
+			);
+		});
+
+		it('keeps a failure that names no lane as it was', async () => {
+			const refused = await failure(
+				{ completed: false, error: 'CoreSimulator refused to boot.' },
+				upCommand
+			);
+			expect(refused).toMatchObject({
+				code: 'lane_failed',
+				message: 'CoreSimulator refused to boot.',
+				retryable: true,
+			});
+			expect(refused.recovery).toBeUndefined();
+		});
 	});
 
 	describe('local Supabase', () => {

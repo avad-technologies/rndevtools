@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSession } from '../shared/agent-protocol';
-import { DEVICE_HOLD_GRACE_MS } from '../shared/device-hold';
+import { DEVICE_HOLD_GRACE_MS, type DeviceHolder } from '../shared/device-hold';
 import type { Lane } from '../shared/lane-protocol';
-import { AgentService } from './agent-service';
+import { type AgentLaneSource, AgentService } from './agent-service';
 import { type CodexDatabase, discoverAgentSessions } from './agent-sessions';
 import type { MetroLaunchInput, MetroSupervisorPort } from './lane-metro';
 import { LaneService, type LaneSimulatorPort } from './lane-service';
@@ -493,6 +493,174 @@ describe('AgentService', () => {
 });
 
 /**
+ * Discovery is what notices that a holder's session has exited, so its pace
+ * decides when an abandoned hold's clock starts. Every 10 s while a window is
+ * visible; with every window hidden (or closed, on macOS, where the app keeps
+ * running) once a minute, and only while an agent holds something.
+ */
+describe('AgentService discovery cadence', () => {
+	const agentLane = {
+		id: 'lane-checkout',
+		simulatorUdid: A,
+		worktreePath: '/Users/dev/app-checkout',
+		agent: { kind: 'claude' as const, sessionId: 'claude-1' },
+		metro: 'ready' as const,
+		startedAt: now,
+	};
+	let root: string;
+	let sessions: AgentSession[];
+	let held: ReturnType<AgentLaneSource>;
+	let stackHolders: { holder: DeviceHolder; directory?: string }[];
+	let polls: number;
+	let service: AgentService;
+
+	function discover() {
+		polls += 1;
+		return Promise.resolve({
+			sessions,
+			claude: 'ok' as const,
+			codex: 'ok' as const,
+		});
+	}
+
+	beforeEach(async () => {
+		root = await mkdtemp(path.join(os.tmpdir(), 'rndevtools-agent-cadence-'));
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+		vi.setSystemTime(now);
+		sessions = [
+			{
+				kind: 'claude',
+				sessionId: 'claude-1',
+				title: 'checkout',
+				cwd: '/Users/dev/app-checkout',
+				pid: 1,
+			},
+		];
+		held = [];
+		stackHolders = [];
+		polls = 0;
+		service = new AgentService({
+			directory: root,
+			lanes: () => held,
+			holders: () => stackHolders,
+			discover,
+			now: () => Date.now(),
+		});
+		await service.start();
+	});
+	afterEach(async () => {
+		await service.stop();
+		vi.useRealTimers();
+		await rm(root, { recursive: true, force: true });
+	});
+
+	it('polls every 10 s while a window is visible, whatever is held', async () => {
+		expect(polls).toBe(1);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(polls).toBe(4);
+	});
+
+	it('polls nothing with every window hidden while no agent holds anything', async () => {
+		// A lane the operator started has no session that could go away.
+		held = [{ ...agentLane, agent: undefined }];
+		service.setPollingActive(false);
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(polls).toBe(1);
+	});
+
+	it('polls once a minute with every window hidden while an agent holds a lane or a stack', async () => {
+		held = [agentLane];
+		service.setPollingActive(false);
+		await vi.advanceTimersByTimeAsync(50_000);
+		expect(polls).toBe(1);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(polls).toBe(2);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(polls).toBe(3);
+
+		// A stack's holder runs on the same clocks, so it keeps the pace too.
+		held = [];
+		stackHolders = [
+			{
+				holder: { kind: 'claude', sessionId: 'claude-2' },
+				directory: '/Users/dev/app-checkout',
+			},
+		];
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(polls).toBe(4);
+
+		// Nothing held: hidden polling stops. A visible window brings 10 s back.
+		stackHolders = [];
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(polls).toBe(4);
+		service.setPollingActive(true);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(polls).toBe(5);
+	});
+
+	it('keeps the hidden poll going, and nothing escapes its timer, when a holder source throws', async () => {
+		held = [agentLane];
+		service.setPollingActive(false);
+		stackHolders = new Proxy([], {
+			get() {
+				throw new Error('holder source failed');
+			},
+		});
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(polls).toBe(2);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(polls).toBe(3);
+	});
+
+	it('starts an abandoned claim’s clock and drops the claim with every window hidden', async () => {
+		await service.runOperation({
+			kind: 'agent.claim',
+			simulatorUdid: B,
+			agent: { kind: 'claude', sessionId: 'claude-1' },
+		});
+		// Every window closes, then the claiming session exits.
+		service.setPollingActive(false);
+		sessions = [];
+		await vi.advanceTimersByTimeAsync(60_000);
+		const missingAt = now + 60_000;
+		expect(service.holds().get(B)).toMatchObject({
+			via: 'claim',
+			holderLive: false,
+			abandonedSince: missingAt,
+			releaseAt: missingAt + DEVICE_HOLD_GRACE_MS,
+		});
+
+		await vi.advanceTimersByTimeAsync(DEVICE_HOLD_GRACE_MS - 1);
+		expect(service.getState().claims).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(service.getState().claims).toEqual([]);
+		// Joins the poll that dropped it, so the write lands before cleanup.
+		await service.refresh();
+	});
+
+	it('never polls again once stopped, even when stopped while starting', async () => {
+		let quitPolls = 0;
+		const quitting = new AgentService({
+			directory: path.join(root, 'quitting'),
+			lanes: () => [agentLane],
+			discover: () => {
+				quitPolls += 1;
+				return discover();
+			},
+			now: () => Date.now(),
+		});
+		const starting = quitting.start();
+		await quitting.stop();
+		await starting;
+		quitting.setPollingActive(false);
+		await vi.advanceTimersByTimeAsync(2 * 60_000);
+		quitting.setPollingActive(true);
+		await vi.advanceTimersByTimeAsync(2 * 60_000);
+		expect(quitPolls).toBe(1);
+	});
+});
+
+/**
  * The lane service's reconcile is what tears an abandoned lane down, and it
  * asks the agent service who holds each device, wired as index.ts wires them.
  * Lanes are seeded straight into the store: these tests are about the hold
@@ -511,14 +679,18 @@ describe('AgentService holds through the lane reconcile', () => {
 	class FakeMetro implements MetroSupervisorPort {
 		readonly stopped: Array<{ pid: number; port: number }> = [];
 		isPortFree = async () => true;
+		environmentProblem = () => undefined;
 		start = async (_input: MetroLaunchInput) => 1;
 		isHealthy = async () => true;
-		isProcessRunning = () => true;
+		/** Every seeded Metro runs until it is stopped, and a stop ends it. */
+		isProcessRunning = (pid: number) =>
+			!this.stopped.some((entry) => entry.pid === pid);
 		verifyOwnership = async () => true;
 		stop = async (pid: number, port: number) => {
 			this.stopped.push({ pid, port });
 		};
 		readLogTail = async () => '';
+		appendLogNote = async () => undefined;
 	}
 
 	function unused(): never {
@@ -576,7 +748,13 @@ describe('AgentService holds through the lane reconcile', () => {
 		return { kind, sessionId, title: sessionId, cwd };
 	}
 
-	async function start(seed: readonly Lane[]): Promise<void> {
+	async function start(
+		seed: readonly Lane[],
+		{
+			readClock = () => clock,
+			pollIntervalMs = 60_000,
+		}: { readClock?: () => number; pollIntervalMs?: number } = {}
+	): Promise<void> {
 		const store = new LaneStore(path.join(root, 'lanes'));
 		await store.start();
 		for (const entry of seed) await store.upsert(entry);
@@ -587,7 +765,7 @@ describe('AgentService holds through the lane reconcile', () => {
 			metro,
 			worktrees,
 			holds: () => agents.holds(),
-			now: () => clock,
+			now: readClock,
 		});
 		agents = new AgentService({
 			directory: path.join(root, 'agents'),
@@ -601,8 +779,8 @@ describe('AgentService holds through the lane reconcile', () => {
 					startedAt: entry.startedAt,
 				})),
 			discover: async () => ({ sessions, ...discovery }),
-			pollIntervalMs: 60_000,
-			now: () => clock,
+			pollIntervalMs,
+			now: readClock,
 		});
 		await lanes.start();
 		await agents.start();
@@ -661,6 +839,45 @@ describe('AgentService holds through the lane reconcile', () => {
 		await tick();
 		expect(laneIds()).toEqual([]);
 		expect(metro.stopped).toEqual([{ pid: 4_100, port: 8_100 }]);
+	});
+
+	it('releases an abandoned lane on its own timers while no window is visible', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+		vi.setSystemTime(now);
+		try {
+			sessions = [session('claude', 'claude-1', APP)];
+			await start(
+				[lane(LANE_A, A, APP, { kind: 'claude', sessionId: 'claude-1' })],
+				{ readClock: () => Date.now(), pollIntervalMs: 10_000 }
+			);
+			// Every window is closed, as index.ts reports it, and then the
+			// session exits. No one calls refresh or reconcile by hand.
+			agents.setPollingActive(false);
+			sessions = [];
+			await vi.advanceTimersByTimeAsync(60_000);
+			const missingAt = now + 60_000;
+			expect(agents.holds().get(A)).toMatchObject({
+				holderLive: false,
+				abandonedSince: missingAt,
+				releaseAt: missingAt + DEVICE_HOLD_GRACE_MS,
+			});
+
+			await vi.advanceTimersByTimeAsync(DEVICE_HOLD_GRACE_MS - 5_000);
+			expect(metro.stopped).toEqual([]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(metro.stopped).toEqual([{ pid: 4_100, port: 8_100 }]);
+			expect(laneIds()).toEqual([]);
+		} finally {
+			await agents?.stop();
+			await lanes?.stop();
+			vi.useRealTimers();
+		}
+		// The release reaches the disk, so a restart does not bring the lane back.
+		await vi.waitFor(async () => {
+			const reread = new LaneStore(path.join(root, 'lanes'));
+			await reread.start();
+			expect(reread.lanes()).toEqual([]);
+		});
 	});
 
 	it('keeps a synthetic MCP holder live only on the lanes a session of its kind works in', async () => {

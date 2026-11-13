@@ -57,6 +57,31 @@ func runAgentCheck(config Config) int {
 			*executable = real
 		}
 	}
+	// What a caller got wrong is a usage error, which retrying cannot fix;
+	// agent_check_failed is left for a check or repair that could not run.
+	usage := func(message string) int {
+		writeLocalError(config.Stderr, "invalid_arguments", message, false, "Run rndevtools agent-check --help.", "")
+		return ExitUsage
+	}
+	switch *operation {
+	case "scan", "probe":
+	case "plan":
+		if *finding == "" {
+			return usage("plan requires --finding-id.")
+		}
+	case "apply", "undo":
+		if *plan == "" {
+			return usage(*operation + " requires --plan-id.")
+		}
+	default:
+		return usage("Unknown agent-check operation; use scan, plan, apply, undo, or probe.")
+	}
+	// In flag order, so that with several relative paths the same one is named.
+	for _, path := range []struct{ name, value string }{{"project", *project}, {"config-home", *home}, {"executable", *executable}} {
+		if path.value != "" && !filepath.IsAbs(path.value) {
+			return usage("--" + path.name + " must be an absolute path.")
+		}
+	}
 	options := setup.HealthOptions{Home: *home, Project: *project, Executable: *executable}
 	var result any
 	var err error
@@ -69,10 +94,8 @@ func runAgentCheck(config Config) int {
 		result, err = setup.ApplyAgentFix(options, *plan)
 	case "undo":
 		result, err = setup.UndoAgentFix(options, *plan)
-	case "probe":
+	default: // probe, the last operation checked above
 		result, err = probeAgentMCP(*executable)
-	default:
-		err = errors.New("Unknown agent-check operation.")
 	}
 	if err != nil {
 		writeLocalError(config.Stderr, "agent_check_failed", err.Error(), true, "Recheck agent setup and review the current scope.", "")

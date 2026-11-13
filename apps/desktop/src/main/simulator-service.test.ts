@@ -872,6 +872,229 @@ describe('simulator service', () => {
 		await service.stop();
 	});
 
+	it("approves a URL's scheme for the app it names before opening it", async () => {
+		const { provider, service } = await createService();
+		const url =
+			'exampleapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8100';
+		const receipt = service.runAction(
+			parsedAction({
+				actionId: 'approved-url',
+				kind: 'url.open',
+				udid: UDID,
+				url,
+				bundleIdentifier: 'com.example.app',
+			})
+		);
+		const job = await waitForJob(service, receipt.jobId ?? '');
+		expect(provider.commands.map((command) => command.args)).toEqual([
+			[
+				'spawn',
+				UDID,
+				'defaults',
+				'write',
+				'com.apple.launchservices.schemeapproval',
+				'com.apple.CoreSimulator.CoreSimulatorBridge-->exampleapp',
+				'-string',
+				'com.example.app',
+			],
+			['openurl', UDID, url],
+		]);
+		// The write is bounded on its own, apart from the open's budget.
+		expect(provider.commands[0]?.options.timeoutMs).toBe(15_000);
+		expect(job.message).toBe('Simulator action completed.');
+		expect(job).not.toHaveProperty('warnings');
+		await service.stop();
+	});
+
+	it('still opens the URL when its scheme cannot be approved, and says the write failed', async () => {
+		const provider = new FakeProvider();
+		const originalRun = provider.runSimctl.getMockImplementation();
+		provider.runSimctl.mockImplementation(async (args, options = {}) => {
+			if (args[0] === 'spawn') {
+				provider.commands.push({ args: [...args], options });
+				throw new SimulatorCommandError('xcrun failed with exit code 1.', {
+					kind: 'failed',
+					exitCode: 1,
+					stderr: 'Could not write domain; token=secret-from-stderr',
+				});
+			}
+			if (!originalRun) throw new Error('Missing fake runner');
+			return originalRun(args, options);
+		});
+		const { service } = await createService(provider);
+		const receipt = service.runAction(
+			parsedAction({
+				actionId: 'unapproved-url',
+				kind: 'url.open',
+				udid: UDID,
+				url: 'exampleapp://home?token=secret-in-url',
+				bundleIdentifier: 'com.example.app',
+			})
+		);
+		const job = await waitForJob(service, receipt.jobId ?? '');
+		expect(provider.commands.map((command) => command.args[0])).toEqual([
+			'spawn',
+			'openurl',
+		]);
+		// Opening is what the job was asked for, so it still completes.
+		expect(job).toMatchObject({
+			status: 'complete',
+			message: 'Simulator action completed.',
+			warnings: [
+				'The exampleapp URL scheme could not be approved for com.example.app (xcrun failed with exit code 1.), so iOS may ask "Open in …?" before the app opens.',
+			],
+		});
+		// Neither the URL nor the command's output reaches the warning.
+		expect(JSON.stringify(service.getState().jobs)).not.toContain('secret');
+		await service.stop();
+	});
+
+	it('keeps the approval warning on an open that then fails', async () => {
+		const provider = new FakeProvider();
+		provider.runSimctl.mockImplementation(async (args, options = {}) => {
+			provider.commands.push({ args: [...args], options });
+			throw new SimulatorCommandError('xcrun failed with exit code 1.', {
+				kind: 'failed',
+				exitCode: 1,
+			});
+		});
+		const { service } = await createService(provider);
+		const receipt = service.runAction(
+			parsedAction({
+				actionId: 'unopened-url',
+				kind: 'url.open',
+				udid: UDID,
+				url: 'exampleapp://home',
+				bundleIdentifier: 'com.example.app',
+			})
+		);
+		const job = await waitForJob(service, receipt.jobId ?? '', 'failed');
+		expect(job).toMatchObject({
+			message: 'xcrun failed with exit code 1.',
+			warnings: [expect.stringContaining('could not be approved')],
+		});
+		await service.stop();
+	});
+
+	it('opens nothing once an open is cancelled during its approval write', async () => {
+		const provider = new FakeProvider();
+		const originalRun = provider.runSimctl.getMockImplementation();
+		let writing: () => void = () => undefined;
+		const written = new Promise<void>((resolve) => {
+			writing = resolve;
+		});
+		provider.runSimctl.mockImplementation(async (args, options = {}) => {
+			if (args[0] !== 'spawn') {
+				if (!originalRun) throw new Error('Missing fake runner');
+				return originalRun(args, options);
+			}
+			provider.commands.push({ args: [...args], options });
+			writing();
+			// A `defaults` that never returns on its own, as a wedged
+			// Simulator's would; only the job's signal ends it.
+			return new Promise((_resolve, reject) => {
+				options.signal?.addEventListener(
+					'abort',
+					() =>
+						reject(
+							new SimulatorCommandError('xcrun was cancelled.', {
+								kind: 'aborted',
+							})
+						),
+					{ once: true }
+				);
+			});
+		});
+		const { service } = await createService(provider);
+		const receipt = service.runAction(
+			parsedAction({
+				actionId: 'cancelled-approval',
+				kind: 'url.open',
+				udid: UDID,
+				url: 'exampleapp://home',
+				bundleIdentifier: 'com.example.app',
+			})
+		);
+		await written;
+		expect(service.cancelJob(receipt.jobId ?? '')).toBe(true);
+		const job = await waitForJob(service, receipt.jobId ?? '', 'cancelled');
+		expect(job).not.toHaveProperty('warnings');
+		expect(provider.commands.map((command) => command.args[0])).toEqual([
+			'spawn',
+		]);
+		await service.stop();
+	});
+
+	it('counts terminating an app that is not running as done, and fails on anything else', async () => {
+		const provider = new FakeProvider();
+		const originalRun = provider.runSimctl.getMockImplementation();
+		let terminateError: SimulatorCommandError | undefined;
+		provider.runSimctl.mockImplementation(async (args, options = {}) => {
+			if (args[0] === 'terminate' && terminateError) {
+				provider.commands.push({ args: [...args], options });
+				throw terminateError;
+			}
+			if (!originalRun) throw new Error('Missing fake runner');
+			return originalRun(args, options);
+		});
+		const { service } = await createService(provider);
+		const terminate = (actionId: string) =>
+			service.runAction(
+				parsedAction({
+					actionId,
+					kind: 'app.terminate',
+					udid: UDID,
+					bundleIdentifier: 'com.example.app',
+				})
+			).jobId ?? '';
+
+		// The Simulator's FrontBoard refuses an app with no running copy with
+		// "found nothing to terminate", and simctl prints that in its error.
+		terminateError = new SimulatorCommandError(
+			'xcrun failed with exit code 3.',
+			{
+				kind: 'failed',
+				exitCode: 3,
+				stderr:
+					'An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=164):\nThe request to terminate "com.example.app" failed. found nothing to terminate\n',
+			}
+		);
+		expect(
+			(await waitForJob(service, terminate('terminate-not-running'))).message
+		).toBe('Simulator action completed.');
+
+		terminateError = new SimulatorCommandError(
+			'xcrun failed with exit code 149.',
+			{
+				kind: 'failed',
+				exitCode: 149,
+				stderr: 'Unable to lookup in current state: Shutdown\n',
+			}
+		);
+		expect(
+			(await waitForJob(service, terminate('terminate-shutdown'), 'failed'))
+				.message
+		).toBe('xcrun failed with exit code 149.');
+
+		// Only a command that ran and refused counts; one that timed out does not.
+		terminateError = new SimulatorCommandError('xcrun timed out.', {
+			kind: 'timeout',
+			stderr: 'found nothing to terminate',
+		});
+		await waitForJob(service, terminate('terminate-timeout'), 'failed');
+
+		terminateError = undefined;
+		await waitForJob(service, terminate('terminate-running'));
+		expect(
+			provider.commands
+				.filter((command) => command.args[0] === 'terminate')
+				.map((command) => command.args)
+		).toEqual(
+			Array.from({ length: 4 }, () => ['terminate', UDID, 'com.example.app'])
+		);
+		await service.stop();
+	});
+
 	it('rejects app-unscoped privacy reset at the backend boundary', async () => {
 		const { provider, service } = await createService();
 		expect(() =>

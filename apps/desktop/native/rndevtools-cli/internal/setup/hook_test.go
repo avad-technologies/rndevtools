@@ -39,6 +39,56 @@ func TestHookBlocksMutatingSimctlAndHandStartedMetro(t *testing.T) {
 	}
 }
 
+// judgeQuietly applies the steering rules to one line on a Mac whose local
+// Supabase is off, so no rule reads this machine's steering file or socket.
+func judgeQuietly(command string) HookDecision {
+	return evaluateShellCallWith(shellCall{command: command}, quietSupabaseEnvironment())
+}
+
+func TestHookGivesTheReplacementsAsTheCLIParsesThem(t *testing.T) {
+	// A Simulator the session already holds is recovered with `simulator`,
+	// which keeps its lane, Metro, and data; `lane --operation down` would
+	// end the lane. Every command is spelled with its --operation flag.
+	udid := "727CE7B2-CCBA-47A5-8803-1D61DCEBCF44"
+	for command, wants := range map[string][]string{
+		"xcrun simctl boot " + udid: {
+			"`rndevtools simulator --operation boot --udid <UDID>`", "already holds",
+			"`rndevtools lane --operation up --worktree <app directory>`",
+		},
+		"xcrun simctl shutdown " + udid: {
+			"`rndevtools simulator --operation shutdown --udid <UDID>`", "keeps its lane, Metro, and data",
+			"`rndevtools lane --operation down --worktree <app directory>` ends your lane",
+		},
+		"xcrun simctl openurl " + udid + " exp://example.com": {
+			"`rndevtools lane --operation launch --worktree <app directory> --url <path or URL>`",
+		},
+		"xcrun simctl launch " + udid + " com.example.app": {
+			"`rndevtools lane --operation launch --worktree <app directory>`", "`--restart`",
+		},
+		"xcrun simctl terminate " + udid + " com.example.app": {
+			"`rndevtools lane --operation launch --worktree <app directory> --restart`",
+			"`rndevtools input --udid <UDID> --kind button --button home`",
+		},
+		"xcrun simctl install " + udid + " ./build/ExampleApp.app": {
+			"`rndevtools native --operation plan --worktree <app directory> --udid <UDID>`",
+			"`rndevtools native --operation install --worktree <app directory> --udid <UDID>`",
+		},
+		"xcrun simctl io " + udid + " screenshot /tmp/example.png": {
+			"`rndevtools capture --udid <UDID>`", "`rndevtools record --operation start --udid <UDID>`",
+		},
+		"npx expo start": {
+			"`rndevtools lane --operation up --worktree <app directory>`", "Leave out `--udid` unless the user named a device",
+		},
+	} {
+		decision := judgeQuietly(command)
+		for _, want := range wants {
+			if !decision.Block || !strings.Contains(decision.Reason, want) {
+				t.Errorf("%q should be blocked with %q, got %+v", command, want, decision)
+			}
+		}
+	}
+}
+
 func TestSimctlVerbReadsTheGlobalOptionsBeforeTheSubcommand(t *testing.T) {
 	// simctl takes --set and --profiles, each with a path, before its
 	// subcommand. It is read past a few options, not past thousands: a line
@@ -1105,6 +1155,9 @@ func TestHookStaysFastOnLinesNearTheLimit(t *testing.T) {
 		"a file appended to from unknown sources": repeat("cat x >> s.sh; sh s.sh; ", 15_000),
 		"many small scripts":                      repeat("sh -c 'echo a'; ", 20_000),
 		"many pipes into a shell":                 repeat("echo $(a) | sh; ", 15_000),
+		// The expo program's arguments are read once, redirections aside.
+		"one expo with 340,000 arguments": "npx expo install " + repeat("x > y ", 170_000),
+		"many expo runs":                  repeat("npx expo run:ios --no-bundler --device X; ", 20_000),
 		// A bare shell in each of 174,000 substitutions looks for the command
 		// before it in its own scope, which is the first of its scope.
 		"substitutions that each run a shell": "echo " + repeat("$(sh) ", 174_000),
@@ -1703,7 +1756,7 @@ func TestSupabaseManagedModeRedirectsToRNDevtools(t *testing.T) {
 		"supabase start", "supabase start --runtime native", "pnpm exec supabase start", "supabase stack start",
 		"supabase stack restart", "supabase stack prepare --runtime native", "supabase local start", "supabase dev",
 	} {
-		fixture.expect(t, in, command, "RN Devtools runs this worktree's local Supabase", up, "lane up", "`pnpm exec supabase … --local`")
+		fixture.expect(t, in, command, "RN Devtools runs this worktree's local Supabase", up, "`rndevtools lane --operation up --worktree <app directory>` does it for a lane", "`pnpm exec supabase … --local`")
 	}
 	for _, command := range []string{"supabase stop", "pnpm exec supabase stop", "supabase stack stop", "supabase local stop"} {
 		fixture.expect(t, in, command, down, "data is kept")
@@ -1774,6 +1827,32 @@ func TestSupabaseManagedModeWaitsForTheBranchStack(t *testing.T) {
 	// An unreadable HEAD is no reason to block.
 	write(t, filepath.Join(fixture.managed, ".git", "HEAD"), "garbage\n")
 	fixture.expect(t, in, "supabase db diff")
+}
+
+func TestSupabaseManagedAdviceQuotesTheWorktreeAsItIs(t *testing.T) {
+	// A managed root is a repository's path, and a directory's name may hold
+	// `$(…)`: the command the agent is told to run must not run it.
+	fixture := newSupabaseFixture(t)
+	managed := func(name string) string {
+		root := filepath.Join(fixture.base, "wt", name)
+		write(t, filepath.Join(root, ".git", "HEAD"), "ref: refs/heads/feat-c\n")
+		write(t, filepath.Join(root, "supabase", "config.toml"), "[experimental]\nstack = true\n")
+		write(t, filepath.Join(root, "node_modules", ".bin", "supabase"), "#!/bin/sh\n")
+		fixture.steering.roots = append(fixture.steering.roots, steeringRoot{
+			worktreeRoot: root, projectRoot: root, branchContext: "refs/heads/feat-c", stackReady: true, runner: "npx supabase",
+		})
+		return root
+	}
+	root := managed("x$(touch pwned)")
+	word := "'" + root + "'"
+	fixture.expect(t, root, "supabase start", "`rndevtools supabase --operation up --worktree "+word+"`", "(operation up, worktree "+root+")")
+	fixture.expect(t, root, "supabase stop", "`rndevtools supabase --operation down --worktree "+word+"`")
+	// A path the reason would strip names another directory: a placeholder
+	// stands in for it instead.
+	odd := managed("x`id`")
+	placeholder := "<this worktree's absolute path>"
+	fixture.expect(t, odd, "supabase start", "`rndevtools supabase --operation up --worktree "+placeholder+"`", "(operation up, worktree "+placeholder+")")
+	fixture.expect(t, odd, "supabase stop", "`rndevtools supabase --operation down --worktree "+placeholder+"`")
 }
 
 func TestSupabaseManagedModeMatchesTheProjectAndTheRepository(t *testing.T) {

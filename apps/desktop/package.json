@@ -18,7 +18,7 @@
 		"native:build:package": "node scripts/build-native-helpers.mjs --if-supported",
 		"native:check": "node scripts/check-native-helpers.mjs && pnpm native:check:packaging",
 		"native:check:go": "node scripts/check-native-helpers.mjs --go",
-		"native:check:packaging": "node --test scripts/verify-vendored-simslim.node-test.mjs scripts/native-host-version.node-test.mjs",
+		"native:check:packaging": "node --test scripts/verify-vendored-simslim.node-test.mjs scripts/verify-vendored-go-toml.node-test.mjs scripts/native-host-version.node-test.mjs",
 		"native:check:swift": "node scripts/check-native-helpers.mjs --swift",
 		"native:sync-version": "node scripts/native-host-version.mjs",
 		"native:verify": "node scripts/verify-native-resources.cjs",

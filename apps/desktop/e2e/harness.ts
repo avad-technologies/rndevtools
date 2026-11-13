@@ -140,6 +140,11 @@ export class DesktopHarness {
 	static async launch(
 		options: {
 			agentConfigHome?: string;
+			/**
+			 * false skips the doctor that ends `rndevtools setup`: it dials the
+			 * socket under the real home, an installed RN Devtools, not this one.
+			 */
+			agentSetupDoctor?: boolean;
 			onboarding?: boolean;
 			failureReports?: string;
 			userDataDir?: string;
@@ -168,6 +173,8 @@ export class DesktopHarness {
 				RNDEVTOOLS_FAILURE_REPORTS: options.failureReports ?? '',
 				RNDEVTOOLS_AGENT_CHECK_HOME:
 					options.agentConfigHome ?? join(userDataDir, 'agent-config'),
+				RNDEVTOOLS_AGENT_SETUP_DOCTOR:
+					options.agentSetupDoctor === false ? 'off' : '',
 				// The host the port was probed on; an inherited LAN bind setting
 				// must never widen a test broker.
 				RNDEVTOOLS_BIND_ADDRESS: LOOPBACK,

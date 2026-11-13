@@ -217,6 +217,7 @@ describe('Metro launch', () => {
 			EXPO_NO_DOTENV: '1',
 			EXPO_NO_INTERACTIVE: '1',
 			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
 			NODE_OPTIONS: '--max-old-space-size=4096 --dns-result-order=ipv4first',
 		});
 	});
@@ -235,9 +236,146 @@ describe('Metro launch', () => {
 			EXPO_NO_DOTENV: '1',
 			EXPO_NO_INTERACTIVE: '1',
 			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
 			NODE_OPTIONS: '--dns-result-order=ipv4first',
 		});
 	});
+
+	it('strips the agent session the desktop was launched from, keeping ordinary variables', async () => {
+		const { metro, spawned } = supervisor({
+			PATH: '/usr/bin:/bin',
+			HOME: '/Users/dev',
+			LANG: 'en_US.UTF-8',
+			DEBUG: 'expo:*',
+			AWS_PROFILE: 'example',
+			// A prefix matches only at the start of a name.
+			EXAMPLE_CLAUDE_MODEL: 'kept',
+			// Claude Code and the Claude Agent SDK.
+			CLAUDECODE: '1',
+			CLAUDE_CODE_ENTRYPOINT: 'cli',
+			CLAUDE_CODE_SESSION_ID: 'session-1',
+			CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/example-agent.sock',
+			CLAUDE_CODE_MESSAGING_TOKEN: 'messaging-token',
+			CLAUDE_PID: '4321',
+			CLAUDE_AGENT_SDK_VERSION: '1.0.0',
+			DEBUG_CLAUDE_AGENT_SDK: '1',
+			// Codex.
+			CODEX_THREAD_ID: 'thread-1',
+			CODEX_HOME: '/Users/dev/.codex',
+			// Any agent harness.
+			AI_AGENT: 'example-agent',
+		});
+		await launch(metro);
+		expect(spawned[0]?.options.env).toEqual({
+			PATH: '/usr/bin:/bin',
+			HOME: '/Users/dev',
+			LANG: 'en_US.UTF-8',
+			DEBUG: 'expo:*',
+			AWS_PROFILE: 'example',
+			EXAMPLE_CLAUDE_MODEL: 'kept',
+			NODE_ENV: 'development',
+			RCT_METRO_PORT: '8100',
+			EXPO_NO_DOTENV: '1',
+			EXPO_NO_INTERACTIVE: '1',
+			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
+			NODE_OPTIONS: '--dns-result-order=ipv4first',
+		});
+	});
+
+	it("strips what the desktop's RNDEVTOOLS_CHILD_ENV_STRIP names from the inherited env only", async () => {
+		const { metro, spawned } = supervisor({
+			PATH: '/usr/bin:/bin',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE_TOKEN',
+			EXAMPLE_AGENT_PORT: '4100',
+			EXAMPLE_AGENT_AUTH_TOKEN: 'harness-token',
+			EXAMPLE_TOKEN: 'inherited',
+			EXAMPLE_TOKEN_TTL: 'kept',
+		});
+		// What the lane's environment sets on purpose still reaches Metro.
+		await launch(metro, { metroEnv: { EXAMPLE_TOKEN: 'metro-env' } });
+		expect(spawned[0]?.options.env).toEqual({
+			PATH: '/usr/bin:/bin',
+			EXAMPLE_TOKEN_TTL: 'kept',
+			EXAMPLE_TOKEN: 'metro-env',
+			NODE_ENV: 'development',
+			RCT_METRO_PORT: '8100',
+			EXPO_NO_DOTENV: '1',
+			EXPO_NO_INTERACTIVE: '1',
+			EXPO_NO_DEV_MENU: '1',
+			EXPO_UNSTABLE_BONJOUR: '0',
+			NODE_OPTIONS: '--dns-result-order=ipv4first',
+		});
+	});
+
+	it('refuses a malformed RNDEVTOOLS_CHILD_ENV_STRIP before anything is created or spawned', async () => {
+		let toolPathAsked = false;
+		const { metro, spawned } = supervisor(
+			{
+				PATH: '/usr/bin:/bin',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
+			},
+			async (inherited) => {
+				toolPathAsked = true;
+				return inherited;
+			}
+		);
+		await expect(launch(metro)).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name/
+		);
+		expect(spawned).toHaveLength(0);
+		expect(toolPathAsked).toBe(false);
+		expect(existsSync(path.join(root, 'lane.log'))).toBe(false);
+	});
+
+	it('strips an inherited NODE_OPTIONS that RNDEVTOOLS_CHILD_ENV_STRIP names, keeping the IPv4 order', async () => {
+		// A harness can preload its own code into every Node it starts.
+		const { metro, spawned } = supervisor({
+			PATH: '/usr/bin:/bin',
+			NODE_OPTIONS: '--require /tmp/example-hook.cjs',
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'NODE_OPTIONS',
+		});
+		await launch(metro);
+		expect(spawned[0]?.options.env).toMatchObject({
+			NODE_OPTIONS: '--dns-result-order=ipv4first',
+		});
+	});
+
+	it('says, without throwing, when no Metro could start with the desktop environment', () => {
+		expect(
+			supervisor({
+				PATH: '/usr/bin:/bin',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
+			}).metro.environmentProblem()
+		).toMatch(/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name/);
+		expect(
+			supervisor({
+				PATH: '/usr/bin:/bin',
+				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+			}).metro.environmentProblem()
+		).toBeUndefined();
+	});
+
+	it.each(['inherited', 'metroEnv', 'laneEnv'] as const)(
+		"keeps Expo's Bonjour advert off when %s turns it on",
+		async (source) => {
+			const { metro, spawned } = supervisor({
+				PATH: '/usr/bin:/bin',
+				...(source === 'inherited' ? { EXPO_UNSTABLE_BONJOUR: '1' } : {}),
+			});
+			await launch(metro, {
+				...(source === 'metroEnv'
+					? { metroEnv: { EXPO_UNSTABLE_BONJOUR: 'true' } }
+					: {}),
+				...(source === 'laneEnv'
+					? { laneEnv: { EXPO_UNSTABLE_BONJOUR: '1' } }
+					: {}),
+			});
+			expect(spawned[0]?.options.env).toMatchObject({
+				EXPO_UNSTABLE_BONJOUR: '0',
+			});
+		}
+	);
 
 	it.each(['inherited', 'metroEnv', 'laneEnv', 'all'] as const)(
 		'omits CI from %s so managed development lanes keep Metro watch mode',
@@ -509,9 +647,10 @@ describe('Metro stop', () => {
 		await metro.stop(pid, 8_100, root);
 		expect((await exited)[1]).toBe('SIGTERM');
 		const bounds = { timeoutMs: 3_000, maxOutputBytes: 64 * 1024 };
+		// -w keeps the warning -b prints for every mount out of the output cap.
 		expect(calls).toEqual([
 			[
-				`/usr/sbin/lsof -b -a -p ${pid} -iTCP:8100 -sTCP:LISTEN -n -P -Fp`,
+				`/usr/sbin/lsof -b -w -a -p ${pid} -iTCP:8100 -sTCP:LISTEN -n -P -Fp`,
 				bounds,
 			],
 			[
@@ -519,7 +658,7 @@ describe('Metro stop', () => {
 				{ timeoutMs: 5_000, maxOutputBytes: 64 * 1024 },
 			],
 			[
-				`/usr/sbin/lsof -b -a -p ${pid} -d cwd -FDin`,
+				`/usr/sbin/lsof -b -w -a -p ${pid} -d cwd -FDin`,
 				{ ...bounds, environment: { LC_ALL: 'C' } },
 			],
 		]);
@@ -622,6 +761,27 @@ describe('Metro stop', () => {
 		);
 		expect(asked).toEqual(['/bin/ps']);
 		expect(metro.isProcessRunning(pid)).toBe(true);
+	});
+
+	it("kills the lane's own Metro when forced, after the same identity proof", async () => {
+		const { metro, pid, asked } = supervisor(
+			METRO_COMMAND,
+			realpathSync(root),
+			lsofIdentity(root)
+		);
+		const exited = once(holder, 'exit');
+		await metro.stop(pid, 8_100, root, { force: true });
+		expect((await exited)[1]).toBe('SIGKILL');
+		expect(asked).toEqual(['/bin/ps', '/usr/sbin/lsof']);
+	});
+
+	it('refuses to force a reused PID that is no Metro at all', async () => {
+		const { metro, pid } = supervisor('/bin/sleep 30');
+		await expect(
+			metro.stop(pid, 8_100, root, { force: true })
+		).rejects.toBeInstanceOf(NotLaneMetroError);
+		expect(metro.isProcessRunning(pid)).toBe(true);
+		expect(holder.signalCode).toBeNull();
 	});
 
 	it('fails closed when the process cannot be inspected', async () => {
@@ -1303,6 +1463,36 @@ describe('Metro stop', () => {
 			}
 		);
 
+		// -b makes lsof warn on stderr about every mount it avoids, some 400
+		// bytes each, and the runner counts stderr toward the same cap as
+		// stdout: about 160 mounts would fill the real 64 KB. Under a cap this
+		// Mac's own mounts' warnings exceed, the probe still has to fit.
+		it("proves the lane's own Metro under an output cap the mount warnings of -b would exceed", async () => {
+			const capped = createMetroSupervisor({
+				runCommand: (executable, args, options) =>
+					executable === '/bin/ps'
+						? Promise.resolve({
+								stdout: `${METRO_COMMAND}\n`,
+								stderr: '',
+								exitCode: 0,
+							})
+						: runSimulatorCommand(executable, args, {
+								...options,
+								maxOutputBytes: 2_048,
+							}),
+			});
+			const appDirectory = path.join(root, 'app');
+			await mkdir(appDirectory);
+			await withMetroIn(appDirectory, async (lanesMetro, pid) => {
+				expect(await capped.verifyOwnership(pid, 8_100, appDirectory)).toBe(
+					true
+				);
+				const exited = once(lanesMetro, 'exit');
+				await capped.stop(pid, 8_100, appDirectory);
+				expect((await exited)[1]).toBe('SIGTERM');
+			});
+		});
+
 		it("keeps refusing a moved worktree's Metro, also once a directory is made at its old path", async () => {
 			const appDirectory = path.join(root, 'app');
 			const moved = path.join(root, 'app-moved');
@@ -1397,6 +1587,7 @@ describe('Metro health', () => {
 				executable: '/usr/sbin/lsof',
 				args: [
 					'-b',
+					'-w',
 					'-a',
 					'-p',
 					'4242',
@@ -1488,5 +1679,36 @@ describe('Metro log tail', () => {
 	it('reads a missing log as empty', async () => {
 		const { readLogTail } = createMetroSupervisor();
 		expect(await readLogTail(path.join(root, 'absent.log'), 1_024)).toBe('');
+	});
+});
+
+describe('Metro log notes', () => {
+	let root: string;
+
+	beforeEach(async () => {
+		root = await mkdtemp(path.join(os.tmpdir(), 'rndevtools-metro-note-'));
+	});
+
+	afterEach(async () => {
+		await rm(root, { recursive: true, force: true });
+	});
+
+	it("appends a note after Metro's output as one line marked as the desktop's", async () => {
+		const file = path.join(root, 'lane.log');
+		await writeFile(file, 'Starting Metro Bundler\n');
+		const { appendLogNote, readLogTail } = createMetroSupervisor();
+		await appendLogNote(file, 'first\nsecond\r\n\tthird\u2028fourth ');
+		await appendLogNote(file, 'x'.repeat(5_000));
+		expect(await readLogTail(file, 16 * 1024)).toBe(
+			`Starting Metro Bundler\n[RN Devtools] first second third fourth\n[RN Devtools] ${'x'.repeat(4_096)}\n`
+		);
+	});
+
+	it('creates a log that is gone readable by its owner alone', async () => {
+		const file = path.join(root, 'absent.log');
+		const { appendLogNote, readLogTail } = createMetroSupervisor();
+		await appendLogNote(file, 'note');
+		expect(await readLogTail(file, 1_024)).toBe('[RN Devtools] note\n');
+		expect(statSync(file).mode & 0o777).toBe(0o600);
 	});
 });

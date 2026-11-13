@@ -267,6 +267,66 @@ describe('agent CLI service', () => {
 		}
 	});
 
+	it('tells the handler a deadline from a hang-up: its own timeout aborts with a TimeoutError', async () => {
+		const reasons = new Map<string, unknown>();
+		let started: () => void = () => undefined;
+		const { socketPath } = await fixture(
+			async (_command, context) => {
+				started();
+				await new Promise<void>((resolve) => {
+					context.signal.addEventListener('abort', () => resolve(), {
+						once: true,
+					});
+				});
+				reasons.set(context.requestId, context.signal.reason);
+				throw new AgentCliError({
+					code: 'cancelled',
+					message: 'The agent request was cancelled.',
+				});
+			},
+			{ livenessProbeMs: 20 }
+		);
+		const begun = () =>
+			new Promise<void>((resolve) => {
+				started = resolve;
+			});
+		// Only the handler budget is faked; the socket itself stays real.
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			const handlerStarted = begun();
+			const response = request(socketPath, {
+				protocol: RNDEVTOOLS_AGENT_CLI_PROTOCOL,
+				id: 'past-the-deadline',
+				command: { kind: 'doctor' },
+			});
+			await handlerStarted;
+			await vi.advanceTimersByTimeAsync(60_000);
+			await response;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(reasons.get('past-the-deadline')).toMatchObject({
+			name: 'TimeoutError',
+		});
+		// A client that hangs up cancels: no timeout is involved.
+		const handlerStarted = begun();
+		const socket = connect(socketPath);
+		socket.on('error', () => undefined);
+		socket.once('connect', () => {
+			socket.end(
+				`${JSON.stringify({
+					protocol: RNDEVTOOLS_AGENT_CLI_PROTOCOL,
+					id: 'hung-up',
+					command: { kind: 'doctor' },
+				})}\n`
+			);
+		});
+		await within(handlerStarted, 2_000, 'the handler to start');
+		socket.destroy();
+		await vi.waitFor(() => expect(reasons.has('hung-up')).toBe(true));
+		expect(reasons.get('hung-up')).not.toMatchObject({ name: 'TimeoutError' });
+	});
+
 	it('gives supabase up its wait plus 10 s, reads 30 s, destroy and down 40 s, and reset 60 s', async () => {
 		let handlerMs = 0;
 		let started: () => void = () => undefined;

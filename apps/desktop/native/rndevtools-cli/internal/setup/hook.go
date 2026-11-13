@@ -15,21 +15,31 @@ type HookDecision struct {
 	Reason string
 }
 
+// appDirectory stands for the app's directory in the commands a reason
+// gives: the hook does not know which directory of a checkout holds the app.
+const appDirectory = "<app directory>"
+
 // steeredVerbs are the simctl subcommands that mutate a Simulator or launch
-// into it, and the rndevtools operation that replaces each. Observing verbs
-// (list, getenv, get_app_container, diagnose, help) stay allowed: an agent
-// orienting itself is not the problem; two agents booting the same device is.
+// into it, and the rndevtools commands that replace each, spelled the way the
+// CLI parses them: an operation is the --operation flag, never a positional
+// word. Observing verbs (list, getenv, get_app_container, diagnose, help)
+// stay allowed: an agent orienting itself is not the problem; two agents
+// booting the same device is.
 var steeredVerbs = map[string]string{
-	"boot":       "`lane` (operation up) boots the Simulator the lane needs, or ask the user which device to use",
-	"shutdown":   "`lane` (operation down) stops a lane; leave other agents' Simulators running",
-	"erase":      "RN Devtools owns device state; ask the user before erasing a Simulator",
-	"delete":     "RN Devtools owns device state; ask the user before deleting a Simulator",
-	"openurl":    "`lane` (operation launch, url) opens deep links through the lane's scheme",
-	"install":    "`native` (operation install) installs the cached dev client; `native` plan tells you whether a build is needed",
-	"uninstall":  "ask the user before removing apps from a managed Simulator",
-	"launch":     "`lane` (operation launch) opens the dev client against the lane's Metro",
-	"terminate":  "`lane` (operation down) stops the lane; use `input` button home to leave an app",
-	"io":         "`capture` takes screenshots and `record` records video through RN Devtools",
+	"boot": "`rndevtools simulator --operation boot --udid <UDID>` boots a Simulator this session already holds (its lane's or its claim's), " +
+		"and `rndevtools lane --operation up --worktree " + appDirectory + "` boots the Simulator a new lane runs on; ask the user before booting any other device",
+	"shutdown": "`rndevtools simulator --operation shutdown --udid <UDID>` shuts down a Simulator this session holds and keeps its lane, Metro, and data, " +
+		"and `rndevtools lane --operation down --worktree " + appDirectory + "` ends your lane; leave other agents' Simulators running",
+	"erase":   "RN Devtools owns device state; ask the user before erasing a Simulator",
+	"delete":  "RN Devtools owns device state; ask the user before deleting a Simulator",
+	"openurl": "`rndevtools lane --operation launch --worktree " + appDirectory + " --url <path or URL>` opens a deep link through the lane's scheme",
+	"install": "`rndevtools native --operation plan --worktree " + appDirectory + " --udid <UDID>` says whether a build is needed, " +
+		"and `rndevtools native --operation install --worktree " + appDirectory + " --udid <UDID>` installs the cached dev client",
+	"uninstall": "ask the user before removing apps from a managed Simulator",
+	"launch":    "`rndevtools lane --operation launch --worktree " + appDirectory + "` opens the dev client against the lane's Metro; add `--restart` to start the app fresh",
+	"terminate": "`rndevtools lane --operation launch --worktree " + appDirectory + " --restart` restarts the lane's app, " +
+		"`rndevtools lane --operation down --worktree " + appDirectory + "` ends the lane, and `rndevtools input --udid <UDID> --kind button --button home` leaves an app",
+	"io":         "`rndevtools capture --udid <UDID>` takes a screenshot and `rndevtools record --operation start --udid <UDID>` records video",
 	"privacy":    "RN Devtools' permissions panel grants and resets privacy permissions",
 	"push":       "ask the user; push payloads are not part of the agent surface",
 	"keychain":   "ask the user before touching a Simulator keychain",
@@ -90,10 +100,13 @@ func evaluateShellCall(call shellCall) HookDecision {
 
 // evaluateShellCallWith judges each command of the line on its own, so a
 // harmless first command cannot carry a steered one past the rules: first the
-// Simulator and Metro rules, then the Supabase rules, which read steering.json
-// only when the line runs supabase or kills processes. The line is declined
-// when the word rules find a steered command, when the text rule matches and
-// is not excused, or when the Supabase rules decline it.
+// Simulator and Metro rules, then the package-script rules, which read a
+// package.json only for the scripts a line runs, then the Supabase rules,
+// which read steering.json only when the line runs supabase or kills
+// processes. The line is declined when the word rules find a steered
+// command, when the text rule matches and is not excused, when a package
+// script the line runs would be declined, or when the Supabase rules decline
+// it.
 func evaluateShellCallWith(call shellCall, environment supabaseEnvironment) (decision HookDecision) {
 	defer func() {
 		// A rule that breaks fails open, like a payload the hook cannot read:
@@ -105,6 +118,12 @@ func evaluateShellCallWith(call shellCall, environment supabaseEnvironment) (dec
 	line := parseShellLine(call.command)
 	if decision := judgeSimulatorRules(line, 0, &scriptLedger{}); decision.Block {
 		return decision
+	}
+	if namesPackageManager(line.source) {
+		packages := packageRules{home: environment.home}
+		if decision := packages.judge(line, call.cwd); decision.Block {
+			return decision
+		}
 	}
 	rules := supabaseRules{environment: environment}
 	return rules.judge(line, call.cwd)
@@ -130,7 +149,7 @@ func judgeSimulatorRules(line shellLine, nesting int, ledger *scriptLedger) Hook
 			case shellPrograms[program] || program == "eval":
 				// The rest is the shell's own: options, script, and parameters.
 			default:
-				if decision := evaluateWords(words); decision.Block {
+				if decision := evaluateWords(segment, words); decision.Block {
 					return decision
 				}
 			}
@@ -152,8 +171,17 @@ func judgeSimulatorRules(line shellLine, nesting int, ledger *scriptLedger) Hook
 
 // evaluateWords finds a steered simctl verb or a Metro start among one
 // command's words: run directly, by path, or by a command that runs another
-// (xcrun simctl, xargs xcrun simctl, npx expo, timeout 60 npx expo).
-func evaluateWords(words []string) HookDecision {
+// (xcrun simctl, xargs xcrun simctl, npx expo, timeout 60 npx expo). An expo
+// that is the program the segment runs is read the way Expo CLI reads its
+// arguments (see expoDecision), so a bare `npx expo` and `expo run:ios` count
+// too; anywhere else among the words, as for react-native, an explicit start
+// does.
+func evaluateWords(segment shellSegment, words []string) HookDecision {
+	if arguments, isExpo := expoProgramArguments(segment); isExpo {
+		if decision := expoDecision(arguments); decision.Block {
+			return decision
+		}
+	}
 	for index, word := range words {
 		switch commandName(word) {
 		case "simctl":
@@ -181,8 +209,10 @@ func simctlDecision(verb string, replacement string) HookDecision {
 
 func metroDecision() HookDecision {
 	return HookDecision{
-		Block:  true,
-		Reason: "Blocked starting Metro by hand: port 8081 is shared with other agents. Use the rndevtools `lane` tool (operation up, with this worktree's absolute path) and RN Devtools will start Metro on a leased port and open the dev client against it.",
+		Block: true,
+		Reason: "Blocked starting Metro by hand: RN Devtools leases Metro ports, and 8081 is shared with other agents. Run the app in a lane instead: " +
+			"`rndevtools lane --operation up --worktree " + appDirectory + "` (the rndevtools `lane` tool, operation up) starts Metro on a leased port " +
+			"and opens the dev client against it. Leave out `--udid` unless the user named a device or is using one: RN Devtools picks a free iPhone.",
 	}
 }
 

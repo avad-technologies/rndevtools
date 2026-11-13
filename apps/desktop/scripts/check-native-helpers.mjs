@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nativeHostVersionDrift } from './native-host-version.mjs';
+import { verifyVendoredGoToml } from './verify-vendored-go-toml.mjs';
 import { verifyVendoredSimSlim } from './verify-vendored-simslim.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,7 @@ if (versionDrift) fail(versionDrift);
 
 if (selection.go) {
 	verifyVendoredSimSlim(goPackages[0].directory);
+	verifyVendoredGoToml(goPackages[1].directory);
 	const toolEnvironment = {
 		...allowlistedCheckEnvironment(),
 		GOENV: 'off',
@@ -195,7 +197,7 @@ function allowlistedCheckEnvironment() {
 function declaredVendoredModules(directory, environment) {
 	// Modern Go intentionally rejects `go list -m all` in vendor mode. Read the
 	// main identity and the checked-in go.mod declarations without resolving the
-	// network. The Simulator helper also anchors every vendor byte in its manifest.
+	// network. Both helpers also anchor every vendor byte in a checksum manifest.
 	const mainModule = capture(
 		'go',
 		['list', '-m'],

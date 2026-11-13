@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import {
 	type AgentCliCommand,
 	type AgentCliTarget,
@@ -24,6 +23,8 @@ import {
 	type LaneOperationReceipt,
 	type LaneState,
 	laneAppDirectory,
+	laneDevClientLaunchUrl,
+	laneSchemeSchema,
 } from '../shared/lane-protocol';
 import type {
 	DesktopAction,
@@ -71,8 +72,15 @@ import {
 } from '../shared/supabase-protocol';
 import { AgentCliError, type AgentCliHandler } from './agent-cli-service';
 import { type JobService, TERMINAL_JOB_STATUSES, waitForJob } from './job-wait';
+import {
+	type LaneLaunchAsk,
+	laneRetryRecovery,
+	laneVerb,
+	shellWord,
+} from './lane-agent-text';
 import { NativeHostResponseError } from './native-host-client';
 import type { NativePlanResult } from './native-plan';
+import { sanitizeDialogText } from './security';
 import type { SimulatorActionContext } from './simulator-service';
 import { sanitizeSupabaseText } from './supabase/cli-redact';
 import type {
@@ -103,6 +111,32 @@ const CONNECTED_WAIT_RETRY_MS = 250;
 const RELEASE_STOP_BUDGET_MS = 1_500;
 /** The contract's bound on one log line, kept after redacting it again. */
 const MAX_SUPABASE_LOG_LINE = 2_000;
+/**
+ * How much of a failed app listing's message a native plan's one-line
+ * recommendation quotes. The simulator service already redacted it.
+ */
+const MAX_LISTING_FAILURE_LENGTH = 300;
+/**
+ * How long native plan and install wait for the worktree's lane to turn
+ * ready while its Metro is starting, before they hold its build command
+ * back. `lane up --launch=false`, the step before a build, returns while a
+ * new lane is starting, and the lane service marks it ready on its next 5 s
+ * reconcile once the Metro it spawned answers on the lane's port. A Metro it
+ * could not prove is the lane's own stays starting however long this waits.
+ */
+const BUILD_LANE_READY_WAIT_MS = 15_000;
+/** How often that wait reads the lane state again. */
+const BUILD_LANE_POLL_MS = 500;
+/** How that recommendation names a Simulator that is not booted. */
+const UNBOOTED_STATE_WORDS: Readonly<
+	Record<Exclude<SimulatorState['devices'][number]['state'], 'booted'>, string>
+> = {
+	shutdown: 'shut down',
+	booting: 'still booting',
+	shuttingDown: 'shutting down',
+	creating: 'still being created',
+	unknown: 'in an unknown state',
+};
 /**
  * How many recordings' starters are remembered. Only recordings still under
  * way are kept, and the simulator service holds at most 200 jobs without
@@ -432,11 +466,100 @@ function abortError(): AgentCliError {
 	});
 }
 
-/** Resolves after `ms`, or rejects with {@link abortError} once `signal` aborts. */
+/**
+ * Resolves after `ms`, or rejects with {@link abortError} once `signal` aborts.
+ * It sleeps on the global timer, as this router's other deadlines do, so fake
+ * timers in tests drive its waits and pin how long each one lasts.
+ */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
-	return sleep(ms, undefined, { signal }).catch(() => {
-		throw abortError();
+	if (signal.aborted) return Promise.reject(abortError());
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(abortError());
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		signal.addEventListener('abort', onAbort, { once: true });
 	});
+}
+
+/**
+ * The worktree's lane a native build is for (on `udid`, when the command
+ * names one) as it is once its Metro is ready or, while that Metro is
+ * starting, as it is when BUILD_LANE_READY_WAIT_MS runs out. Undefined when
+ * there is no such lane or its Metro stopped. Only a ready lane gets the
+ * build command, since the launch that follows the build opens the app with
+ * the lane's Metro: the lane service marks a lane ready only once the Metro
+ * answering on its port is proven to be the lane's own, and a starting lane
+ * may hold one it could not prove (an adoption that failed, a stop it must
+ * retry) while another worktree's packager answers there. A lane whose Metro
+ * exited reads stopped, and stays stopped when some other process gets its
+ * PID later; one whose recorded PID turns out to name another process when
+ * its ownership is checked forgets that PID and reads stopped too.
+ */
+async function awaitBuildLane(
+	lanes: LanePort | undefined,
+	projectRoot: string,
+	udid: string | undefined,
+	signal: AbortSignal
+): Promise<LaneState['lanes'][number] | undefined> {
+	if (!lanes) return undefined;
+	const find = () =>
+		lanes
+			.getState()
+			.lanes.find(
+				(lane) =>
+					laneAppDirectory(lane) === projectRoot &&
+					(udid === undefined || lane.simulatorUdid === udid) &&
+					lane.metro !== 'stopped'
+			);
+	const deadline = Date.now() + BUILD_LANE_READY_WAIT_MS;
+	let lane = find();
+	while (lane?.metro === 'starting' && Date.now() < deadline) {
+		await delay(Math.min(BUILD_LANE_POLL_MS, deadline - Date.now()), signal);
+		lane = find();
+	}
+	return lane;
+}
+
+/**
+ * What follows the native build for `lane`, which opens the app it installs
+ * against port 8081: Expo CLI refuses --port with --no-bundler. A lane
+ * launch with restart then reopens the app with the lane's own Metro. A
+ * restart terminates the app by the bundle identifier the worktree's
+ * app.json declared when the lane started, and the lane service refuses one
+ * for a lane without it, so such a lane gets the launch alone, once the app
+ * is quit: a shutdown and boot of the lane's Simulator, which its session
+ * may run and which keeps the lane, its Metro and the Simulator's data, or
+ * the user. A lane reads its scheme from app.json only when it starts too,
+ * and one with none opens its dev client only through a launch with a full
+ * URL, built from `planScheme` (the scheme the plan read from the
+ * worktree's evaluated Expo config) when that is a URL scheme.
+ */
+function afterNativeBuild(
+	lane: LaneState['lanes'][number],
+	planScheme: string | undefined
+): string {
+	const known = laneSchemeSchema.safeParse(planScheme);
+	const url = lane.scheme
+		? ''
+		: ` --url ${shellWord(laneDevClientLaunchUrl(known.success ? known.data : '<scheme>', lane.port))}`;
+	const launch = `rndevtools lane --operation launch --lane-id ${lane.id}${url}`;
+	const opened =
+		'the build opens the app against port 8081, since Expo refuses --port with --no-bundler';
+	const environment =
+		lane.environment === 'development'
+			? ''
+			: ` --environment ${lane.environment}`;
+	const step = lane.bundleIdentifier
+		? `then \`${launch} --restart\`: ${opened}, and the restart reopens it with lane ${lane.id}'s Metro on port ${lane.port}`
+		: `then \`${launch}\`: ${opened}. Lane ${lane.id} cannot restart the app, as the worktree's app.json declared no ios.bundleIdentifier when the lane started, so quit the app before that launch with \`rndevtools simulator --operation shutdown --udid ${lane.simulatorUdid}\`, then \`rndevtools simulator --operation boot --udid ${lane.simulatorUdid}\`, which keep the lane, its Metro and the Simulator's data; the launch then opens it with lane ${lane.id}'s Metro on port ${lane.port}. Or declare ios.bundleIdentifier in app.json and replace the lane with \`rndevtools lane --operation down --lane-id ${lane.id}\` and \`rndevtools lane --operation up --worktree ${shellWord(laneAppDirectory(lane))}${environment}\`, whose first launch restarts the app, or ask the user to quit the app before that launch`;
+	return lane.scheme
+		? step
+		: `${step}. Lane ${lane.id} has no URL scheme, as the worktree's app.json gave none when the lane started, so that launch names its dev client's full URL${known.success ? '' : ', with <scheme> the URL scheme the app registers'}`;
 }
 
 async function runSimulatorAction(
@@ -1104,19 +1227,48 @@ function laneForTarget(
 				? `No lane ${target.laneId} exists.`
 				: `No lane is running for worktree ${target.worktreePath}.`,
 			retryable: false,
-			recovery:
-				'Run rndevtools lane --operation ls to see live lanes, or lane --operation up to start one.',
+			recovery: `Run \`rndevtools lane --operation ls\` to see live lanes, or \`rndevtools lane --operation up --worktree ${!target.laneId && target.worktreePath ? shellWord(target.worktreePath) : '<app directory>'}\` to start one.`,
 		});
 	}
 	return lane;
 }
 
-function laneReceiptResult(receipt: LaneOperationReceipt) {
+/**
+ * A lane receipt as the CLI result, or the typed error of one that failed.
+ * `asked` is how a lane up or launch asked for its launch. When that launch
+ * failed on a stored lane (Metro exited or never answered, no dev client, a
+ * terminate that failed, a cancel), the error names the lane and the
+ * recovery the command that opens it again: a lane up gives its caller no
+ * lane id otherwise.
+ */
+function laneReceiptResult(
+	receipt: LaneOperationReceipt,
+	asked?: LaneLaunchAsk
+) {
 	if (!receipt.completed) {
+		// A launch the desktop stopped at its own deadline did not fail by itself
+		// and was not cancelled by anyone.
+		const code = receipt.cancelled
+			? 'cancelled'
+			: receipt.timedOut
+				? 'timed_out'
+				: 'lane_failed';
+		const error = [
+			receipt.error ?? 'The lane operation did not complete.',
+			...(receipt.warnings ?? []),
+		].join(' ');
+		const lane = receipt.lane;
+		if (!asked || !lane) {
+			throw new AgentCliError({ code, message: error, retryable: true });
+		}
 		throw new AgentCliError({
-			code: receipt.cancelled ? 'cancelled' : 'lane_failed',
-			message: receipt.error ?? 'The lane operation did not complete.',
+			code,
+			message: `Lane ${lane.id} did not ${laneVerb(asked)}: ${error}`,
 			retryable: true,
+			recovery: laneRetryRecovery(lane, asked, {
+				interrupted: receipt.cancelled === true || receipt.timedOut === true,
+				backendFailed: receipt.backend?.policy === 'required',
+			}),
 		});
 	}
 	const { state: _state, actionId: _actionId, ...rest } = receipt;
@@ -1473,26 +1625,31 @@ function supabaseDoctor(
 /**
  * What lane up says about the worktree's local Supabase: the job to follow
  * while it is still starting, and why a lane that required it failed.
+ * `asked` is how the lane up asked for its launch (see laneReceiptResult).
  */
-function laneUpResult(receipt: LaneOperationReceipt) {
+function laneUpResult(receipt: LaneOperationReceipt, asked: LaneLaunchAsk) {
 	const backend = receipt.backend;
 	if (
 		!receipt.completed &&
 		!receipt.cancelled &&
+		!receipt.timedOut &&
 		backend?.policy === 'required'
 	) {
+		const failure =
+			receipt.error ??
+			backend.reasonText ??
+			"The lane requires this worktree's local Supabase, which did not start.";
 		throw new AgentCliError({
 			code: 'lane_failed',
-			message:
-				receipt.error ??
-				backend.reasonText ??
-				"The lane requires this worktree's local Supabase, which did not start.",
+			message: receipt.lane
+				? `Lane ${receipt.lane.id} did not ${laneVerb(asked)}: ${failure}`
+				: failure,
 			retryable: true,
 			recovery:
-				'Call supabase --operation up for this worktree to see why its stack cannot start, or run lane up with backend auto to start the lane without it.',
+				'Call supabase --operation up for this worktree to see why its stack cannot start, or run `rndevtools lane --operation up --worktree <app directory> --backend auto` to start the lane without it.',
 		});
 	}
-	const result = laneReceiptResult(receipt);
+	const result = laneReceiptResult(receipt, asked);
 	if (backend?.status !== 'starting' || backend.jobId === undefined) {
 		return result;
 	}
@@ -1584,8 +1741,8 @@ function createRoutes({
 						code: 'simulator_not_booted',
 						message: `${target.name} is ${target.state}; input needs a booted Simulator.`,
 						retryable: true,
-						recovery:
-							'Boot it (rndevtools lane up, or the desktop app) and retry.',
+						// The CLI takes every operation as a flag, never positionally.
+						recovery: `Boot it with \`rndevtools simulator --operation boot --udid ${target.udid}\` when this session holds it (its lane's or its claim's), or start a lane on it with \`rndevtools lane --operation up --worktree <app directory> --udid ${target.udid}\`, then retry.`,
 					});
 				}
 				assertDeviceAccess(agents, target.udid, context.agent);
@@ -1714,80 +1871,128 @@ function createRoutes({
 					},
 					context.signal
 				);
-				// Installed state: list the Simulator's apps and look for the bundle
-				// the worktree declares. Only when a UDID was given.
+				// Installed state, for a plan given a UDID: list the Simulator's
+				// apps now and look for the bundle the worktree declares. Only a
+				// listing that completes counts. A Simulator that is not booted
+				// cannot be listed, and what it listed while it last ran may be
+				// stale, so installed is then left out and the recommendation says
+				// why. An install never asks: it refreshes the binary either way.
 				let installed: boolean | undefined;
+				let installedUnknown: string | undefined;
 				let target: SimulatorState['devices'][number] | undefined;
 				if (command.udid) {
 					target = simulatorByUdid(await simulator.refresh(), command.udid);
-					if (plan.bundleIdentifier) {
-						await runSimulatorAction(
-							simulator,
-							{
+					const bundle = plan.bundleIdentifier;
+					if (command.operation === 'plan' && bundle) {
+						if (target.state !== 'booted') {
+							installedUnknown = `installed is left out: this Simulator is ${UNBOOTED_STATE_WORDS[target.state]}, and its apps can be listed only while it is booted (\`rndevtools lane --operation up --worktree ${shellWord(command.worktreePath)} --udid ${target.udid} --launch=false\` boots it).`;
+						} else {
+							if (context.signal.aborted) throw abortError();
+							const listing = simulator.runAction({
 								actionId: actionId(context.requestId),
 								kind: 'app.list',
 								udid: target.udid,
-							},
-							context.signal
-						);
-						const wanted = plan.bundleIdentifier.toLowerCase();
-						installed = (
-							simulator.getState().appsByDevice[target.udid] ?? []
-						).some((app) => app.bundleIdentifier.toLowerCase() === wanted);
+							});
+							const job =
+								listing.accepted && listing.jobId
+									? await waitForJob(simulator, listing.jobId, context.signal, {
+											abortError,
+										})
+									: undefined;
+							if (job?.status === 'complete') {
+								const wanted = bundle.toLowerCase();
+								installed = (
+									simulator.getState().appsByDevice[target.udid] ?? []
+								).some((app) => app.bundleIdentifier.toLowerCase() === wanted);
+							} else {
+								installedUnknown = `installed is left out: listing this Simulator's apps failed (${sanitizeDialogText(
+									job?.message ?? listing.error,
+									{
+										maxLength: MAX_LISTING_FAILURE_LENGTH,
+										fallback: job?.status ?? 'action rejected',
+									}
+								)}).`;
+							}
+						}
 					}
 				}
 				// Debug is run:ios's default, and Expo CLI starts its own Metro (on
 				// 8081, on every interface) whenever --configuration Debug is passed,
 				// --no-bundler or not. Name the configuration only when it is another.
 				const configurationFlag =
-					plan.configuration === 'Debug'
+					command.configuration === 'Debug'
 						? ''
-						: ` --configuration ${plan.configuration}`;
-				// Even --no-bundler opens the dev client. Reserve a lane first so
-				// Expo never opens this app against another project's port 8081.
-				const buildLane = lanes
-					?.getState()
-					.lanes.find(
-						(lane) =>
-							laneAppDirectory(lane) === plan.projectRoot &&
-							(!target || lane.simulatorUdid === target.udid) &&
-							lane.metro === 'ready'
+						: ` --configuration ${command.configuration}`;
+				// Expo CLI refuses --port with --no-bundler (BAD_ARGS from
+				// build/src/run/resolveBundlerProps.js in @expo/cli 57, before it
+				// builds anything), and even --no-bundler opens the app it
+				// installed, against port 8081. So the build names no port, and a
+				// lane launch then reopens the app with the lane's own Metro, with
+				// restart when the lane can restart it (afterNativeBuild). Both
+				// are given only once that Metro is ready, which the lane service
+				// marks once it proves the Metro answering on the port is the
+				// lane's own. A lane still starting is waited for.
+				const buildStep = async (): Promise<
+					{ command: string; afterward: string } | { first: string }
+				> => {
+					const lane = await awaitBuildLane(
+						lanes,
+						plan.projectRoot,
+						target?.udid,
+						context.signal
 					);
-				const buildCommand = buildLane
-					? `npx expo run:ios${configurationFlag} --device ${buildLane.simulatorUdid} --port ${buildLane.port} --no-bundler`
-					: undefined;
-				const startLaneAdvice =
-					'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native plan again.';
-				const recommendation =
-					plan.cache === 'hit'
-						? target
-							? 'install: a cached binary matches this fingerprint; run native --operation install to put it on the Simulator without building.'
-							: 'cached: a binary for this fingerprint exists; pass --udid to install it.'
-						: !buildCommand
-							? `build: ${startLaneAdvice}`
-							: plan.cache === 'miss'
-								? `build: no cached binary for this fingerprint; run \`${buildCommand}\` once (the build cache will store it for every other worktree).`
-								: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${buildCommand}\`.`;
+					if (lane?.metro === 'ready') {
+						return {
+							command: `npx expo run:ios${configurationFlag} --device ${lane.simulatorUdid} --no-bundler`,
+							afterward: afterNativeBuild(lane, plan.scheme),
+						};
+					}
+					return {
+						first: lane
+							? `Metro for lane ${lane.id} on port ${lane.port} is not ready: it is still starting, or RN Devtools could not prove it is the lane's own, so the launch that follows a build would have no Metro of the lane's to open the app with. Call lane with operation ls for its error and operation log for its output, then call native with operation plan again.`
+							: 'Call lane with operation up, this worktree, and launch=false to reserve its Simulator and Metro port, then call native with operation plan again.',
+					};
+				};
 				if (command.operation === 'plan') {
+					let advice: string;
+					if (plan.cache === 'hit') {
+						advice = target
+							? `install: a cached binary matches this fingerprint; run \`rndevtools native --operation install --worktree ${shellWord(command.worktreePath)} --udid ${target.udid}${configurationFlag}\` to put it on the Simulator without building.`
+							: 'cached: a binary for this fingerprint exists; pass --udid to install it.';
+					} else {
+						const step = await buildStep();
+						advice =
+							'first' in step
+								? `build: ${step.first}`
+								: plan.cache === 'miss'
+									? `build: no cached binary for this fingerprint; run \`${step.command}\` once (the build cache will store it for every other worktree), ${step.afterward}.`
+									: `build: this project declares no buildCacheProvider, so every worktree builds; run \`${step.command}\`, ${step.afterward}.`;
+					}
 					return {
 						...plan,
 						...(target ? { simulatorUdid: target.udid } : {}),
 						...(installed !== undefined ? { installed } : {}),
-						recommendation,
+						recommendation: installedUnknown
+							? `${advice} ${installedUnknown}`
+							: advice,
 					};
 				}
-				if (!target) required('native install requires udid.');
+				if (!target) required('The install operation requires udid.');
 				// Installing can replace the dev client a lane runs, so only the
 				// device's holder may.
 				assertDeviceAccess(agents, target.udid, context.agent);
 				// app.list proves a bundle exists, not its native fingerprint.
 				// An explicit install must refresh an older binary of that bundle.
 				if (plan.cache !== 'hit' || !plan.artifactPath) {
+					const step = await buildStep();
 					throw new AgentCliError({
 						code: 'cache_miss',
 						message: `No cached binary for fingerprint ${plan.fingerprintHash}; build it first.`,
 						retryable: false,
-						recovery: buildCommand ?? startLaneAdvice,
+						recovery:
+							'first' in step
+								? step.first
+								: `Run \`${step.command}\`, ${step.afterward}.`,
 					});
 				}
 				const job = ensureComplete(
@@ -1816,7 +2021,7 @@ function createRoutes({
 					? await agentSetup().catch(() => ({
 							status: 'not-checked',
 							message:
-								'Agent configuration could not be checked. Open Agents → Setup checks to retry.',
+								'Agent configuration could not be checked. Open Lanes → Agents → Agent setup checks to retry.',
 						}))
 					: undefined;
 				const [simulatorState, slimmingState] = await Promise.all([
@@ -2329,7 +2534,7 @@ function createRoutes({
 					case 'up': {
 						const worktreePath =
 							command.worktreePath ??
-							required('lane up requires worktreePath.');
+							required('The up operation requires worktreePath.');
 						// A device another agent holds is refused before anything boots:
 						// the named one or, without a udid, the device of the app's
 						// existing lane, which the lane service resumes. With neither,
@@ -2352,6 +2557,7 @@ function createRoutes({
 								...(command.udid ? { simulatorUdid: command.udid } : {}),
 								environment: command.environment ?? 'development',
 								launch: command.launch ?? true,
+								...(command.restart ? { restart: true } : {}),
 								...(command.preferredPort !== undefined
 									? { preferredPort: command.preferredPort }
 									: {}),
@@ -2366,10 +2572,14 @@ function createRoutes({
 						if (receipt.completed && receipt.deviceRequest) {
 							return {
 								...laneReceiptResult(receipt),
-								next: `No free Simulator: ${receipt.deviceRequest.message} RN Devtools is asking the user to start this lane on an existing Simulator or a new clone. Poll lane --operation ls; the deviceRequests entry with id ${receipt.deviceRequest.id} reports fulfilled with a laneId, or dismissed.`,
+								next: `No free Simulator: ${receipt.deviceRequest.message} RN Devtools is asking the user to start this lane on an existing Simulator or a new clone. Poll \`rndevtools lane --operation ls\`; the deviceRequests entry with id ${receipt.deviceRequest.id} reports fulfilled with a laneId, or dismissed. A fulfilled request whose lane did not launch says so in its message, with the command that launches it again.`,
 							};
 						}
-						return laneUpResult(receipt);
+						return laneUpResult(receipt, {
+							operation: 'up',
+							launch: command.launch ?? true,
+							restart: command.restart,
+						});
 					}
 					case 'launch': {
 						const lane = laneForTarget(lanes.getState(), command);
@@ -2381,11 +2591,16 @@ function createRoutes({
 								kind: 'lane.launch',
 								laneId: lane.id,
 								...(command.url ? { url: command.url } : {}),
+								...(command.restart ? { restart: true } : {}),
 								...(laneAgent ? { agent: laneAgent } : {}),
 							},
 							context.signal
 						);
-						return laneReceiptResult(receipt);
+						return laneReceiptResult(receipt, {
+							operation: 'launch',
+							restart: command.restart,
+							url: command.url,
+						});
 					}
 					case 'down': {
 						const lane = laneForTarget(lanes.getState(), command);

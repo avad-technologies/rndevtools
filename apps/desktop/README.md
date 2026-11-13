@@ -44,8 +44,52 @@ Local iOS Simulator tooling on macOS:
   several branches and coding agents run side by side. Lanes refuse to steal a
   worktree, Simulator, or port; Metro health, agent attribution, and the Metro
   log are visible on the fleet wall and in the Lanes panel
+
+  A lane's first dev-client launch, at its start or later, whoever runs it,
+  terminates a running copy of the lane's app on its Simulator first, so the
+  app starts fresh with the lane's Metro instead of staying registered as a
+  debug target on the Metro another lane or a person pointed it at. That
+  copy loses its in-memory state. A launch with the lane's full dev-client
+  URL, an `expo-development-client` URL in any scheme whose `url` is the
+  lane's Metro (`http://127.0.0.1:<port>` or `http://localhost:<port>`), as
+  a lane started without a URL scheme has to be opened, is a dev-client
+  launch too, so when it is the lane's first it restarts the app the same
+  way. The lane names the app by the
+  `ios.bundleIdentifier` the worktree's static `app.json` declared when the
+  lane started; without one, or when the Simulator cannot terminate the app,
+  the launch goes ahead without the restart, and the lane's Metro log, which
+  the Lanes panel shows, says so. When an agent's `lane --operation up` or
+  `launch` ran that launch itself, its result says so too, in `warnings`.
+  When the Lanes panel ran it (a waiting agent start the user gave a
+  Simulator included), or the launch was held back for the lane's local
+  backend and opened in the background, the log alone has the note: the
+  panel shows no receipt `warnings`. A deep link, another Metro's dev-client
+  URL included, terminates nothing unless it is asked to restart, and leaves
+  that first restart to the dev-client launch after it. Later launches
+  restart the app only when asked to.
+
+  A lane's Metro and the native build plan inherit the desktop's environment
+  without the variables of an agent session the desktop may have been started
+  from: `AI_AGENT`, `CLAUDECODE`, `DEBUG_CLAUDE_AGENT_SDK`,
+  `RNDEVTOOLS_AGENT_SESSION_ID`, and every `CLAUDE_*` and `CODEX_*` variable.
+  So do the `rndevtools` CLI the desktop runs for agent setup and its setup
+  checks, which would otherwise act as that session, and the login shell the
+  desktop asks for a PATH that finds Node when it was opened from Finder.
+  Metro also never inherits `EXPO_PUBLIC_*`, `SUPABASE_*`, `PG*` or
+  `RNDEVTOOLS_*`; a lane gets those only from its lane environment's
+  `metroEnv` or its local backend. A lane's Metro binds to loopback and never
+  advertises itself over Bonjour (`EXPO_UNSTABLE_BONJOUR=0`), which would
+  announce the app's identity to the network and list every lane in each
+  lane's dev launcher. The plan runs without `DEBUG`. To strip more, such as
+  another harness's variables, start the desktop with
+  `RNDEVTOOLS_CHILD_ENV_STRIP` set to comma-separated exact names and
+  `NAME_PREFIX*` patterns, for example `EXAMPLE_AGENT_*,EXAMPLE_TOKEN` (at
+  most 64 entries and 4,096 characters). A malformed list fails lane starts,
+  Metro restarts, native plans and agent setup instead of letting through what
+  it names, and no login shell is asked; a restart fails before it stops the
+  lane's running Metro.
 - A signed `rndevtools` local-agent CLI over a current-user `0600` Unix socket,
-  including `lane up|down|ls|launch|log` and an agent skill
+  including `lane --operation up|down|ls|launch|log` and agent skills
 - Local Supabase per worktree (alpha): the Supabase tab (⌘8) tracks every native
   local Supabase stack on this Mac. For each one it shows the agent session, lane,
   Simulator and worktree/branch it belongs to. It starts, stops, resets, migrates,
@@ -74,8 +118,8 @@ Simulator-capable command at least once (and again after native changes):
 pnpm --filter @rndevtools/desktop dev:simulator
 ```
 
-That command verifies the pinned vendored SimSlim source, builds the Go and
-Swift helpers for the current architecture, then starts Electron.
+That command verifies the pinned vendored SimSlim and go-toml sources, builds
+the Go and Swift helpers for the current architecture, then starts Electron.
 
 The pinned Electron release has no install hook, so `pnpm install` deliberately
 does not fetch the runtime. The first `dev` or `start` prints
@@ -192,9 +236,12 @@ as-built notes are in [`experiments/supabase-backends/`](experiments/supabase-ba
   becomes a request you approve.
 - **Holds and cleanup.** Stacks are held by lanes, agent sessions and your pins,
   like Simulators. One stops 60 s after its last holder releases it, 10 min after
-  that holder's session is gone, or at once when its worktree is deleted. Data is
-  kept. Destroying is never automatic: Clean up suggests orphaned, stale-branch and
-  long-stopped stacks with their sizes.
+  a Claude Code holder's process has exited, or at once when its worktree is
+  deleted. A Codex holder keeps its hold until it releases it or its session-end
+  hook runs, because an idle Codex chat is no proof that the session ended, and
+  so does a holder known only by `RNDEVTOOLS_AGENT_SESSION_ID`, whose end RN
+  Devtools cannot see. Data is kept. Destroying is never automatic: Clean up
+  suggests orphaned, stale-branch and long-stopped stacks with their sizes.
 - **Branch switches.** Stack identity includes the git branch. RN Devtools follows
   a held stack to the new branch after HEAD has been stable for 30 s and no rebase
   or merge is running, and switching back reattaches the old one. Following from
