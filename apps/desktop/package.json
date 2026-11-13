@@ -1,7 +1,7 @@
 {
 	"name": "@rndevtools/desktop",
 	"productName": "RN Devtools",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"private": true,
 	"description": "Local-first desktop diagnostics for React Native apps",
 	"main": "dist/main/index.js",

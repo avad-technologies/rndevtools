@@ -79,11 +79,15 @@ describe('isLaneMetroCommand', () => {
 
 describe('Metro launch', () => {
 	let root: string;
+	let nodeBin: string;
 
 	beforeEach(async () => {
 		root = await mkdtemp(path.join(os.tmpdir(), 'rndevtools-metro-'));
 		await mkdir(path.join(root, 'node_modules', '.bin'), { recursive: true });
 		await writeFile(path.join(root, 'node_modules', '.bin', 'expo'), '');
+		nodeBin = path.join(root, 'tools');
+		await mkdir(nodeBin);
+		await writeFile(path.join(nodeBin, 'node'), '#!/bin/sh\n', { mode: 0o755 });
 	});
 
 	afterEach(async () => {
@@ -143,6 +147,7 @@ describe('Metro launch', () => {
 				}
 			);
 			const metro = createMetroSupervisor({
+				environment: { PATH: nodeBin },
 				toolPath: inheritedToolPath,
 				onExit: resolveExit,
 			});
@@ -159,7 +164,7 @@ describe('Metro launch', () => {
 
 	it('gives Metro the stripped inherited env, then metroEnv, then laneEnv, then the fixed keys', async () => {
 		const { metro, spawned } = supervisor({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			HOME: '/Users/dev',
 			NODE_OPTIONS: '--max-old-space-size=4096',
 			SHARED: 'inherited',
@@ -205,7 +210,7 @@ describe('Metro launch', () => {
 		]);
 		expect(spawned[0]?.options).toMatchObject({ cwd: root, detached: true });
 		expect(spawned[0]?.options.env).toEqual({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			HOME: '/Users/dev',
 			SHARED: 'lane-env',
 			FROM_ENVIRONMENT: '1',
@@ -224,13 +229,13 @@ describe('Metro launch', () => {
 
 	it('strips the inherited variables even when no environment or lane adds any', async () => {
 		const { metro, spawned } = supervisor({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			EXPO_PUBLIC_API_URL: 'https://api.example.com',
 			PGUSER: 'postgres',
 		});
 		await launch(metro);
 		expect(spawned[0]?.options.env).toEqual({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			NODE_ENV: 'development',
 			RCT_METRO_PORT: '8100',
 			EXPO_NO_DOTENV: '1',
@@ -243,7 +248,7 @@ describe('Metro launch', () => {
 
 	it('strips the agent session the desktop was launched from, keeping ordinary variables', async () => {
 		const { metro, spawned } = supervisor({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			HOME: '/Users/dev',
 			LANG: 'en_US.UTF-8',
 			DEBUG: 'expo:*',
@@ -267,7 +272,7 @@ describe('Metro launch', () => {
 		});
 		await launch(metro);
 		expect(spawned[0]?.options.env).toEqual({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			HOME: '/Users/dev',
 			LANG: 'en_US.UTF-8',
 			DEBUG: 'expo:*',
@@ -285,7 +290,7 @@ describe('Metro launch', () => {
 
 	it("strips what the desktop's RNDEVTOOLS_CHILD_ENV_STRIP names from the inherited env only", async () => {
 		const { metro, spawned } = supervisor({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE_TOKEN',
 			EXAMPLE_AGENT_PORT: '4100',
 			EXAMPLE_AGENT_AUTH_TOKEN: 'harness-token',
@@ -295,7 +300,7 @@ describe('Metro launch', () => {
 		// What the lane's environment sets on purpose still reaches Metro.
 		await launch(metro, { metroEnv: { EXAMPLE_TOKEN: 'metro-env' } });
 		expect(spawned[0]?.options.env).toEqual({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			EXAMPLE_TOKEN_TTL: 'kept',
 			EXAMPLE_TOKEN: 'metro-env',
 			NODE_ENV: 'development',
@@ -312,7 +317,7 @@ describe('Metro launch', () => {
 		let toolPathAsked = false;
 		const { metro, spawned } = supervisor(
 			{
-				PATH: '/usr/bin:/bin',
+				PATH: nodeBin,
 				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
 			},
 			async (inherited) => {
@@ -331,7 +336,7 @@ describe('Metro launch', () => {
 	it('strips an inherited NODE_OPTIONS that RNDEVTOOLS_CHILD_ENV_STRIP names, keeping the IPv4 order', async () => {
 		// A harness can preload its own code into every Node it starts.
 		const { metro, spawned } = supervisor({
-			PATH: '/usr/bin:/bin',
+			PATH: nodeBin,
 			NODE_OPTIONS: '--require /tmp/example-hook.cjs',
 			RNDEVTOOLS_CHILD_ENV_STRIP: 'NODE_OPTIONS',
 		});
@@ -341,26 +346,29 @@ describe('Metro launch', () => {
 		});
 	});
 
-	it('says, without throwing, when no Metro could start with the desktop environment', () => {
-		expect(
-			supervisor({
-				PATH: '/usr/bin:/bin',
-				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
-			}).metro.environmentProblem()
-		).toMatch(/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name/);
-		expect(
-			supervisor({
-				PATH: '/usr/bin:/bin',
-				RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
-			}).metro.environmentProblem()
-		).toBeUndefined();
+	it('checks the same environment before booting as it does before launch', async () => {
+		const bad = supervisor({
+			PATH: nodeBin,
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*,EXAMPLE TOKEN',
+		});
+		await expect(bad.metro.checkStart({ worktreePath: root })).rejects.toThrow(
+			/^RNDEVTOOLS_CHILD_ENV_STRIP entry 2 is not a variable name/
+		);
+		const good = supervisor({
+			PATH: nodeBin,
+			RNDEVTOOLS_CHILD_ENV_STRIP: 'EXAMPLE_AGENT_*',
+		});
+		await expect(
+			good.metro.checkStart({ worktreePath: root })
+		).resolves.toBeUndefined();
+		expect(good.spawned).toEqual([]);
 	});
 
 	it.each(['inherited', 'metroEnv', 'laneEnv'] as const)(
 		"keeps Expo's Bonjour advert off when %s turns it on",
 		async (source) => {
 			const { metro, spawned } = supervisor({
-				PATH: '/usr/bin:/bin',
+				PATH: nodeBin,
 				...(source === 'inherited' ? { EXPO_UNSTABLE_BONJOUR: '1' } : {}),
 			});
 			await launch(metro, {
@@ -381,7 +389,7 @@ describe('Metro launch', () => {
 		'omits CI from %s so managed development lanes keep Metro watch mode',
 		async (source) => {
 			const { metro, spawned } = supervisor({
-				PATH: '/usr/bin:/bin',
+				PATH: nodeBin,
 				...(source === 'inherited' || source === 'all' ? { CI: '1' } : {}),
 			});
 			await launch(metro, {
@@ -454,22 +462,57 @@ describe('Metro launch', () => {
 			{ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/Users/dev' },
 			async (inherited) => {
 				asked.push(inherited);
-				return `/opt/example/bin:${inherited}`;
+				return `${nodeBin}:${inherited}`;
 			}
 		);
 		await launch(metro);
 		expect(asked).toEqual(['/usr/bin:/bin:/usr/sbin:/sbin']);
 		expect(spawned[0]?.options.env).toMatchObject({
-			PATH: '/opt/example/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+			PATH: `${nodeBin}:/usr/bin:/bin:/usr/sbin:/sbin`,
 			HOME: '/Users/dev',
 		});
+	});
+
+	it('reports missing Node at preflight and never spawns Expo without it', async () => {
+		const { metro, spawned } = supervisor({ PATH: root });
+		await expect(metro.checkStart({ worktreePath: root })).rejects.toThrow(
+			/Node\.js.*node --version/
+		);
+		await expect(launch(metro)).rejects.toThrow(/Node\.js.*node --version/);
+		expect(spawned).toEqual([]);
+		expect(existsSync(path.join(root, 'lane.log'))).toBe(false);
+	});
+
+	it('finds a Node pinned by the workspace without asking the login shell', async () => {
+		const workspaceBin = path.join(root, 'node_modules', '.bin');
+		await writeFile(path.join(workspaceBin, 'node'), '#!/bin/sh\n', {
+			mode: 0o755,
+		});
+		const { metro, spawned } = supervisor({ PATH: root }, async () => {
+			throw new Error('Unexpected login shell lookup');
+		});
+		await metro.checkStart({ worktreePath: root });
+		await launch(metro);
+		expect(spawned[0]?.options.env?.PATH).toBe(
+			[workspaceBin, root].join(path.delimiter)
+		);
+	});
+
+	it('honors a configured Metro PATH before attempting shell discovery', async () => {
+		const { metro, spawned } = supervisor({ PATH: root }, async () => {
+			throw new Error('Unexpected login shell lookup');
+		});
+		const metroEnv = { PATH: nodeBin };
+		await metro.checkStart({ worktreePath: root, metroEnv });
+		await launch(metro, { metroEnv });
+		expect(spawned[0]?.options.env?.PATH).toBe(nodeBin);
 	});
 
 	it('fails a start whose Expo CLI cannot run with the cause, leaving nothing uncaught', async () => {
 		// The fixture's .bin/expo has no execute bit, so the real spawn reports
 		// EACCES on the child's 'error' event after spawn() returned.
 		const metro = createMetroSupervisor({
-			environment: { PATH: '/usr/bin:/bin' },
+			environment: { PATH: nodeBin },
 			toolPath: inheritedToolPath,
 		});
 		await expect(launch(metro)).rejects.toThrow(

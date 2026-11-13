@@ -1280,6 +1280,7 @@ export class LaneService {
 			appPath ?? worktreePath,
 			environment
 		);
+		this.#assertOperationActive(signal);
 
 		// From the inventory to the reservation there is no await: the device
 		// is picked, checked, and reserved before any other start can look.
@@ -1499,8 +1500,10 @@ export class LaneService {
 			? this.#slimRequest(input.slimProfileId)
 			: undefined;
 		const backendPolicy = this.#backendPolicy(input.backend, environment);
-		const environmentProblem = this.#metro.environmentProblem();
-		if (environmentProblem) throw new Error(environmentProblem);
+		await this.#metro.checkStart({
+			worktreePath: appDirectory,
+			...(environment.metroEnv ? { metroEnv: environment.metroEnv } : {}),
+		});
 		return { identity, slimRequest, backendPolicy };
 	}
 
@@ -2010,8 +2013,12 @@ export class LaneService {
 			reservation.port = lane.port;
 			// As for a new lane, a Metro the desktop's environment would refuse
 			// fails the lane up before its Simulator boots or its backend starts.
-			const environmentProblem = this.#metro.environmentProblem();
-			if (environmentProblem) throw new Error(environmentProblem);
+			await this.#metro.checkStart({
+				worktreePath: laneAppDirectory(lane),
+				...(environment.metroEnv ? { metroEnv: environment.metroEnv } : {}),
+			});
+			this.#assertOperationActive(signal);
+			this.#requireLane(lane.id);
 		}
 		const inventory = await this.#simulator.refresh();
 		const device = inventory.devices.find(
@@ -3213,8 +3220,22 @@ export class LaneService {
 		this.#requireLane(lane.id);
 		// A replacement the desktop's environment would refuse to start must
 		// fail before the lane's running Metro is stopped, not after.
-		const environmentProblem = this.#metro.environmentProblem();
-		if (environmentProblem) throw new Error(environmentProblem);
+		await this.#metro.checkStart({
+			worktreePath: laneAppDirectory(lane),
+			...(environment.metroEnv ? { metroEnv: environment.metroEnv } : {}),
+			...(backendEnv ? { laneEnv: backendEnv } : {}),
+		});
+		this.#assertOperationActive(signal);
+		const checked = this.#store.get(lane.id);
+		if (
+			!checked ||
+			this.#stoppingLanes.has(lane.id) ||
+			checked.metroPid !== lane.metroPid
+		) {
+			throw new Error(
+				`Lane ${lane.id} stopped or got another Metro while this one restarted.`
+			);
+		}
 		const pid = lane.metroPid;
 		if (pid !== undefined && this.#metro.isProcessRunning(pid)) {
 			await this.#recordMetroStop(

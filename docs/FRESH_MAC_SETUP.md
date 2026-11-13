@@ -11,9 +11,13 @@ downloaded, notarized release through Gatekeeper on another Mac.
 - Full Xcode, an accepted Xcode license, and an available iOS Simulator runtime.
   Use **Get started → Check your Mac** to select Xcode and check its runtime.
 - The consuming project's Node version, package manager, and installed
-  dependencies. Confirm `node --version` in a new Terminal. RN Devtools launched
-  from Finder reads the login shell PATH and retries discovery after Node is
-  installed or a version manager replaces it.
+  dependencies. Confirm `node --version` in a new Terminal. RN Devtools checks
+  for an executable Node in the workspace or on PATH before starting a lane.
+  When Finder's environment lacks Node, RN Devtools reads the login shell
+  PATH and retries once if the first lookup finds no usable Node. If Terminal
+  can find Node and the app still can't, quit RN Devtools and run
+  `"/Applications/RN Devtools.app/Contents/MacOS/RN Devtools"` from that terminal
+  to give the app the same PATH.
 - For managed local Supabase: Apple silicon, macOS 14 or newer, and the project's
   own supported Supabase CLI. The bundled Expo demo pins a verified CLI. Run
   `rndevtools doctor` to see the exact CLI gate for another project; do not

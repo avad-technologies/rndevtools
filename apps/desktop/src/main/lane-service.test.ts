@@ -353,7 +353,9 @@ class FakeMetro implements MetroSupervisorPort {
 	environmentIssue: string | undefined;
 
 	isPortFree = async (port: number) => !this.busyPorts.has(port);
-	environmentProblem = () => this.environmentIssue;
+	checkStart = async () => {
+		if (this.environmentIssue) throw new Error(this.environmentIssue);
+	};
 	/** Refuses as the real supervisor does when the environment has a problem. */
 	start = async (input: MetroLaunchInput) => {
 		if (this.environmentIssue) throw new Error(this.environmentIssue);

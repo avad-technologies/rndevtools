@@ -7,11 +7,14 @@ import {
 	MAX_METRO_ENV_VALUE_LENGTH,
 	METRO_ENV_NAME,
 } from '../shared/lane-protocol';
+import { childEnvironmentStrip } from './agent-harness-env';
 import {
-	childEnvironmentStrip,
-	childEnvironmentStripProblem,
-} from './agent-harness-env';
-import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
+	findNodeDirectory,
+	NODE_LOOKUP_MESSAGE,
+	projectNodeDirectory,
+	resolveToolPath,
+	type ToolPathResolver,
+} from './lane-tool-path';
 import { runSimulatorCommand } from './simulator-command-runner';
 
 const METRO_PROBE_TIMEOUT_MS = 750;
@@ -70,14 +73,10 @@ export type MetroLaunchInput = {
 export type MetroSupervisorPort = {
 	isPortFree: (port: number) => Promise<boolean>;
 	/**
-	 * Why `start` would refuse whatever it is given, the desktop's
-	 * environment being as it is (a malformed RNDEVTOOLS_CHILD_ENV_STRIP), or
-	 * undefined when it would not. The lane service asks before it boots a
-	 * Simulator for a lane whose Metro it must start, new or gone, and before
-	 * it stops a running Metro to replace it, so a replacement that cannot
-	 * start never leaves a lane without its Metro.
+	 * Checks the launch environment and resolves Node before the lane service
+	 * boots a device or stops a running Metro to replace it.
 	 */
-	environmentProblem: () => string | undefined;
+	checkStart: (input: MetroEnvironmentInput) => Promise<void>;
 	start: (input: MetroLaunchInput) => Promise<number>;
 	/**
 	 * Whether the Metro at `pid` is serving `port`: a packager answers there
@@ -124,6 +123,11 @@ export class NotLaneMetroError extends Error {
 		this.name = 'NotLaneMetroError';
 	}
 }
+
+type MetroEnvironmentInput = Pick<
+	MetroLaunchInput,
+	'worktreePath' | 'metroEnv' | 'laneEnv'
+>;
 
 type CommandRunner = typeof runSimulatorCommand;
 
@@ -262,14 +266,14 @@ function checkedLaneEnv(
  * `stripped`), its PATH replaced by `toolPath` when there is one, then the
  * environment's metroEnv, then the lane's checked laneEnv, then the fixed
  * keys every lane needs, which nothing overrides. CI is omitted from all
- * layers so development watchers stay enabled.
+ * layers so development watchers stay enabled. Node is resolved against
+ * the resulting PATH before launch.
  */
 function metroEnvironment(
 	inherited: NodeJS.ProcessEnv,
-	input: MetroLaunchInput,
+	metroEnv: MetroEnvironmentInput['metroEnv'],
 	laneEnv: Record<string, string>,
-	stripped: (name: string) => boolean,
-	toolPath: string | undefined
+	stripped: (name: string) => boolean
 ): NodeJS.ProcessEnv {
 	const base: NodeJS.ProcessEnv = {};
 	for (const [name, value] of Object.entries(inherited)) {
@@ -281,13 +285,11 @@ function metroEnvironment(
 			base[name] = value;
 		}
 	}
-	if (toolPath !== undefined) base.PATH = toolPath;
 	const environment: NodeJS.ProcessEnv = {
 		...base,
-		...input.metroEnv,
+		...metroEnv,
 		...laneEnv,
 		NODE_ENV: 'development',
-		RCT_METRO_PORT: String(input.port),
 		EXPO_NO_DOTENV: '1',
 		EXPO_NO_INTERACTIVE: '1',
 		// Every launch URL and QR code the CLI emits gets the automation
@@ -315,6 +317,32 @@ function metroEnvironment(
 	// and the noninteractive flags keep this a background development server.
 	delete environment.CI;
 	return environment;
+}
+
+async function resolveMetroEnvironment(
+	input: MetroEnvironmentInput,
+	inherited: NodeJS.ProcessEnv,
+	toolPath: ToolPathResolver
+): Promise<NodeJS.ProcessEnv> {
+	// Validate before asking the login shell to run its startup files.
+	const laneEnv = checkedLaneEnv(input.laneEnv);
+	const stripped = childEnvironmentStrip(inherited);
+	const env = metroEnvironment(inherited, input.metroEnv, laneEnv, stripped);
+	const explicitPath = laneEnv.PATH ?? input.metroEnv?.PATH;
+	const searchPath = explicitPath ?? env.PATH;
+	const projectNode =
+		explicitPath === undefined
+			? projectNodeDirectory(input.worktreePath)
+			: undefined;
+	// Respect an explicitly configured PATH. Otherwise, a workspace's pinned
+	// Node can run Expo without waiting for shell discovery.
+	env.PATH = projectNode
+		? [projectNode, searchPath ?? '/usr/bin:/bin:/usr/sbin:/sbin'].join(
+				path.delimiter
+			)
+		: (explicitPath ?? (await toolPath(searchPath)));
+	if (!findNodeDirectory(env.PATH)) throw new Error(NODE_LOOKUP_MESSAGE);
+	return env;
 }
 
 /**
@@ -349,17 +377,8 @@ async function startMetro(
 			`Expo CLI was not found under ${input.worktreePath}/node_modules. Install dependencies in the worktree first.`
 		);
 	}
-	// Refuse a bad laneEnv, or a malformed list of what to strip, before the
-	// log is created or anything spawns.
-	const laneEnv = checkedLaneEnv(input.laneEnv);
-	const stripped = childEnvironmentStrip(inherited);
-	const env = metroEnvironment(
-		inherited,
-		input,
-		laneEnv,
-		stripped,
-		await toolPath(inherited.PATH)
-	);
+	const env = await resolveMetroEnvironment(input, inherited, toolPath);
+	env.RCT_METRO_PORT = String(input.port);
 	const log = openSync(input.logPath, 'a', 0o600);
 	try {
 		const child = spawnProcess(
@@ -901,7 +920,9 @@ export function createMetroSupervisor({
 } = {}): MetroSupervisorPort {
 	return {
 		isPortFree,
-		environmentProblem: () => childEnvironmentStripProblem(environment),
+		checkStart: async (input) => {
+			await resolveMetroEnvironment(input, environment, toolPath);
+		},
 		start: (input) =>
 			startMetro(input, spawnProcess, environment, toolPath, onExit),
 		isHealthy: (port, pid) => isMetroHealthy(port, pid, probe, runCommand),

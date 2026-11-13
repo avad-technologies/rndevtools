@@ -136,18 +136,17 @@ requires `NPM_TOKEN`. Manual dispatch does not publish npm packages.
 
 ## Local development candidate
 
-When only an Apple Development identity is available, set `CSC_NAME` to that
-installed identity and `APPLE_TEAM_ID` to its team, then run:
+For development on the build Mac, use an installed Apple Development identity.
+Set `CSC_NAME` to that identity's fingerprint and `APPLE_TEAM_ID` to its team.
+The desktop and its native helpers must share the signing team for simulator
+control. With the desktop dependencies installed, run:
 
 ```sh
 pnpm --filter @rndevtools/desktop release:mac:local
 ```
 
 This creates `release/local-development/RN-Devtools-<version>-local-development-arm64.dmg`
-with a signed app, integrity/fuse verification, a manifest stating
-`notarized: false`, and checksums. It does not replace an installed app, launch
-the app, submit anything to Apple or publish anything. It is a local build
-candidate, not the public installer. Public releases require a Developer ID
-Application certificate and validated notarization credentials. Never relabel
-this candidate as a public release or weaken Gatekeeper to install it on
-another Mac.
+with a signed app, integrity and fuse verification, a manifest stating
+`notarized: false`, and checksums. Open the packaged app on the build Mac.
+When installing on another Mac, use a DMG built and verified by the public
+release command above.
