@@ -279,6 +279,9 @@ describe('runNativePlan', () => {
 		['a two-byte escape', 'fetching\\0337', 'fetching[REDACTED JWT]'],
 		['the 8-bit CSI', 'fetching\\302\\23332m', 'fetching[REDACTED JWT]'],
 		['a lone ESC', 'fetching\\033', 'fetching[REDACTED JWT]'],
+		// One that reads as an escape whose final byte is the token's first
+		// letter, which the text as it came still holds.
+		['a lone ESC and a space', 'fetching\\033 ', 'fetching[REDACTED JWT]'],
 		['an SGR sequence after Bearer', 'Bearer\\033[1m', 'Bearer [REDACTED]'],
 		// Redacting the raw text first cut this sequence at the `;` between
 		// its parameters, and left the rest of it, `32m`, on the token.
@@ -313,6 +316,47 @@ describe('runNativePlan', () => {
 			}
 		}
 	);
+
+	it('redacts a credential whose name a stray ESC takes a letter of', async () => {
+		// Before a word, an ESC and a letter are more likely a stray ESC than
+		// a two-byte escape, so the output is read with only the ESC gone too.
+		for (const [redirect, message] of [
+			['>&2\nexit 2', /failed: Error: /],
+			['', /exited without reporting a plan; it printed: Error: /],
+		] as const) {
+			const failure: unknown = await fakeNode(
+				`printf 'Error: pa\\033ssword=%s done\\n' 'hunter2-example-secret' ${redirect}`
+			)
+				.plan()
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(Error);
+			const text = (failure as Error).message;
+			expect(text).toMatch(message);
+			expect(text).toContain('Error: pasword=[REDACTED] done');
+			expect(text).not.toMatch(/hunter2/);
+		}
+	});
+
+	it('redacts all of an Authorization parameter list that an escape sequence parts from its first `=`', async () => {
+		// Read as a break, the sequence ends the first parameter's name, and the
+		// rule takes the scheme's credentials for one token, up to the first
+		// comma. Read as nothing, it leaves the list whole.
+		for (const [redirect, message] of [
+			['>&2\nexit 2', /failed: Error: /],
+			['', /exited without reporting a plan; it printed: Error: /],
+		] as const) {
+			const failure: unknown = await fakeNode(
+				`printf 'Error: Authorization: Digest username\\033[0m="example", response="%s"\\n' 'secret-value' ${redirect}`
+			)
+				.plan()
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(Error);
+			const text = (failure as Error).message;
+			expect(text).toMatch(message);
+			expect(text).toContain('Error: Authorization: [REDACTED]');
+			expect(text).not.toMatch(/secret-value|response/);
+		}
+	});
 
 	it.each([
 		['a JWT after a carriage return', 'fetching\\r', 'fetching[REDACTED JWT]'],

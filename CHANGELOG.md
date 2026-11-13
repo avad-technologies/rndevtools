@@ -243,14 +243,17 @@
 - Agent discovery keeps running while every window is hidden, so a session
   that ended without its session-end hook still has its holds released.
 - Failure text, native plan errors and local Supabase output (CLI messages
-  and service log lines) are redacted as if each terminal escape sequence
-  and invisible character they lose were a space, and again once it is
-  gone, so colored output no longer shields a token, not even one that a
-  sequence glues to the word before it, and neither does a carriage
-  return, a backspace or a zero-width character between a word, or
-  `Bearer`, and a token. A token that one of them splits is hidden whole.
-  Supabase output lost them before it was redacted, which let a carriage
-  return join a JWT to the word before it. The failure handoff's
+  and service log lines) are redacted however the terminal escape sequences
+  and invisible characters they lose part or join a credential: the rules
+  read the text without them, with a break at each, and as it came, and
+  whatever any reading finds is hidden. So colored output no longer shields
+  a token, not even one that a sequence glues to the word before it, and
+  neither does a carriage return, a backspace, a zero-width character or a
+  soft hyphen between a word, or `Bearer`, and a token, or between an
+  Authorization parameter's name and its `=`, nor a stray ESC that takes a
+  letter of a credential's name. A token that one of them splits is hidden
+  whole. Supabase output lost them before it was redacted, which let a
+  carriage return join a JWT to the word before it. The failure handoff's
   confirmation defaults to Cancel and lists the evidence it sends and to
   which vendor, and Codex fix mode asks before each edit
   (`--ask-for-approval untrusted`). Failure history no longer reports a

@@ -151,10 +151,9 @@ describe('bounded simulator diagnostics', () => {
 		}
 	});
 	it('hides all of a token that a removed sequence or character splits', () => {
-		// The rules read a token split this way as two words, and know only one
-		// of them. Removing the character joins them again, so the shown text
-		// hides what was parted from the marker, as redacting the joined text
-		// would.
+		// Read as a break, the run splits the token into two words, of which
+		// the rules know at most one. Read as nothing, it leaves the token
+		// whole, and what either reading hides is hidden.
 		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
 		for (const [raw, redacted] of [
 			['Bearer example-\u001b[1mbearer-value', 'Bearer [REDACTED]'],
@@ -165,13 +164,211 @@ describe('bounded simulator diagnostics', () => {
 			],
 			['mail us\u200ber@example.com', 'mail [REDACTED EMAIL]'],
 			['mail us\u001b[0m.er@example.com', 'mail [REDACTED EMAIL]'],
+			// Read with the sequences gone, a full stop between two of them
+			// inside a token is the token's.
+			['Bearer example\u001b[0m.\u001b[0mbearer-value', 'Bearer [REDACTED]'],
+			// Only read as nothing is this soft hyphen not a break in the JWT.
+			[
+				`token ${jwt.slice(0, 12)}\u00ad${jwt.slice(12)}`,
+				'token [REDACTED JWT]',
+			],
 			// A word that ends where the token starts stays, and so does a full
-			// stop after the token.
-			[`fetching\u001b[32m${jwt}\u001b[0m.`, 'fetching[REDACTED JWT].'],
+			// stop after an address. Read with the sequence gone, the JWT rule
+			// starts at the payload and takes a full stop after the signature for
+			// a third part, so after a JWT glued to a word the stop goes too.
+			[`fetching\u001b[32m${jwt}\u001b[0m.`, 'fetching[REDACTED JWT]'],
 			['mail \u001b[1muser@example.com\u001b[0m.', 'mail [REDACTED EMAIL].'],
 		] as const) {
 			expect(failureText(raw)).toBe(redacted);
 		}
+	});
+	it('hides a token that one sequence joins to the word before it and another splits', () => {
+		// Neither reading of every run the same way finds it: read as nothing,
+		// the runs join the token to the word, and read as breaks, they split
+		// it. Read as a break before the token only, it is whole.
+		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
+		for (const [raw, redacted] of [
+			[
+				`fetching\u001b[32m${jwt.slice(0, 12)}\u001b[0m${jwt.slice(12)}`,
+				'fetching[REDACTED JWT]',
+			],
+			[
+				'fetching\u001b[32mBea\u001b[0mrer example-bearer-value',
+				'fetchingBearer [REDACTED]',
+			],
+			// At the token's own `eyJ`, a character Unicode shows as nothing
+			// takes the break, and the token runs on past it.
+			[
+				`fetching\u001b[32m${jwt}abc\u00adeyJzZWNyZXQ`,
+				'fetching[REDACTED JWT]',
+			],
+		] as const) {
+			expect(failureText(raw)).toBe(redacted);
+		}
+	});
+	it('hides the rest of a token past a removed sequence, which no reading finds whole', () => {
+		// The break before `Bearer` that the glued word needs also comes
+		// before the `eyJ` inside the token, so every reading that sees
+		// `Bearer` stops the token there.
+		expect(
+			failureText('fetching\u001b[32mBearer example\u001b[0meyJsecret-value')
+		).toBe('fetchingBearer [REDACTED]');
+		// A full stop after it ends a sentence more often than a token.
+		expect(
+			failureText('fetching\u001b[32mBearer example\u001b[0meyJsecret-value.')
+		).toBe('fetchingBearer [REDACTED].');
+	});
+	it('redacts a credential whose name a stray ESC takes a letter of', () => {
+		// A terminal reads an ESC and the letter after it as a two-byte
+		// escape, or with intermediates as an nF one, but before a word the
+		// ESC is likely a stray one, so the text is read with it gone too.
+		for (const [raw, redacted] of [
+			[
+				'Error: pa\u001bssword=hunter2-example-secret done',
+				'Error: pasword=[REDACTED] done',
+			],
+			[
+				'Error: Be\u001barer example-bearer-token-value done',
+				'Error: Bearer [REDACTED] done',
+			],
+			[
+				'Error: A\u001buthorization: Basic dXNlcjpwYXNzd29yZGV4YW1wbGU= done',
+				'Error: Athorization: [REDACTED] done',
+			],
+			// With another sequence inside the name or the list.
+			[
+				'Error: \u001b(Authorization: Digest u\u001b]8;;https://example.test\u001b\\sername="example", response="secret-value" done',
+				'Error: uthorization: [REDACTED]',
+			],
+			// A cursor save is a real escape, whatever follows it.
+			[
+				'"\u001bBeare\u001b7r \u001b[0mexample-bearer-token-value, next',
+				'"Bearer [REDACTED], next',
+			],
+			// Before a name's last letter, or the letter before its hyphen.
+			[
+				'Error: passwor\u001bd=hunter2-example-secret done',
+				'Error: passwor=[REDACTED] done',
+			],
+			[
+				'Error: Beare\u001br example-bearer-token-value done',
+				'Error: Bearer [REDACTED] done',
+			],
+			[
+				'Error: x-ap\u001bi-key: AKexampleapikeyvalue0123 done',
+				'Error: x-ap-key: [REDACTED] done',
+			],
+			// Read with the ESC gone, with a break at each sequence, without
+			// a soft hyphen, and with a break before the glued token only.
+			[
+				'Error: \u001bBearer\u001b[0mexample-bearer-token-value done',
+				'Error: Bearer [REDACTED] done',
+			],
+			[
+				'Error: pa\u001bss\u00adword=hunter2-example-secret done',
+				'Error: pas\u00adword=[REDACTED] done',
+			],
+			[
+				'Error: fetching\u001b[32me\u001byJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl done',
+				'Error: fetching[REDACTED JWT] done',
+			],
+		] as const) {
+			expect(failureText(raw)).toBe(redacted);
+		}
+	});
+	it('writes only markers for what the text as it came hides, never the escape strings it holds', () => {
+		// Here only the text as it came holds the name whole, and its rule
+		// runs on into the title string, whose words must not reach the
+		// output with the marker.
+		expect(failureText('\u001b[1;token=abc\u001b]0;X Y]\u0007 rest')).toBe(
+			'oken=[REDACTED] rest'
+		);
+	});
+	it('hides all of the difference when a later rule takes part of an earlier marker', () => {
+		// The JWT rule takes the `Bearer` the Bearer rule wrote as the token's
+		// third part, which leaves a space the text never had.
+		expect(
+			failureText('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.bearer\tx\u001b[0m')
+		).toBe('[REDACTED JWT]');
+	});
+	it('returns text that a second redaction leaves as it is', () => {
+		// Records are redacted again when they are stored.
+		for (const raw of [
+			'\u0007token=a Bearer a',
+			'password=a \u001b[0m password=b',
+			'\rBearer ctoken=bx',
+			'Authorization: Digest username\u001b[0m="example", response="secret-value"',
+			'fetching\u001b[32meyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln\u001b[0m done',
+		]) {
+			const once = failureText(raw);
+			expect({ raw, again: failureText(once) }).toEqual({ raw, again: once });
+		}
+		// Text between two markers that the first secret holds as well could
+		// be either, so all of it is hidden.
+		expect(
+			failureText('password="a , password=b" , password="c"\u001b[0m')
+		).toBe('password="[REDACTED]"');
+		// When no other reading hides more, the text is what the rules make of
+		// the shown text, two addresses side by side included.
+		expect(
+			failureText('mail a@example.com%20b@example.org\u001b[0m and more')
+		).toBe('mail [REDACTED EMAIL][REDACTED EMAIL] and more');
+	});
+	it('cuts failure text short of a surrogate pair it would split', () => {
+		expect(failureText(`${'a'.repeat(9)}\u{1f600}`, 10)).toBe('a'.repeat(9));
+		expect(failureText(`${'a'.repeat(8)}\u{1f600}`, 10)).toBe(
+			`${'a'.repeat(8)}\u{1f600}`
+		);
+	});
+	it('redacts all of an Authorization parameter list that a removed sequence or character parts from its first `=`', () => {
+		// Read as a break, the run ends the first parameter's name, and the
+		// rule takes the scheme's credentials for one token, up to the first
+		// comma. Read as nothing, it leaves the list whole.
+		for (const raw of [
+			'Authorization: Digest username\u001b[0m="example", response="secret-value"',
+			'Authorization: Digest username=\u001b[0m"example", response="secret-value"',
+			'Authorization: Digest username\r="example", response="secret-value"',
+			'Authorization: AWS4-HMAC-SHA256 Credential\u001b[1m=EXAMPLEKEY/20260101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=secret-value',
+		]) {
+			expect(failureText(raw)).toBe('Authorization: [REDACTED]');
+		}
+	});
+	it('redacts a token whose first letter an escape sequence takes', () => {
+		// A lone ESC before a space reads as an escape whose final byte is the
+		// token's first letter, and no rule knows the rest; as it came, the
+		// text still holds the token whole.
+		const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJl';
+		expect(failureText(`Error: fetching\u001b ${jwt}`)).toBe(
+			'Error: fetching[REDACTED JWT]'
+		);
+		// A two-byte escape goes whole, even right before a word.
+		expect(failureText('\u001bMline')).toBe('line');
+	});
+	it('redacts a Bearer token after a character Unicode shows as nothing that stays in the text', () => {
+		// Soft hyphens, variation selectors, tags and fillers are shown as they
+		// are, but read as breaks as well.
+		for (const character of ['\u00ad', '\ufe0f', '\u{e0020}', '\u3164']) {
+			expect(failureText(`Error: Bearer${character}secret-value`)).toBe(
+				'Error: Bearer [REDACTED]'
+			);
+		}
+	});
+	it('cuts the free fields of a crash report before it redacts them', () => {
+		// Each field is redacted, and a crafted report can fill one with
+		// megabytes, so each is cut to 1,024 characters first, as a text
+		// report's fields are.
+		const parsed = parseDiagnosticReport(
+			report({
+				procName: 'x'.repeat(200_000),
+				exception: { type: 'E'.repeat(200_000), signal: 'SIGABRT' },
+			}),
+			'Crafted.ips',
+			now
+		);
+		expect(parsed?.process).toBe('x'.repeat(256));
+		expect(parsed?.detail).toContain(`Process: ${'x'.repeat(1_024)}\n`);
+		expect(parsed?.detail).toContain(`Exception: ${'E'.repeat(1_024)} SIGABRT`);
+		expect(parsed?.detail.length).toBeLessThan(4_096);
 	});
 	it('distinguishes SpringBoard crashes from CoreSimulator resource diagnostics', () => {
 		expect(

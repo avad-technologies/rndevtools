@@ -17,15 +17,24 @@ export function failureId(key: string): string {
 	return `failure-${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
 }
 
+/** `value` cut to `limit` code units, short of a surrogate pair's first half. */
+function cutText(value: string, limit: number): string {
+	if (value.length <= limit) return value;
+	const last = value.charCodeAt(limit - 1);
+	return value.slice(0, last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit);
+}
+
 export function failureText(value: string, limit = 16_384): string {
-	// Redacted before its escape sequences and control characters go, and
-	// after: in colored output a credential follows `\x1b[32m` directly, with
-	// no word boundary for the redaction rules to start at until the sequence
-	// is gone, and removing a carriage return joins the token after it to the
-	// word before it.
-	return redactTerminalText(value, true)
-		.replaceAll(os.homedir(), '~')
-		.slice(0, limit);
+	// Without its escape sequences and control characters, redacted however
+	// they part or join a credential: in colored output one follows
+	// `\x1b[32m` directly, with no word boundary for the rules to start at
+	// until the sequence is gone, and removing a carriage return joins the
+	// token after it to the word before it. The cut never leaves half of a
+	// surrogate pair.
+	return cutText(
+		redactTerminalText(value, true).replaceAll(os.homedir(), '~'),
+		limit
+	);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -62,7 +71,10 @@ export function parseDiagnosticReport(
 		} catch {
 			return undefined;
 		}
-		process = text(body.procName);
+		// A crafted report can hold megabytes in any field, and each one is
+		// redacted, so free fields are cut first, as a text report's are.
+		const field = (value: unknown) => cutText(text(value), 1_024);
+		process = field(body.procName);
 		const identity = `${text(body.coalitionName)} ${text(body.procPath)}`;
 		udid = identity
 			.match(
@@ -104,10 +116,10 @@ export function parseDiagnosticReport(
 				: [];
 		detail = [
 			`Process: ${process}`,
-			`Exception: ${text(exception.type)} ${text(exception.signal)}`,
-			`Termination: ${text(termination.namespace)} ${text(termination.indicator)}`,
-			`Parent: ${text(body.parentProc)}`,
-			`System: ${text(object(body.osVersion).train)} (${text(object(body.osVersion).build)})`,
+			`Exception: ${field(exception.type)} ${field(exception.signal)}`,
+			`Termination: ${field(termination.namespace)} ${field(termination.indicator)}`,
+			`Parent: ${field(body.parentProc)}`,
+			`System: ${field(object(body.osVersion).train)} (${field(object(body.osVersion).build)})`,
 			'Exception/triggered-thread symbols:',
 			...frames
 				.slice(0, 16)
@@ -143,7 +155,7 @@ export function parseDiagnosticReport(
 		]
 			.map((label) => {
 				const value = field(label);
-				return value ? `${label}: ${value.slice(0, 1_024)}` : '';
+				return value ? `${label}: ${cutText(value, 1_024)}` : '';
 			})
 			.filter(Boolean)
 			.join('\n');

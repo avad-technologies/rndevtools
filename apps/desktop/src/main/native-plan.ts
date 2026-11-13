@@ -264,11 +264,11 @@ function runProjectNode(
 
 /**
  * Child output as one line an error may quote: without escape sequences and
- * control characters, redacted both before they go and after, as failureText
- * is, then bounded. In colored output a credential follows `\x1b[32m`
- * directly, with no word boundary for the redaction rules to start at until
- * the sequence is gone, and removing a carriage return joins the token after
- * it to the word before it.
+ * control characters, redacted however they part or join a credential, as
+ * failureText is, then bounded. In colored output a credential follows
+ * `\x1b[32m` directly, with no word boundary for the redaction rules to
+ * start at until the sequence is gone, and removing a carriage return joins
+ * the token after it to the word before it.
  */
 function outputDetail(output: string): string {
 	return sanitizeDialogText(redactTerminalText(output, false), {
