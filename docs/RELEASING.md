@@ -138,6 +138,10 @@ requires `NPM_TOKEN`. Manual dispatch does not publish npm packages.
 
 For development on the build Mac, use an installed Apple Development identity.
 Set `CSC_NAME` to that identity's fingerprint and `APPLE_TEAM_ID` to its team.
+Use the certificate's organizational unit (OU) for the team ID. The value in
+parentheses after an Apple Development certificate's display name can be
+different. A signed binary's team appears as `TeamIdentifier` in
+`codesign -dv --verbose=4 <signed-binary>`.
 The desktop and its native helpers must share the signing team for simulator
 control. With the desktop dependencies installed, run:
 
