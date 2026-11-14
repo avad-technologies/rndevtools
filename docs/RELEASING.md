@@ -136,14 +136,15 @@ requires `NPM_TOKEN`. Manual dispatch does not publish npm packages.
 
 ## Local development candidate
 
-For development on the build Mac, use an installed Apple Development identity.
-Set `CSC_NAME` to that identity's fingerprint and `APPLE_TEAM_ID` to its team.
-Use the certificate's organizational unit (OU) for the team ID. The value in
-parentheses after an Apple Development certificate's display name can be
-different. A signed binary's team appears as `TeamIdentifier` in
-`codesign -dv --verbose=4 <signed-binary>`.
-The desktop and its native helpers must share the signing team for simulator
-control. With the desktop dependencies installed, run:
+Install an Apple Development certificate once in **Xcode → Settings →
+Accounts → Manage Certificates**. From the repo root, build and open a signed
+app for Simulator development:
+
+```sh
+pnpm --filter @rndevtools/desktop dev:simulator
+```
+
+To produce a DMG for the build Mac, run:
 
 ```sh
 pnpm --filter @rndevtools/desktop release:mac:local
@@ -154,3 +155,10 @@ with a signed app, integrity and fuse verification, a manifest stating
 `notarized: false`, and checksums. Open the packaged app on the build Mac.
 When installing on another Mac, use a DMG built and verified by the public
 release command above.
+
+Both local commands find an installed signing identity and read the Apple
+team ID from its certificate's organizational unit. If multiple development
+identities match, set `CSC_NAME` to the desired fingerprint from
+`security find-identity -v -p codesigning`. Explicitly supplied
+`APPLE_TEAM_ID` must match the certificate's team. Set it alongside
+`CSC_LINK` when supplying a P12.

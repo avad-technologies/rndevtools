@@ -5,6 +5,7 @@ import {
 	assertCompiledTeam,
 	assertNoBuildHome,
 	assertSignature,
+	localSigningEnvironment,
 	releaseSettings,
 } from './release-macos.mjs';
 
@@ -59,6 +60,31 @@ const environment = {
 	CSC_NAME: '0123456789ABCDEF0123456789ABCDEF01234567',
 	APPLE_KEYCHAIN_PROFILE: 'example-notary',
 };
+
+test('local signing selects an Apple Development identity and refuses ambiguous selection', () => {
+	const development = 'A'.repeat(40);
+	const otherDevelopment = 'B'.repeat(40);
+	const distribution = 'C'.repeat(40);
+	const identities = [
+		`  1) ${development} "Apple Development: Example (DEVICE1234)"`,
+		`  2) ${otherDevelopment} "Apple Development: Another (DEVICE5678)"`,
+		`  3) ${distribution} "Developer ID Application: Example (ABCDE12345)"`,
+	];
+	const read = (_command, [operation]) =>
+		operation === 'find-identity' ? identities.join('\n') : '';
+	assert.throws(
+		() => localSigningEnvironment({}, read),
+		/Multiple local signing identities/
+	);
+	assert.throws(
+		() => localSigningEnvironment({ CSC_NAME: development }, read),
+		/no readable Apple team ID/
+	);
+	assert.throws(
+		() => localSigningEnvironment({ CSC_NAME: 'Unavailable' }, read),
+		/No matching macOS signing identity/
+	);
+});
 const signature = [
 	'Authority=Developer ID Application: Example Team (ABCDE12345)',
 	`TeamIdentifier=${team}`,
