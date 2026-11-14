@@ -136,18 +136,29 @@ requires `NPM_TOKEN`. Manual dispatch does not publish npm packages.
 
 ## Local development candidate
 
-When only an Apple Development identity is available, set `CSC_NAME` to that
-installed identity and `APPLE_TEAM_ID` to its team, then run:
+Install an Apple Development certificate once in **Xcode → Settings →
+Accounts → Manage Certificates**. From the repo root, build and open a signed
+app for Simulator development:
+
+```sh
+pnpm --filter @rndevtools/desktop dev:simulator
+```
+
+To produce a DMG for the build Mac, run:
 
 ```sh
 pnpm --filter @rndevtools/desktop release:mac:local
 ```
 
 This creates `release/local-development/RN-Devtools-<version>-local-development-arm64.dmg`
-with a signed app, integrity/fuse verification, a manifest stating
-`notarized: false`, and checksums. It does not replace an installed app, launch
-the app, submit anything to Apple or publish anything. It is a local build
-candidate, not the public installer. Public releases require a Developer ID
-Application certificate and validated notarization credentials. Never relabel
-this candidate as a public release or weaken Gatekeeper to install it on
-another Mac.
+with a signed app, integrity and fuse verification, a manifest stating
+`notarized: false`, and checksums. Open the packaged app on the build Mac.
+When installing on another Mac, use a DMG built and verified by the public
+release command above.
+
+Both local commands find an installed signing identity and read the Apple
+team ID from its certificate's organizational unit. If multiple development
+identities match, set `CSC_NAME` to the desired fingerprint from
+`security find-identity -v -p codesigning`. Explicitly supplied
+`APPLE_TEAM_ID` must match the certificate's team. Set it alongside
+`CSC_LINK` when supplying a P12.

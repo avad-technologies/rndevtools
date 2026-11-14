@@ -57,11 +57,10 @@ Source builds use Node.js 24, pnpm 12.4.1, Go 1.27, and Xcode's Swift toolchain.
 
 ```sh
 pnpm install
-pnpm --filter @rndevtools/desktop native:build
-pnpm --filter @rndevtools/desktop dev
+pnpm --filter @rndevtools/desktop dev:simulator
 ```
 
-Simulator mutations require a signed packaged app. See the [release guide](docs/RELEASING.md) for signing and packaging and the [desktop guide](apps/desktop/README.md) for development.
+On macOS, `dev:simulator` builds and opens a signed app from your checkout. Set up an Apple Development certificate in Xcode once. See the [desktop guide](apps/desktop/README.md#run-locally) for local development and the [release guide](docs/RELEASING.md) for distribution.
 
 Package guides: [Core diagnostics](packages/core/README.md) · [React Native integration](packages/react-native/README.md).
 

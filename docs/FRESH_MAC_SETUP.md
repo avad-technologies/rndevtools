@@ -11,9 +11,13 @@ downloaded, notarized release through Gatekeeper on another Mac.
 - Full Xcode, an accepted Xcode license, and an available iOS Simulator runtime.
   Use **Get started → Check your Mac** to select Xcode and check its runtime.
 - The consuming project's Node version, package manager, and installed
-  dependencies. Confirm `node --version` in a new Terminal. RN Devtools launched
-  from Finder reads the login shell PATH and retries discovery after Node is
-  installed or a version manager replaces it.
+  dependencies. Confirm `node --version` in a new Terminal. RN Devtools checks
+  for an executable Node in the workspace or on PATH before starting a lane.
+  When Finder's environment lacks Node, RN Devtools reads the login shell
+  PATH and retries once if the first lookup finds no usable Node. If Terminal
+  can find Node and the app still can't, quit RN Devtools and run
+  `"/Applications/RN Devtools.app/Contents/MacOS/RN Devtools"` from that terminal
+  to give the app the same PATH.
 - For managed local Supabase: Apple silicon, macOS 14 or newer, and the project's
   own supported Supabase CLI. The bundled Expo demo pins a verified CLI. Run
   `rndevtools doctor` to see the exact CLI gate for another project; do not
@@ -27,16 +31,18 @@ Use **Get started → Choose extras → Coding agents → Set up**, or run:
 "/Applications/RN Devtools.app/Contents/Resources/native/rndevtools" setup
 ```
 
-Restart the coding agent or reload its MCP servers after registration. If using
-the short command in Terminal, put `~/.local/bin` on the shell PATH. Review and
-trust newly installed Codex hooks with `/hooks` when setup requests it. Run
+Restart the coding agent after registration to load the MCP configuration and
+Codex command rules. If using the short command in Terminal, put
+`~/.local/bin` on the shell PATH. Default Codex setup needs no hook review.
+Use `rndevtools setup --agents codex --remove-codex-hooks` to switch an older
+installation to command rules alone. Run
 `rndevtools doctor` and inspect any `skip` in the setup report.
 
 Open **Setup → Choose extras → Agent setup check** before and after registration.
 After setup it remains under **Lanes → Agents**. Review overlapping simulator
 controllers, choose the relevant project, and use the scoped repair/Undo
-buttons. Reload the affected client, then run the connection test. Installed
-hooks still need client trust; the check does not grant it automatically.
+buttons. Reload the affected client, then run the connection test. Optional
+Codex hooks keep their approval while the definition stays unchanged.
 See [agent setup checks](AGENT_SETUP_CHECK.md) for repair scope and coverage.
 
 Setup preserves existing MCP approval settings, environment, disabled state,

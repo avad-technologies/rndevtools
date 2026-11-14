@@ -110,16 +110,20 @@ From the monorepo root:
 pnpm --filter @rndevtools/desktop dev
 ```
 
-`dev` keeps the cross-platform connected-app diagnostics loop fast and does not
-generate ignored native binaries. On macOS, a clean checkout should use the
-Simulator-capable command at least once (and again after native changes):
+`dev` runs the diagnostics UI with hot reload. For full Simulator control on
+macOS, quit any running RN Devtools desktop and run:
 
 ```bash
 pnpm --filter @rndevtools/desktop dev:simulator
 ```
 
-That command verifies the pinned vendored SimSlim and go-toml sources, builds
-the Go and Swift helpers for the current architecture, then starts Electron.
+Set up an Apple Development certificate once in **Xcode → Settings →
+Accounts → Manage Certificates**. The command selects the installed identity,
+reads its team ID, builds and verifies the desktop and its Go and Swift
+helpers, then opens the signed app under `release/development-app`. If
+multiple eligible development identities match, set `CSC_NAME` to the desired
+certificate fingerprint. Rerun the command after source changes. To produce a
+local DMG, use the [local packaging command](../../docs/RELEASING.md#local-development-candidate).
 
 The pinned Electron release has no install hook, so `pnpm install` deliberately
 does not fetch the runtime. The first `dev` or `start` prints

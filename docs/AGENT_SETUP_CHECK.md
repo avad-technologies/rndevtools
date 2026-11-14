@@ -9,8 +9,8 @@ visible. **Recheck** always reads fresh configuration.
 
 The check covers Claude Code and Codex default user configuration, the selected
 registered project, RN Devtools MCP registration, routing instructions, its two
-skills, and installed steering hooks. It flags known simulator controllers such
-as XcodeBuildMCP, iOS Simulator MCP, SimView, Maestro, Argent, Radon,
+skills, and command rules or steering hooks. It flags known simulator
+controllers such as XcodeBuildMCP, iOS Simulator MCP, SimView, Maestro, Argent, Radon,
 agent-device and Appium. A registered controller is a potential overlap; the
 check does not start it or claim it has interfered with a lane. Hosted Supabase
 and Expo cloud tools are not disabled. With a project selected, the skills and
@@ -39,6 +39,7 @@ file atomically, and rechecks.
 | Disable a Claude plugin | All projects, or a local override for the selected project |
 | Disable a Claude MCP | Selected project only; its registration is retained |
 | Repair RN Devtools registration | Existing effective registration, preserving environment and approval policy; a Codex tool timeout under 240 s is raised to 240, as setup does |
+| Install Codex command rules | `~/.codex/rules/rndevtools.rules` |
 | Install hooks, routing or RN Devtools skills | The displayed client file; other hooks/instructions remain |
 
 **Undo** restores the touched setting while retaining unrelated later edits.
@@ -65,8 +66,20 @@ first; the next preview, repair or undo in that scope deletes the records past
 that, and any of them deletes a record an earlier build kept for a repair it
 had undone.
 
-Reload the affected client after a change. In Codex, review new hooks with
-`/hooks`. **Test RN Devtools connection** performs MCP initialize, tools/list,
+Restart the affected client after a change. Default Codex setup installs
+MCP, skills, routing instructions, and command rules. For broader shell
+steering and automatic lane cleanup on session end, run
+`rndevtools setup --agents codex --codex-hooks` and review the new hooks
+in Codex Settings → Hooks or `/hooks` in the CLI. Codex retains approval
+while the hook definition stays unchanged. To remove RN Devtools hooks
+from an older setup, run `rndevtools setup --agents codex --remove-codex-hooks`.
+
+Command rules cover matching Simulator and Metro command prefixes. The optional
+hook also checks package scripts, shell wrappers, and managed Supabase commands.
+When running without the SessionEnd hook, explicitly close a completed lane or run
+`rndevtools release --all` from the session that owns it.
+
+**Test RN Devtools connection** performs MCP initialize, tools/list,
 and doctor against the bundled CLI. It does not change simulator/database state
 or establish which tools an already-running Claude/Codex chat has loaded.
 

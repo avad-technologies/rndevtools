@@ -217,8 +217,10 @@ export function AgentSetupCheck({ refreshKey = 0 }: { refreshKey?: number }) {
 										: 'MCP needs setup'}{' '}
 									·{' '}
 									{client.hooks === 'installed-unverified'
-										? 'Hooks installed; trust unverified'
-										: 'Hooks need setup'}
+										? 'Hooks installed · trust unverified'
+										: client.hooks === 'command-rules'
+											? 'Codex command rules installed'
+											: 'Steering needs setup'}
 								</small>
 							</div>
 						))}

@@ -67,7 +67,7 @@ a private local socket.
   command is start, so `npx expo --port 8082` starts Metro too),
   `react-native start`, `expo run:ios` without `--no-bundler`, or a package
   script that runs one of those (`npm start`, `yarn ios`): each starts its
-  own Metro, and the hook blocks them.
+  own Metro.
 - **Never start Supabase by hand for a lane.** When the user has turned on
   local Supabase in RN Devtools and the worktree's `supabase/config.toml`
   sets `[experimental] stack = true`, `lane --operation up` starts the
@@ -238,7 +238,7 @@ Devtools' own automatic start has none: wait a few seconds, then call
 If the dev client is not installed on that Simulator, `lane --operation up`
 fails with `<bundle id> is not installed on this Simulator` and leaves Metro
 running. **Do not reach for `expo run:ios` first**: without `--no-bundler` it
-starts its own Metro, and the hook blocks it. Ask the desktop what the
+starts its own Metro. Ask the desktop what the
 worktree needs; it fingerprints the native inputs with the project's own Expo
 tooling and checks the shared build cache, so ten worktrees of one native
 shell build once:

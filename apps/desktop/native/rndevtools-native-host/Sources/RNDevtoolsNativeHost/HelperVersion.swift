@@ -4,5 +4,5 @@
 extension NativeHost {
   /// The desktop version this host is built for. Electron trusts the host only when its
   /// handshake reports the version recorded in the verified native manifest.
-  static let helperVersion = "0.2.0"
+  static let helperVersion = "0.2.1"
 }

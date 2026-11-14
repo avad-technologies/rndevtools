@@ -1,4 +1,4 @@
-// Package setup installs the CLI, MCP configuration, skills, and steering hooks.
+// Package setup installs the CLI, MCP configuration, skills, and shell steering.
 // Plan previews changes; Apply merges configuration atomically, preserves unknown
 // keys and symlinks, and never deletes files it did not create.
 package setup
@@ -68,8 +68,13 @@ type Options struct {
 	Project string
 	// SkipLink leaves PATH alone.
 	SkipLink bool
-	// SkipHook leaves Claude Code's hooks alone.
+	// SkipHook leaves both agents' hooks and the Codex rules alone.
 	SkipHook bool
+	// CodexHooks enables the optional shell and SessionEnd hooks. Codex
+	// command rules work with or without these hooks.
+	CodexHooks bool
+	// RemoveCodexHooks opts out of existing Codex hooks after installing rules.
+	RemoveCodexHooks bool
 }
 
 // Change is one filesystem edit setup makes or would make.
@@ -102,6 +107,9 @@ func Apply(options Options) (Report, error) {
 }
 
 func run(options Options, write bool) (Report, error) {
+	if options.RemoveCodexHooks && (options.SkipHook || options.CodexHooks) {
+		return Report{}, errors.New("removing Codex hooks requires installing the command rules")
+	}
 	if options.Home == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -146,14 +154,23 @@ func run(options Options, write bool) (Report, error) {
 				return report, err
 			}
 			if !options.SkipHook {
-				// Codex requires the user to trust each new hook once via /hooks;
-				// the report's Detail says so because setup cannot do it for them.
+				rules, err := installCodexRules(options.Home, write)
+				if err := record(rules, err); err != nil {
+					return report, err
+				}
+				if options.RemoveCodexHooks && rules.Action != "skip" {
+					if err := record(removeCodexHooks(options.Home, options.Executable, write)); err != nil {
+						return report, err
+					}
+				}
+			}
+			if options.CodexHooks && !options.SkipHook {
 				change, err := installHooks(filepath.Join(options.Home, ".codex", "hooks.json"), options.Executable, write)
 				if err != nil {
 					return report, err
 				}
 				if change.Action == "create" || change.Action == "update" {
-					change.Detail += ". Codex runs new hooks only after you trust them: open Codex and run /hooks"
+					change.Detail += ". Review new or changed Codex hooks once in /hooks. An unchanged definition keeps its approval"
 					report.CodexHooksNeedTrust = true
 				}
 				report.Changes = append(report.Changes, change)
@@ -188,6 +205,10 @@ func run(options Options, write bool) (Report, error) {
 			if err := record(installClaudeImport(options.Project, write)); err != nil {
 				return report, err
 			}
+		}
+	} else if slices.Contains(agents, AgentCodex) {
+		if err := record(installBlock(filepath.Join(options.Home, ".codex", "AGENTS.md"), healthRoutingBlock(), write)); err != nil {
+			return report, err
 		}
 	}
 	return report, nil

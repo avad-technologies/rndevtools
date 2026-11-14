@@ -75,18 +75,20 @@ export function summarizeAgentCliSetup(stdout: string, home: string): string[] {
 	});
 	if (report.codexHooksNeedTrust) {
 		lines.push(
-			'Codex runs new hooks only after you trust them: open Codex and run /hooks.'
+			'Review new or changed RN Devtools hooks once in Codex with /hooks. Unchanged hooks keep their approval.'
 		);
 	}
 	if (
 		report.changes.some(
 			(change) =>
 				['create', 'update'].includes(change.action) &&
-				/\/(?:\.claude\.json|config\.toml|mcp\.json)$/.test(change.path)
+				/\/(?:\.claude\.json|config\.toml|mcp\.json|rndevtools\.rules)$/.test(
+					change.path
+				)
 		)
 	) {
 		lines.push(
-			'Restart your coding agent or reload its MCP servers to use the updated registration.'
+			'Restart your coding agent to load updated MCP registrations and command rules.'
 		);
 	}
 	if (

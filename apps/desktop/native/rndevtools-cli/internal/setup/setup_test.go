@@ -65,7 +65,8 @@ func TestApplyInstallsEverythingAndIsIdempotent(t *testing.T) {
 		home[len(filepath.Dir(home))+1:] + "/.claude.json": "update",
 		".claude/settings.json":                            "update",
 		".codex/config.toml":                               "update",
-		".codex/hooks.json":                                "create",
+		".codex/AGENTS.md":                                 "create",
+		"rules/rndevtools.rules":                           "create",
 		"settings/mcp.json":                                "create",
 		"skills/rndevtools-lanes":                          "create",
 	} {
@@ -113,18 +114,11 @@ func TestApplyInstallsEverythingAndIsIdempotent(t *testing.T) {
 		t.Fatalf("SessionEnd must fit Codex's 3 s cap: %v", end[0])
 	}
 
-	// Codex gets the same two hooks in its own file, and setup says they need trusting.
-	codexHooks := readJSON(t, filepath.Join(home, ".codex", "hooks.json"))["hooks"].(map[string]any)
-	if len(codexHooks["PreToolUse"].([]any)) != 1 || len(codexHooks["SessionEnd"].([]any)) != 1 {
-		t.Fatalf("codex hooks: %v", codexHooks)
+	if first.CodexHooksNeedTrust || exists(filepath.Join(home, ".codex", "hooks.json")) {
+		t.Fatal("default setup must not install Codex hooks")
 	}
-	if !first.CodexHooksNeedTrust {
-		t.Fatal("setup must report that Codex hooks need trusting")
-	}
-	for _, change := range first.Changes {
-		if strings.HasSuffix(change.Path, ".codex/hooks.json") && !strings.Contains(change.Detail, "/hooks") {
-			t.Fatalf("codex hook change must mention /hooks: %+v", change)
-		}
+	if got := string(mustRead(t, codexRulesPath(home))); got != codexRulesContent() {
+		t.Fatal("setup did not install the Codex command rules")
 	}
 
 	codex, _ := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
@@ -633,8 +627,25 @@ func TestHookCommandsRunFromAPackagedPathWithSpacesAndQuotes(t *testing.T) {
 	if err := os.Chmod(executable, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(Options{Home: home, Executable: executable, Agents: []Agent{AgentClaude, AgentCodex}, SkipLink: true}); err != nil {
+	options := Options{Home: home, Executable: executable, Agents: []Agent{AgentClaude, AgentCodex}, SkipLink: true, CodexHooks: true}
+	first, err := Apply(options)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !first.CodexHooksNeedTrust {
+		t.Fatal("new optional Codex hooks must be reviewed")
+	}
+	codexHooks := filepath.Join(home, ".codex", "hooks.json")
+	approvedDefinition := string(mustRead(t, codexHooks))
+	options.CodexHooks = false
+	second, err := Apply(options)
+	if err != nil || second.CodexHooksNeedTrust || string(mustRead(t, codexHooks)) != approvedDefinition {
+		t.Fatalf("default setup should preserve the hook definition: %+v, %v", second, err)
+	}
+	options.CodexHooks = true
+	third, err := Apply(options)
+	if err != nil || third.CodexHooksNeedTrust || string(mustRead(t, codexHooks)) != approvedDefinition {
+		t.Fatalf("unchanged Codex hooks should keep their approval: %+v, %v", third, err)
 	}
 	argv := filepath.Join(home, "argv.txt")
 	// Claude Code runs a hook command with sh -c; Codex with $SHELL -lc.
@@ -690,6 +701,36 @@ func TestSetupReplacesTheUnquotedHooksEarlierBuildsWrote(t *testing.T) {
 		if command := hookCommandOf(t, document, event); command != "'"+executable+"'"+suffix {
 			t.Fatalf("%s command %q", event, command)
 		}
+	}
+}
+
+func TestSetupCanRemoveOnlyRNDevtoolsCodexHooks(t *testing.T) {
+	home := t.TempDir()
+	executable := "/Applications/RN Devtools.app/Contents/Resources/native/rndevtools"
+	options := Options{Home: home, Executable: executable, Agents: []Agent{AgentCodex}, SkipLink: true, CodexHooks: true}
+	file := filepath.Join(home, ".codex", "hooks.json")
+	write(t, file, "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"/opt/other/guard\"}]}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"/opt/other/stop\"}]}]}}")
+	if _, err := Apply(options); err != nil {
+		t.Fatal(err)
+	}
+	before := string(mustRead(t, file))
+	options.CodexHooks = false
+	options.RemoveCodexHooks = true
+	preview, err := Plan(options)
+	if err != nil || actions(preview)[".codex/hooks.json"] != "update" || string(mustRead(t, file)) != before {
+		t.Fatalf("preview did not leave the existing hooks alone: %+v, %v", preview, err)
+	}
+	report, err := Apply(options)
+	if err != nil || report.CodexHooksNeedTrust {
+		t.Fatalf("hook-free setup failed: %+v, %v", report, err)
+	}
+	after := string(mustRead(t, file))
+	if !strings.Contains(after, "/opt/other/guard") || !strings.Contains(after, "/opt/other/stop") || strings.Contains(after, "rndevtools") || strings.Contains(after, "SessionEnd") {
+		t.Fatalf("removed unrelated hooks or kept an RN Devtools hook: %s", after)
+	}
+	again, err := Apply(options)
+	if err != nil || actions(again)[".codex/hooks.json"] != "unchanged" || string(mustRead(t, file)) != after {
+		t.Fatalf("repeating migration changed the hooks: %+v, %v", again, err)
 	}
 }
 

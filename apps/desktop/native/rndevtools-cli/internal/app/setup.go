@@ -28,13 +28,16 @@ for Simulators instead of raw simctl:
     (~/.kiro/settings/mcp.json)
   * installs the rndevtools-lanes and rndevtools-supabase skills where each
     agent discovers skills
-  * adds hooks for Claude Code (~/.claude/settings.json) and Codex
-    (~/.codex/hooks.json): PreToolUse redirects simctl boot/shutdown/openurl/
+  * installs Codex command rules for direct Simulator and Metro commands
+    (~/.codex/rules/rndevtools.rules). These require no hook trust.
+  * adds hooks for Claude Code (~/.claude/settings.json) and, with
+    --codex-hooks, Codex (~/.codex/hooks.json): PreToolUse redirects simctl boot/shutdown/openurl/
     install/launch/terminate/io and hand-started Metro to rndevtools and,
     while local Supabase is turned on in RN Devtools, keeps hand-run supabase
     commands native and off other agents' stacks; SessionEnd releases the
-    session's lanes, claims, and stacks. Codex runs new hooks only after you
-    trust them once with /hooks
+    session's lanes, claims, and stacks. Review new or changed Codex hooks
+    once in /hooks.
+  * adds routing instructions to ~/.codex/AGENTS.md when no project is supplied
   * with --project, also installs the skills into that repository and adds an
     "iOS Simulators" block to its AGENTS.md, plus a "Local Supabase"
     paragraph when the project has supabase/config.toml, and for Claude Code,
@@ -51,7 +54,10 @@ Flags:
                                      AGENTS.md block.
   --dry-run                          Print the plan; change nothing.
   --no-link                          Do not touch ~/.local/bin.
-  --no-hook                          Do not install the agent hooks.
+  --codex-hooks                      Also install the optional Codex hooks.
+  --remove-codex-hooks               Use command rules and remove existing
+                                     RN Devtools hooks from Codex.
+  --no-hook                          Leave hooks and Codex command rules alone.
   --no-doctor                        Skip the closing doctor check (for tests:
                                      it dials the desktop under your real
                                      home, whatever --config-home says).
@@ -68,6 +74,8 @@ func runSetup(config Config) int {
 	dryRun := flags.Bool("dry-run", false, "")
 	noLink := flags.Bool("no-link", false, "")
 	noHook := flags.Bool("no-hook", false, "")
+	codexHooks := flags.Bool("codex-hooks", false, "")
+	removeCodexHooks := flags.Bool("remove-codex-hooks", false, "")
 	noDoctor := flags.Bool("no-doctor", false, "")
 	executable := flags.String("executable", "", "")
 	configHome := flags.String("config-home", "", "")
@@ -84,7 +92,11 @@ func runSetup(config Config) int {
 		fmt.Fprint(config.Stdout, setupUsage)
 		return ExitSuccess
 	}
-	options := setup.Options{Home: *configHome, SkipLink: *noLink, SkipHook: *noHook}
+	if *removeCodexHooks && (*noHook || *codexHooks) {
+		writeLocalError(config.Stderr, "invalid_arguments", "--remove-codex-hooks requires installing Codex command rules", false, "", "")
+		return ExitUsage
+	}
+	options := setup.Options{Home: *configHome, SkipLink: *noLink, SkipHook: *noHook, CodexHooks: *codexHooks, RemoveCodexHooks: *removeCodexHooks}
 	if *configHome != "" && !filepath.IsAbs(*configHome) {
 		writeLocalError(config.Stderr, "invalid_arguments", "config-home must be absolute", false, "", "")
 		return ExitUsage

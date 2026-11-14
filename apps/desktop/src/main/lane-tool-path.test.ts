@@ -81,7 +81,8 @@ describe('createToolPathResolver', () => {
 		const answers: Array<string | undefined> = [undefined, tools];
 		let reads = 0;
 		const resolve = createToolPathResolver({
-			readShellPath: async () => {
+			readShellPath: async (timeoutMs) => {
+				if (timeoutMs === 3_000) return undefined;
 				reads += 1;
 				return answers.shift();
 			},
@@ -95,7 +96,8 @@ describe('createToolPathResolver', () => {
 		const answers = [empty, tools];
 		let reads = 0;
 		const resolve = createToolPathResolver({
-			readShellPath: async () => {
+			readShellPath: async (timeoutMs) => {
+				if (timeoutMs === 3_000) return undefined;
 				reads += 1;
 				return answers.shift();
 			},
@@ -120,6 +122,22 @@ describe('createToolPathResolver', () => {
 		expect(await resolve(empty)).toBe(
 			`${replacement}${path.delimiter}${empty}`
 		);
+	});
+	it('shares one shell retry between simultaneous starts and caches its result', async () => {
+		const deadlines: number[] = [];
+		const resolve = createToolPathResolver({
+			readShellPath: async (timeoutMs) => {
+				deadlines.push(timeoutMs);
+				return deadlines.length === 2 ? tools : undefined;
+			},
+		});
+		const expected = [tools, empty].join(path.delimiter);
+		expect(await Promise.all([resolve(empty), resolve(empty)])).toEqual([
+			expected,
+			expected,
+		]);
+		expect(await resolve(empty)).toBe(expected);
+		expect(deadlines).toEqual([15_000, 3_000]);
 	});
 });
 
