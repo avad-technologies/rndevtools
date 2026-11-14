@@ -75,13 +75,15 @@ func TestAgentHealthFreshAndPostSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, client := range after.Clients {
-		if client.Connection != "configured" || client.Hooks != "installed-unverified" {
+		want := "installed-unverified"
+		if client.ID == "codex" {
+			want = "command-rules"
+		}
+		if client.Connection != "configured" || client.Hooks != want {
 			t.Fatalf("post-setup wrong: %+v", client)
 		}
 	}
-	for _, client := range []string{"codex", "claude"} {
-		healthRepair(t, options, client, "routing")
-	}
+	healthRepair(t, options, "claude", "routing")
 	final, _ := CheckAgents(options)
 	for _, client := range final.Clients {
 		if client.Configuration != "checked" {
@@ -90,6 +92,25 @@ func TestAgentHealthFreshAndPostSetup(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(final.Limitations, " "), "trust") == false {
 		t.Fatal("must distinguish installation from trust")
+	}
+}
+
+func TestAgentHealthRepairsCodexRulesAndPreservesCustomFile(t *testing.T) {
+	options := healthFixture(t)
+	file := codexRulesPath(options.Home)
+	healthRepair(t, options, "codex", "codex-rules")
+	if got := string(mustRead(t, file)); got != codexRulesContent() {
+		t.Fatal("repair did not install Codex command rules")
+	}
+	const custom = "# developer-owned policy\n"
+	healthPut(t, file, custom)
+	finding := healthFinding(t, options, "codex", "codex-rules")
+	if finding.FixLabel != "" {
+		t.Fatal("repair must leave a developer-owned rules file alone")
+	}
+	change, err := installCodexRules(options.Home, true)
+	if err != nil || change.Action != "skip" || string(mustRead(t, file)) != custom {
+		t.Fatalf("setup changed a developer-owned rules file: %+v, %v", change, err)
 	}
 }
 
@@ -471,8 +492,9 @@ func TestAgentHealthConnectionAndHookFixesPreserveCustomPolicy(t *testing.T) {
 	healthPut(t, filepath.Join(options.Home, ".claude.json"), `{"mcpServers":{"rndevtools":{"command":"/old/rndevtools","args":["mcp"],"env":{"CUSTOM":"kept"}}}}`)
 	for _, client := range []string{"codex", "claude"} {
 		healthRepair(t, options, client, "connection")
-		healthRepair(t, options, client, "hooks")
 	}
+	healthRepair(t, options, "codex", "codex-rules")
+	healthRepair(t, options, "claude", "hooks")
 	raw, _, _ := healthRead(filepath.Join(options.Home, ".codex", "config.toml"))
 	doc, _ := healthDecode(raw, "toml")
 	value, _ := healthGet(doc, "mcp_servers", "rndevtools", "tool_timeout_sec")
