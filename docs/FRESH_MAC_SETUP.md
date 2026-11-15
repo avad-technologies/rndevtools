@@ -51,7 +51,8 @@ Use **Get started → Choose extras → Coding agents → Set up**, or run:
 
 Restart the coding agent after registration to load the MCP configuration and
 Codex command rules. If using the short command in Terminal, put
-`~/.local/bin` on the shell PATH. Default Codex setup needs no hook review.
+`~/.local/bin` on the shell PATH. RN Devtools 0.2.1's default Codex setup needs
+no hook review. With 0.2.0, use the install script above for hook-free setup.
 Use `rndevtools setup --agents codex --remove-codex-hooks` to switch an older
 installation to command rules alone. Run
 `rndevtools doctor` and inspect any `skip` in the setup report.
@@ -73,7 +74,7 @@ from its settings. A headless Claude run needs tool permission for the MCP
 operations it uses. For a read-only simulator check, run:
 
 ```sh
-claude -p --allowedTools mcp__rndevtools__simulators 'List the booted iOS simulators.'
+claude -p 'List the booted iOS simulators.' --allowedTools mcp__rndevtools__simulators
 ```
 
 Enable **Local Supabase** and **SimSlim** in their desktop tabs when needed.
