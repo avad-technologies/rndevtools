@@ -6,6 +6,7 @@ This workspace is the isolated Electron desktop diagnostics app. It uses electro
 
 ```bash
 pnpm --filter @rndevtools/desktop dev
+pnpm --filter @rndevtools/desktop dev:simulator
 pnpm --filter @rndevtools/desktop lint
 pnpm --filter @rndevtools/desktop typecheck
 pnpm --filter @rndevtools/desktop test:run
@@ -13,6 +14,8 @@ pnpm --filter @rndevtools/desktop build
 pnpm --filter @rndevtools/desktop quality
 pnpm --filter @rndevtools/desktop package
 ```
+
+Use `dev:simulator` for signed Simulator development on macOS. See the desktop README for the one-time Xcode signing setup.
 
 ## Desktop Rules
 

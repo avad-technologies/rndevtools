@@ -1,7 +1,7 @@
 {
 	"name": "@rndevtools/desktop",
 	"productName": "RN Devtools",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"private": true,
 	"description": "Local-first desktop diagnostics for React Native apps",
 	"main": "dist/main/index.js",
@@ -9,7 +9,7 @@
 		"electron:ensure": "node -e \"require('electron')\"",
 		"icons:generate": "node scripts/generate-app-icons.mjs",
 		"dev": "pnpm electron:ensure && electron-vite dev",
-		"dev:simulator": "pnpm native:build && pnpm dev",
+		"dev:simulator": "node scripts/release-macos.mjs --local-development --launch",
 		"start": "pnpm electron:ensure && electron-vite preview",
 		"build": "electron-vite build && node --conditions=style scripts/generate-bundled-notices.mjs",
 		"licenses:check": "node --conditions=style --test scripts/generate-bundled-notices.node-test.mjs",

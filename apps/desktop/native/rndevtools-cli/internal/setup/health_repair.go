@@ -322,6 +322,11 @@ func prepareHealthFix(options HealthOptions, f HealthFinding) (healthJournal, er
 		switch f.mode {
 		case "skill":
 			j.After = []byte(healthString(f.value))
+		case "codex-rules":
+			if present && !bytes.HasPrefix(raw, []byte(codexRulesHeader)) {
+				return j, errors.New("The existing rules file is not managed by RN Devtools.")
+			}
+			j.After = []byte(codexRulesContent())
 		case "routing":
 			block := healthRoutingBlock()
 			start, end, found, valid := agentsBlockSpan(string(raw))

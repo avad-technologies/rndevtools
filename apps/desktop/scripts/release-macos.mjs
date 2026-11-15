@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, X509Certificate } from 'node:crypto';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -42,6 +42,70 @@ export function releaseSettings(localDevelopment, env, version) {
 		type: localDevelopment ? 'development' : 'distribution',
 		notarize: !localDevelopment,
 	};
+}
+
+/** Use the certificate's OU, which can differ from the ID in its display name. */
+export function localSigningEnvironment(env, read = run) {
+	if (env.CSC_LINK) return env;
+	const identities = Array.from(
+		read('/usr/bin/security', [
+			'find-identity',
+			'-v',
+			'-p',
+			'codesigning',
+		]).matchAll(
+			/^\s*\d+\) ([A-F0-9]{40}) "((?:Apple Development|Developer ID Application): [^"\n]+)"$/gm
+		),
+		([, fingerprint, name]) => ({ fingerprint, name })
+	);
+	const requested = env.CSC_NAME?.trim();
+	const development = identities.filter(({ name }) =>
+		name.startsWith('Apple Development:')
+	);
+	const candidates = requested
+		? identities.filter(
+				({ fingerprint, name }) =>
+					fingerprint === requested.toUpperCase() || name.includes(requested)
+			)
+		: development.length > 0
+			? development
+			: identities;
+	if (candidates.length === 0) {
+		throw new Error(
+			'No matching macOS signing identity. Create an Apple Development certificate in Xcode Settings → Accounts → Manage Certificates, or set CSC_NAME to an installed identity.'
+		);
+	}
+	if (candidates.length > 1) {
+		throw new Error(
+			'Multiple local signing identities match. Set CSC_NAME to the fingerprint shown by security find-identity -v -p codesigning.'
+		);
+	}
+	const [{ fingerprint, name }] = candidates;
+	const certificates = read('/usr/bin/security', [
+		'find-certificate',
+		'-a',
+		'-p',
+		'-c',
+		name,
+	]);
+	const certificate = (
+		certificates.match(
+			/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g
+		) ?? []
+	)
+		.map((pem) => new X509Certificate(pem))
+		.find((cert) => cert.fingerprint.replaceAll(':', '') === fingerprint);
+	const team = certificate?.subject.match(/^OU=([A-Z0-9]{10})$/m)?.[1];
+	if (!team)
+		throw new Error(
+			'The selected signing certificate has no readable Apple team ID.'
+		);
+	if (env.APPLE_TEAM_ID && env.APPLE_TEAM_ID !== team) {
+		throw new Error(
+			'APPLE_TEAM_ID does not match the selected certificate. Unset it to use the certificate team.'
+		);
+	}
+	return { ...env, CSC_NAME: fingerprint, APPLE_TEAM_ID: team };
 }
 
 export function assertSignature(
@@ -184,19 +248,33 @@ async function verifyApp(appPath, settings, team) {
 }
 
 export async function main(args = process.argv.slice(2)) {
-	if (args.some((a) => !['--local-development', '--preflight'].includes(a))) {
+	const localDevelopment = args.includes('--local-development');
+	const launch = args.includes('--launch');
+	if (
+		args.some(
+			(a) => !['--local-development', '--preflight', '--launch'].includes(a)
+		) ||
+		(launch && !localDevelopment)
+	) {
 		throw new Error(
-			'Usage: release-macos.mjs [--local-development] [--preflight]'
+			'Usage: release-macos.mjs [--local-development [--launch]] [--preflight]'
 		);
 	}
-	if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-		throw new Error('The supported DMG must be built on an Apple silicon Mac.');
+	const architecture = process.arch;
+	if (
+		process.platform !== 'darwin' ||
+		(architecture !== 'arm64' && !(launch && architecture === 'x64'))
+	) {
+		throw new Error(
+			launch
+				? 'Signed Simulator development requires macOS on arm64 or x64.'
+				: 'The supported DMG must be built on an Apple silicon Mac.'
+		);
 	}
-	const settings = releaseSettings(
-		args.includes('--local-development'),
-		process.env,
-		manifest.version
-	);
+	const env = localDevelopment
+		? localSigningEnvironment(process.env)
+		: process.env;
+	const settings = releaseSettings(localDevelopment, env, manifest.version);
 	if (settings.mode === 'public') {
 		if (
 			run('git', ['status', '--porcelain', '--untracked-files=normal']).trim()
@@ -218,6 +296,8 @@ export async function main(args = process.argv.slice(2)) {
 		console.log(`Validated ${settings.mode} release inputs.`);
 		return;
 	}
+	if (env.CSC_NAME) process.env.CSC_NAME = env.CSC_NAME;
+	process.env.APPLE_TEAM_ID = env.APPLE_TEAM_ID;
 	process.env.RNDEVTOOLS_RELEASE_MODE = settings.mode;
 	// Use only the prevalidated Keychain profile for both app and DMG notarization.
 	for (const name of [
@@ -228,15 +308,34 @@ export async function main(args = process.argv.slice(2)) {
 		'APPLE_API_ISSUER',
 	])
 		delete process.env[name];
-	const output = join(desktopDirectory, 'release', settings.mode);
+	const output = join(
+		desktopDirectory,
+		'release',
+		launch ? 'development-app' : settings.mode
+	);
+	// electron-builder uses the unsuffixed directory for the default x64 arch.
+	const platformDirectory = architecture === 'arm64' ? 'mac-arm64' : 'mac';
+	const appPath = join(
+		output,
+		platformDirectory,
+		`${manifest.productName}.app`
+	);
 	mkdirSync(output, { recursive: true });
+	if (launch) {
+		const bundleContents = `${join(realpathSync(output), platformDirectory, `${manifest.productName}.app`, 'Contents')}/`;
+		if (desktopExecutables().some((exe) => exe.startsWith(bundleContents))) {
+			throw new Error('Quit the running development app before rebuilding it.');
+		}
+	}
 	run('pnpm', ['native:build'], { stdio: 'inherit' });
 	run('pnpm', ['build'], { stdio: 'inherit' });
 	const { build, Platform, Arch } = require('electron-builder');
-	const appPath = join(output, 'mac-arm64', `${manifest.productName}.app`);
 	await build({
 		projectDir: desktopDirectory,
-		targets: Platform.MAC.createTarget(['dmg'], Arch.arm64),
+		targets: Platform.MAC.createTarget(
+			[launch ? 'dir' : 'dmg'],
+			Arch[architecture]
+		),
 		publish: 'never',
 		config: {
 			forceCodeSigning: true,
@@ -259,6 +358,18 @@ export async function main(args = process.argv.slice(2)) {
 		settings,
 		process.env.APPLE_TEAM_ID
 	);
+	if (launch) {
+		const desktopExecutable = `/${manifest.productName}.app/Contents/MacOS/${manifest.productName}`;
+		if (desktopExecutables().some((exe) => exe.endsWith(desktopExecutable))) {
+			console.log(
+				`Built the signed development app at ${appPath}. Quit the running RN Devtools desktop, then open this app.`
+			);
+			return;
+		}
+		run('/usr/bin/open', ['-n', appPath]);
+		console.log(`Opened the signed development app at ${appPath}`);
+		return;
+	}
 	const dmgPath = join(output, settings.artifactName);
 	run('/usr/bin/hdiutil', ['verify', dmgPath]);
 	if (settings.notarize) {
@@ -334,6 +445,18 @@ export async function main(args = process.argv.slice(2)) {
 	if (!settings.notarize)
 		console.log(
 			'LOCAL DEVELOPMENT ONLY: this candidate is not notarized or approved for public installation.'
+		);
+}
+
+function desktopExecutables() {
+	const executables = run('/bin/ps', ['-ax', '-o', 'comm=']);
+	const bundle = `/${manifest.productName}.app/Contents/`;
+	return executables
+		.split('\n')
+		.map((line) => line.trim())
+		.filter(
+			(exe) =>
+				exe.includes(bundle) && !exe.endsWith('/Resources/native/rndevtools')
 		);
 }
 

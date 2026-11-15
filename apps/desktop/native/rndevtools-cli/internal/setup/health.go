@@ -18,7 +18,7 @@ import (
 )
 
 const healthFileLimit = 2 * 1024 * 1024
-const healthRulesVersion = "2026-11-09.1"
+const healthRulesVersion = "2026-11-14.1"
 
 // HealthOptions are local filesystem inputs, never accepted through the MCP.
 type HealthOptions struct {
@@ -344,7 +344,26 @@ func CheckAgents(options HealthOptions) (HealthReport, error) {
 	if err != nil {
 		return HealthReport{}, err
 	}
-	s := healthScanner{options: options, files: map[string]string{}, blocked: map[string]bool{}, report: HealthReport{Version: 1, RulesVersion: healthRulesVersion, CheckedAt: time.Now().UnixMilli(), Project: options.Project, Clients: []HealthClient{}, Findings: []HealthFinding{}, Repairs: []HealthReceipt{}, Coverage: []string{"Claude Code and Codex user configuration, selected project overrides, known controller registrations, routing skills and hooks"}, Limitations: []string{"Configuration checks do not inspect tools already loaded in a running client. Reload after changes.", "Remote clients, Claude Desktop, command-line overrides and organization-managed policy are not certified by this check.", "Hook installation is not proof of trust or invocation; shell steering is not an MCP security boundary."}}}
+	s := healthScanner{
+		options: options,
+		files:   map[string]string{},
+		blocked: map[string]bool{},
+		report: HealthReport{
+			Version:      1,
+			RulesVersion: healthRulesVersion,
+			CheckedAt:    time.Now().UnixMilli(),
+			Project:      options.Project,
+			Clients:      []HealthClient{},
+			Findings:     []HealthFinding{},
+			Repairs:      []HealthReceipt{},
+			Coverage:     []string{"Claude Code and Codex user configuration, selected project overrides, known controller registrations, routing skills, command rules and hooks"},
+			Limitations: []string{
+				"Configuration checks do not inspect tools already loaded in a running client. Reload after changes.",
+				"Remote clients, Claude Desktop, command-line overrides and organization-managed policy are not certified by this check.",
+				"Optional Codex hooks require trust in Codex. Command rules and PreToolUse steering cover shell calls.",
+			},
+		},
+	}
 	s.scanCodex()
 	s.scanClaude()
 	s.report.Limitations = append(s.report.Limitations,
@@ -642,13 +661,31 @@ func (s *healthScanner) scanGuidance(client string) {
 	pre, end := hookDocument(s.options.Executable)
 	_, preCurrent, _ := withoutRndevtoolsHooks(asHealthList(healthMap(doc, "hooks")["PreToolUse"]), pre, s.options.Executable)
 	_, endCurrent, _ := withoutRndevtoolsHooks(asHealthList(healthMap(doc, "hooks")["SessionEnd"]), end, s.options.Executable)
-	if !preCurrent || !endCurrent {
-		s.add(HealthFinding{Client: client, Rule: "hooks", Severity: "warning", Title: "RN Devtools steering hooks need setup", Detail: "Install shell steering and session cleanup hooks. Other hooks are preserved. Codex requires reviewing new hooks with /hooks; installing them does not grant trust.", file: hookFile, format: "json", mode: "hooks", FixLabel: "Install RN Devtools hooks"})
-	} else {
-		for i := range s.report.Clients {
-			if s.report.Clients[i].ID == client {
-				s.report.Clients[i].Hooks = "installed-unverified"
+	hookStatus := "not-verified"
+	if client == "codex" {
+		file := codexRulesPath(s.options.Home)
+		data, present := s.read(file, client)
+		if string(data) != codexRulesContent() {
+			f := HealthFinding{Client: client, Rule: "codex-rules", Severity: "warning", Title: "RN Devtools command rules need setup", Detail: "Install Codex rules for direct Simulator mutations and Metro starts. Restart Codex to load them.", file: file, format: "text", mode: "codex-rules", FixLabel: "Install Codex command rules"}
+			if present && !bytes.HasPrefix(data, []byte(codexRulesHeader)) {
+				f.Detail = "The RN Devtools rules file contains custom content. Review it before installing the managed rules."
+				f.FixLabel = ""
 			}
+			s.add(f)
+		} else {
+			hookStatus = "command-rules"
+		}
+		if preCurrent && endCurrent {
+			hookStatus = "installed-unverified"
+		}
+	} else if !preCurrent || !endCurrent {
+		s.add(HealthFinding{Client: client, Rule: "hooks", Severity: "warning", Title: "RN Devtools steering hooks need setup", Detail: "Install shell steering and session cleanup hooks for Claude Code. Other hooks are preserved.", file: hookFile, format: "json", mode: "hooks", FixLabel: "Install RN Devtools hooks"})
+	} else {
+		hookStatus = "installed-unverified"
+	}
+	for i := range s.report.Clients {
+		if s.report.Clients[i].ID == client {
+			s.report.Clients[i].Hooks = hookStatus
 		}
 	}
 	for _, name := range skillNames() {

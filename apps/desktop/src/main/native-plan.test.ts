@@ -8,14 +8,14 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { findNodeDirectory, projectNodeDirectory } from './lane-tool-path';
 import {
 	createNativePlanRunner,
 	nativePlanResultSchema,
 	PLAN_RESULT_PREFIX,
-	resolveProjectNode,
 } from './native-plan';
 
-describe('resolveProjectNode', () => {
+describe('project Node discovery', () => {
 	let root: string;
 	beforeEach(() => {
 		root = mkdtempSync(path.join(os.tmpdir(), 'rndevtools-native-plan-'));
@@ -28,21 +28,20 @@ describe('resolveProjectNode', () => {
 		mkdirSync(app, { recursive: true });
 		writeFileSync(
 			path.join(root, 'node_modules', '.bin', 'node'),
-			'#!/bin/sh\n'
+			'#!/bin/sh\n',
+			{ mode: 0o755 }
 		);
-		expect(resolveProjectNode(app, { PATH: '/nowhere' })).toBe(
-			path.join(root, 'node_modules', '.bin', 'node')
+		expect(projectNodeDirectory(app)).toBe(
+			path.join(root, 'node_modules', '.bin')
 		);
 	});
 
 	it('falls back to the Node on the inherited PATH and never the Electron binary', () => {
 		const bin = path.join(root, 'bin');
 		mkdirSync(bin, { recursive: true });
-		writeFileSync(path.join(bin, 'node'), '#!/bin/sh\n');
-		expect(
-			resolveProjectNode(root, { PATH: `/nowhere${path.delimiter}${bin}` })
-		).toBe(path.join(bin, 'node'));
-		expect(resolveProjectNode(root, { PATH: '/nowhere' })).toBeUndefined();
+		writeFileSync(path.join(bin, 'node'), '#!/bin/sh\n', { mode: 0o755 });
+		expect(findNodeDirectory(`/nowhere${path.delimiter}${bin}`)).toBe(bin);
+		expect(findNodeDirectory('/nowhere')).toBeUndefined();
 	});
 });
 

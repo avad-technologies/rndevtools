@@ -55,7 +55,7 @@ describe('summarizeAgentCliSetup', () => {
 			'Updated ~/.claude.json',
 			'Already current ~/.codex/config.toml',
 			'Skipped ~/.cursor/mcp.json: not valid JSON; fix it by hand, then rerun setup',
-			'Restart your coding agent or reload its MCP servers to use the updated registration.',
+			'Restart your coding agent to load updated MCP registrations and command rules.',
 			'For Terminal commands, add ~/.local/bin to your shell PATH if needed; MCP uses the absolute executable path.',
 			'The RN Devtools desktop connection is working.',
 		]);
@@ -70,7 +70,7 @@ describe('summarizeAgentCliSetup', () => {
 				'/Users/me'
 			)
 		).toEqual([
-			'Codex runs new hooks only after you trust them: open Codex and run /hooks.',
+			'Review new or changed RN Devtools hooks once in Codex with /hooks. Unchanged hooks keep their approval.',
 			'The RN Devtools desktop connection is working.',
 		]);
 	});

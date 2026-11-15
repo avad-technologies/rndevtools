@@ -1,25 +1,50 @@
 # Set up RN Devtools on another Mac
 
-Install the signed release app in `/Applications` and launch it before connecting
-an agent. Installing the packaged app does not require Go, Swift build tools, or
-a HeroUI Pro token. Building RN Devtools itself from source does; see the desktop
-README. A locally signed development build is not a substitute for testing the
-downloaded, notarized release through Gatekeeper on another Mac.
+## Install and connect in one command
+
+On an Apple silicon Mac, Codex and Claude Code can run this command from a
+checkout of this repository. You can also run it from Terminal.
+
+```sh
+bash scripts/setup-macos.sh
+```
+
+The script reuses the app in `/Applications` or `~/Applications` if present.
+On a fresh Mac it downloads the 0.2.1 GitHub preview, checks the app version,
+verifies the publisher's signature and Gatekeeper acceptance, and installs
+the app in `~/Applications`. It opens
+the desktop if needed, registers the bundled CLI and MCP server with both
+agents, installs their skills, and checks the desktop connection. Use
+`--agents codex` or `--agents claude` to configure just one. Start a new agent
+session to load the tools. To upgrade an existing installation, quit the app,
+replace it using the [0.2.1 DMG](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.1),
+and rerun the script.
+
+The download includes the desktop and native helpers. It needs no local
+signing certificate, Go, Swift build tools, or HeroUI Pro token. The script
+uses the selected user's normal macOS session and agent permission settings.
+RN Devtools 0.2.1 sets up both agents' MCP and skills and installs Codex command
+rules. To build or run changes to RN Devtools itself, see
+[local desktop development](../apps/desktop/README.md#run-locally).
 
 ## Prerequisites
 
 - Full Xcode, an accepted Xcode license, and an available iOS Simulator runtime.
   Use **Get started → Check your Mac** to select Xcode and check its runtime.
 - The consuming project's Node version, package manager, and installed
-  dependencies. Confirm `node --version` in a new Terminal. RN Devtools launched
-  from Finder reads the login shell PATH and retries discovery after Node is
-  installed or a version manager replaces it.
+  dependencies. Confirm `node --version` in a new Terminal. RN Devtools checks
+  for an executable Node in the workspace or on PATH before starting a lane.
+  When Finder's environment lacks Node, RN Devtools reads the login shell
+  PATH and retries once if the first lookup finds no usable Node. If Terminal
+  can find Node and the app still can't, quit RN Devtools and run
+  `"/Applications/RN Devtools.app/Contents/MacOS/RN Devtools"` from that terminal
+  to give the app the same PATH.
 - For managed local Supabase: Apple silicon, macOS 14 or newer, and the project's
   own supported Supabase CLI. The bundled Expo demo pins a verified CLI. Run
   `rndevtools doctor` to see the exact CLI gate for another project; do not
   assume a globally installed CLI or a different major version is supported.
 
-## Connect the agent
+## Connect an already installed desktop manually
 
 Use **Get started → Choose extras → Coding agents → Set up**, or run:
 
@@ -27,22 +52,33 @@ Use **Get started → Choose extras → Coding agents → Set up**, or run:
 "/Applications/RN Devtools.app/Contents/Resources/native/rndevtools" setup
 ```
 
-Restart the coding agent or reload its MCP servers after registration. If using
-the short command in Terminal, put `~/.local/bin` on the shell PATH. Review and
-trust newly installed Codex hooks with `/hooks` when setup requests it. Run
+Restart the coding agent after registration to load the MCP configuration and
+Codex command rules. If using the short command in Terminal, put
+`~/.local/bin` on the shell PATH. RN Devtools 0.2.1's default Codex setup needs
+no hook review. With 0.2.0, use the install script above for hook-free setup.
+Use `rndevtools setup --agents codex --remove-codex-hooks` to switch an older
+installation to command rules alone. Run
 `rndevtools doctor` and inspect any `skip` in the setup report.
 
 Open **Setup → Choose extras → Agent setup check** before and after registration.
 After setup it remains under **Lanes → Agents**. Review overlapping simulator
 controllers, choose the relevant project, and use the scoped repair/Undo
-buttons. Reload the affected client, then run the connection test. Installed
-hooks still need client trust; the check does not grant it automatically.
+buttons. Reload the affected client, then run the connection test. Optional
+Codex hooks keep their approval while the definition stays unchanged.
 See [agent setup checks](AGENT_SETUP_CHECK.md) for repair scope and coverage.
 
 Setup preserves existing MCP approval settings, environment, disabled state,
 and longer timeouts. Agent tool approval is separate from RN Devtools' resource
 ownership checks and macOS permissions. See the
 [agent permission reference](../apps/desktop/native/rndevtools-cli/README.md#agent-permissions).
+
+In a trusted workspace, Claude Code loads the user-scoped RN Devtools hooks
+from its settings. A headless Claude run needs tool permission for the MCP
+operations it uses. This command allows the read-only simulator check.
+
+```sh
+claude -p 'List the booted iOS simulators.' --allowedTools mcp__rndevtools__simulators
+```
 
 Enable **Local Supabase** and **SimSlim** in their desktop tabs when needed.
 SimSlim is experimental: an unverified runtime/profile/build combination needs

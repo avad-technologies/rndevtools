@@ -10,6 +10,7 @@ import { inheritedChildEnvironment } from './agent-harness-env';
 
 // Version-manager initialization can take several seconds on a busy Mac.
 const LOGIN_SHELL_TIMEOUT_MS = 15_000;
+const LOGIN_SHELL_RETRY_TIMEOUT_MS = 3_000;
 const MAX_LOGIN_SHELL_OUTPUT_BYTES = 64 * 1024;
 const MAX_TOOL_PATH_LENGTH = 16 * 1024;
 /** Shells that take `-ilc` and print "$PATH" as one colon-separated value. */
@@ -52,12 +53,30 @@ function isExecutableFile(candidate: string): boolean {
 	}
 }
 
-/** Whether `/usr/bin/env node` would find a Node on `searchPath`. */
-function findsNode(searchPath: string | undefined): boolean {
-	return pathEntries(searchPath).some((directory) =>
+/** A directory on PATH with an executable Node. Ignore relative entries. */
+export function findNodeDirectory(
+	searchPath: string | undefined
+): string | undefined {
+	return pathEntries(searchPath).find((directory) =>
 		isExecutableFile(path.join(directory, 'node'))
 	);
 }
+
+/** Find an executable Node pinned by the app or a parent workspace. */
+export function projectNodeDirectory(projectRoot: string): string | undefined {
+	let current = path.resolve(projectRoot);
+	for (let depth = 0; depth < 6; depth += 1) {
+		const directory = path.join(current, 'node_modules', '.bin');
+		if (isExecutableFile(path.join(directory, 'node'))) return directory;
+		const parent = path.dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+	return undefined;
+}
+
+export const NODE_LOOKUP_MESSAGE =
+	'RN Devtools could not find Node.js. Confirm that node --version works in a new Terminal, then retry. If it works there, launch RN Devtools from that terminal.';
 
 /** The user's shell when it is one that takes `-ilc`, else the macOS default. */
 function loginShell(env: NodeJS.ProcessEnv): string | undefined {
@@ -165,32 +184,44 @@ export function readLoginShellPath({
  * replacing a version-manager runtime takes effect without an app restart.
  */
 export function createToolPathResolver({
-	readShellPath = readLoginShellPath,
+	readShellPath = (timeoutMs) => readLoginShellPath({ timeoutMs }),
 }: {
-	readShellPath?: () => Promise<string | undefined>;
+	readShellPath?: (timeoutMs: number) => Promise<string | undefined>;
 } = {}): ToolPathResolver {
+	const readNodePath = async (timeoutMs: number) => {
+		try {
+			const entries = pathEntries(await readShellPath(timeoutMs));
+			const candidate = entries.join(path.delimiter);
+			if (
+				candidate.length <= MAX_TOOL_PATH_LENGTH &&
+				findNodeDirectory(candidate)
+			) {
+				return entries;
+			}
+		} catch {
+			// A later request can try again once the shell is ready.
+		}
+		return undefined;
+	};
 	let shellPath: string[] | undefined;
-	let reading: Promise<string[] | undefined> | undefined;
+	let reading: Promise<void> | undefined;
 	return async (inheritedPath) => {
-		if (findsNode(inheritedPath)) return inheritedPath;
-		if (shellPath && !findsNode(shellPath.join(path.delimiter))) {
+		if (findNodeDirectory(inheritedPath)) return inheritedPath;
+		if (shellPath && !findNodeDirectory(shellPath.join(path.delimiter))) {
 			shellPath = undefined;
 		}
 		if (shellPath === undefined) {
-			reading ??= readShellPath()
-				.then((value) => {
-					const entries = pathEntries(value);
-					const candidate = entries.join(path.delimiter);
-					return candidate.length <= MAX_TOOL_PATH_LENGTH &&
-						findsNode(candidate)
-						? entries
-						: undefined;
+			reading ??= readNodePath(LOGIN_SHELL_TIMEOUT_MS)
+				.then(async (entries) => {
+					// Give a transient failure one short retry. Both concurrent
+					// starts and later starts reuse a successful lookup.
+					shellPath =
+						entries ?? (await readNodePath(LOGIN_SHELL_RETRY_TIMEOUT_MS));
 				})
-				.catch(() => undefined)
 				.finally(() => {
 					reading = undefined;
 				});
-			shellPath = await reading;
+			await reading;
 		}
 		if (shellPath === undefined) return inheritedPath;
 		return [...new Set([...shellPath, ...pathEntries(inheritedPath)])].join(
@@ -199,5 +230,5 @@ export function createToolPathResolver({
 	};
 }
 
-/** The one resolver Metro and the native plan share, so the shell is asked once. */
+/** Share successful discovery and in-flight reads across Metro and native plans. */
 export const resolveToolPath: ToolPathResolver = createToolPathResolver();

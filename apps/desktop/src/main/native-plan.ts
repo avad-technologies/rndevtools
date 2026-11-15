@@ -1,9 +1,14 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { childEnvironmentStrip } from './agent-harness-env';
-import { resolveToolPath, type ToolPathResolver } from './lane-tool-path';
+import {
+	findNodeDirectory,
+	NODE_LOOKUP_MESSAGE,
+	projectNodeDirectory,
+	resolveToolPath,
+	type ToolPathResolver,
+} from './lane-tool-path';
 import { sanitizeDialogText } from './security';
 import { redactTerminalText } from './supabase/cli-redact';
 
@@ -121,33 +126,6 @@ const req = (id) => require(require.resolve(id, { paths: [projectRoot] }));
   }) + '\\n');
 })().catch((error) => { process.stderr.write(String(error && error.stack || error)); process.exit(2); });
 `;
-
-/**
- * The project's Node, found next to its Expo binary so the fingerprint runs
- * with the same runtime that would build. Falls back to the Node on `env`'s
- * PATH (the tool PATH, which finds the user's Node even in a desktop opened
- * from Finder); never the Electron binary, whose `process.versions` and
- * native modules differ.
- */
-export function resolveProjectNode(
-	projectRoot: string,
-	env: NodeJS.ProcessEnv = process.env
-): string | undefined {
-	let current = path.resolve(projectRoot);
-	for (let depth = 0; depth < 6; depth += 1) {
-		const candidate = path.join(current, 'node_modules', '.bin', 'node');
-		if (existsSync(candidate)) return candidate;
-		const parent = path.dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	for (const directory of (env.PATH ?? '').split(path.delimiter)) {
-		if (!directory) continue;
-		const candidate = path.join(directory, 'node');
-		if (existsSync(candidate)) return candidate;
-	}
-	return undefined;
-}
 
 export type NativePlanRunner = (
 	input: {
@@ -371,19 +349,16 @@ export function createNativePlanRunner({
 		const projectRoot = path.resolve(input.projectRoot);
 		// A malformed list of what to strip fails the plan before anything runs.
 		const stripped = childEnvironmentStrip(process.env);
-		const env = planEnvironment(
-			process.env,
-			stripped,
-			await toolPath(process.env.PATH)
-		);
-		const node = resolveProjectNode(projectRoot, env);
-		if (!node) {
-			throw new Error(
-				"Node was not found for this worktree. Install the project's Node version and confirm `node --version` works in a new Terminal, then retry; RN Devtools reads your login shell PATH."
-			);
-		}
+		const projectNode = projectNodeDirectory(projectRoot);
+		const inheritedPath = stripped('PATH') ? undefined : process.env.PATH;
+		const searchPath = projectNode
+			? [projectNode, inheritedPath].filter(Boolean).join(path.delimiter)
+			: await toolPath(inheritedPath);
+		const nodeDirectory = findNodeDirectory(searchPath);
+		if (!nodeDirectory) throw new Error(NODE_LOOKUP_MESSAGE);
+		const env = planEnvironment(process.env, stripped, searchPath);
 		const result = await runProjectNode(
-			node,
+			path.join(nodeDirectory, 'node'),
 			[
 				'-e',
 				PLAN_SCRIPT,

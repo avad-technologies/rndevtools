@@ -29,7 +29,11 @@ export const agentSetupReportSchema = z.strictObject({
 				name: text,
 				configuration: z.enum(['checked', 'attention', 'not-checked']),
 				connection: z.enum(['configured', 'needs-setup']),
-				hooks: z.enum(['not-verified', 'installed-unverified']),
+				hooks: z.enum([
+					'not-verified',
+					'installed-unverified',
+					'command-rules',
+				]),
 			})
 		)
 		.max(2),

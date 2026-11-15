@@ -4,9 +4,9 @@
 
 A desktop workspace for React Native diagnostics, iOS Simulators, and parallel development across git worktrees.
 
-**[Download the macOS preview](https://github.com/avad-technologies/rndevtools/releases/download/desktop-v0.2.0/RN-Devtools-0.2.0-arm64.dmg)** · Apple silicon · Version 0.2.0
+**[Download the macOS preview](https://github.com/avad-technologies/rndevtools/releases/download/desktop-v0.2.1/RN-Devtools-0.2.1-arm64.dmg)** · Apple silicon · Version 0.2.1
 
-Signed and notarized. No HeroUI account or license is needed to run the app. [Release notes and checksums](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.0).
+Signed and notarized. No HeroUI account or license is needed to run the app. [Release notes and checksums](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.1).
 
 ![RN Devtools Simulator fleet and worktree lanes](docs/images/simulator-fleet.png)
 
@@ -25,6 +25,8 @@ Signed and notarized. No HeroUI account or license is needed to run the app. [Re
 ## Install
 
 Open the DMG, drag **RN Devtools** into **Applications**, and launch it.
+On Apple silicon, Codex or Claude Code can install and configure RN Devtools
+from a checkout with `bash scripts/setup-macos.sh`.
 For first-run agent setup and a two-lane check on another Mac, follow the
 [fresh Mac setup guide](docs/FRESH_MAC_SETUP.md).
 
@@ -57,11 +59,10 @@ Source builds use Node.js 24, pnpm 12.4.1, Go 1.27, and Xcode's Swift toolchain.
 
 ```sh
 pnpm install
-pnpm --filter @rndevtools/desktop native:build
-pnpm --filter @rndevtools/desktop dev
+pnpm --filter @rndevtools/desktop dev:simulator
 ```
 
-Simulator mutations require a signed packaged app. See the [release guide](docs/RELEASING.md) for signing and packaging and the [desktop guide](apps/desktop/README.md) for development.
+On macOS, `dev:simulator` builds and opens a signed app from your checkout. Set up an Apple Development certificate in Xcode once. See the [desktop guide](apps/desktop/README.md#run-locally) for local development and the [release guide](docs/RELEASING.md) for distribution.
 
 Package guides: [Core diagnostics](packages/core/README.md) · [React Native integration](packages/react-native/README.md).
 
