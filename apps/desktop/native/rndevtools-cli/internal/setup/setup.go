@@ -206,9 +206,16 @@ func run(options Options, write bool) (Report, error) {
 				return report, err
 			}
 		}
-	} else if slices.Contains(agents, AgentCodex) {
-		if err := record(installBlock(filepath.Join(options.Home, ".codex", "AGENTS.md"), healthRoutingBlock(), write)); err != nil {
-			return report, err
+	} else {
+		if slices.Contains(agents, AgentCodex) {
+			if err := record(installBlock(filepath.Join(options.Home, ".codex", "AGENTS.md"), healthRoutingBlock(), write)); err != nil {
+				return report, err
+			}
+		}
+		if slices.Contains(agents, AgentClaude) {
+			if err := record(installBlock(filepath.Join(options.Home, ".claude", "CLAUDE.md"), healthRoutingBlock(), write)); err != nil {
+				return report, err
+			}
 		}
 	}
 	return report, nil

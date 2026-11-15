@@ -37,7 +37,8 @@ for Simulators instead of raw simctl:
     commands native and off other agents' stacks; SessionEnd releases the
     session's lanes, claims, and stacks. Review new or changed Codex hooks
     once in /hooks.
-  * adds routing instructions to ~/.codex/AGENTS.md when no project is supplied
+  * adds user routing instructions to ~/.codex/AGENTS.md and
+    ~/.claude/CLAUDE.md for the selected agents when no project is supplied
   * with --project, also installs the skills into that repository and adds an
     "iOS Simulators" block to its AGENTS.md, plus a "Local Supabase"
     paragraph when the project has supabase/config.toml, and for Claude Code,

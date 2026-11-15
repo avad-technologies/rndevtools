@@ -1,10 +1,28 @@
 # Set up RN Devtools on another Mac
 
-Install the signed release app in `/Applications` and launch it before connecting
-an agent. Installing the packaged app does not require Go, Swift build tools, or
-a HeroUI Pro token. Building RN Devtools itself from source does; see the desktop
-README. A locally signed development build is not a substitute for testing the
-downloaded, notarized release through Gatekeeper on another Mac.
+## Install and connect in one command
+
+On an Apple silicon Mac, ask Codex or Claude Code to run this from a checkout
+of this repository, or run it from Terminal:
+
+```sh
+bash scripts/setup-macos.sh
+```
+
+The script reuses the app in `/Applications` if present. On a fresh Mac it
+downloads the versioned GitHub preview, verifies the publisher's signature
+and Gatekeeper acceptance, and installs the app in `~/Applications`. It opens
+the desktop if needed, registers the bundled CLI and MCP server with both
+agents, installs their skills, and checks the desktop connection. Use
+`--agents codex` or `--agents claude` to configure just one. Start a new agent
+session to load the tools.
+
+The download includes the desktop and native helpers. It needs no local
+signing certificate, Go, Swift build tools, or HeroUI Pro token. The script
+uses the selected user's normal macOS session and agent permission settings.
+The current 0.2.0 download sets up Codex MCP and skills. RN Devtools 0.2.1
+adds Codex command rules. To build or run changes to RN Devtools itself, see
+[local desktop development](../apps/desktop/README.md#run-locally).
 
 ## Prerequisites
 
@@ -23,7 +41,7 @@ downloaded, notarized release through Gatekeeper on another Mac.
   `rndevtools doctor` to see the exact CLI gate for another project; do not
   assume a globally installed CLI or a different major version is supported.
 
-## Connect the agent
+## Connect an already installed desktop manually
 
 Use **Get started → Choose extras → Coding agents → Set up**, or run:
 
@@ -49,6 +67,14 @@ Setup preserves existing MCP approval settings, environment, disabled state,
 and longer timeouts. Agent tool approval is separate from RN Devtools' resource
 ownership checks and macOS permissions. See the
 [agent permission reference](../apps/desktop/native/rndevtools-cli/README.md#agent-permissions).
+
+In a trusted workspace, Claude Code loads the user-scoped RN Devtools hooks
+from its settings. A headless Claude run needs tool permission for the MCP
+operations it uses. For a read-only simulator check, run:
+
+```sh
+claude -p --allowedTools mcp__rndevtools__simulators 'List the booted iOS simulators.'
+```
 
 Enable **Local Supabase** and **SimSlim** in their desktop tabs when needed.
 SimSlim is experimental: an unverified runtime/profile/build combination needs

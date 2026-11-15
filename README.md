@@ -25,6 +25,8 @@ Signed and notarized. No HeroUI account or license is needed to run the app. [Re
 ## Install
 
 Open the DMG, drag **RN Devtools** into **Applications**, and launch it.
+On Apple silicon, Codex or Claude Code can install and configure RN Devtools
+from a checkout with `bash scripts/setup-macos.sh`.
 For first-run agent setup and a two-lane check on another Mac, follow the
 [fresh Mac setup guide](docs/FRESH_MAC_SETUP.md).
 

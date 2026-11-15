@@ -124,6 +124,8 @@ helpers, then opens the signed app under `release/development-app`. If
 multiple eligible development identities match, set `CSC_NAME` to the desired
 certificate fingerprint. Rerun the command after source changes. To produce a
 local DMG, use the [local packaging command](../../docs/RELEASING.md#local-development-candidate).
+For agent setup with a released desktop, use the
+[one-command install](../../docs/FRESH_MAC_SETUP.md#install-and-connect-in-one-command).
 
 The pinned Electron release has no install hook, so `pnpm install` deliberately
 does not fetch the runtime. The first `dev` or `start` prints

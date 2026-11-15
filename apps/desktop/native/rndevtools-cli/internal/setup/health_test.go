@@ -83,7 +83,6 @@ func TestAgentHealthFreshAndPostSetup(t *testing.T) {
 			t.Fatalf("post-setup wrong: %+v", client)
 		}
 	}
-	healthRepair(t, options, "claude", "routing")
 	final, _ := CheckAgents(options)
 	for _, client := range final.Clients {
 		if client.Configuration != "checked" {

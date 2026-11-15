@@ -50,6 +50,7 @@ func TestApplyInstallsEverythingAndIsIdempotent(t *testing.T) {
 	// Pre-existing configuration that must survive untouched.
 	write(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"other":{"command":"other"}},"theme":"dark"}`)
 	write(t, filepath.Join(home, ".claude", "settings.json"), `{"model":"opus","hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"say done"}]}]}}`)
+	write(t, filepath.Join(home, ".claude", "CLAUDE.md"), "Keep existing user guidance.\n")
 	write(t, filepath.Join(home, ".codex", "config.toml"), "model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"other\"\n\n[mcp_servers.other.env]\nX = \"1\"\n")
 	if err := os.MkdirAll(filepath.Join(home, ".kiro", "settings"), 0o755); err != nil {
 		t.Fatal(err)
@@ -64,6 +65,7 @@ func TestApplyInstallsEverythingAndIsIdempotent(t *testing.T) {
 		"bin/rndevtools": "create",
 		home[len(filepath.Dir(home))+1:] + "/.claude.json": "update",
 		".claude/settings.json":                            "update",
+		".claude/CLAUDE.md":                                "update",
 		".codex/config.toml":                               "update",
 		".codex/AGENTS.md":                                 "create",
 		"rules/rndevtools.rules":                           "create",
@@ -73,6 +75,10 @@ func TestApplyInstallsEverythingAndIsIdempotent(t *testing.T) {
 		if got[key] != want {
 			t.Fatalf("%s: action %q, want %q (all: %v)", key, got[key], want, got)
 		}
+	}
+	claudeInstructions := string(mustRead(t, filepath.Join(home, ".claude", "CLAUDE.md")))
+	if !strings.HasPrefix(claudeInstructions, "Keep existing user guidance.\n") || !strings.HasSuffix(claudeInstructions, healthRoutingBlock()) {
+		t.Fatal("setup must append its Claude routing instructions and preserve user guidance")
 	}
 	if _, ok := got[".cursor/mcp.json"]; ok {
 		t.Fatal("Cursor must not be configured when ~/.cursor does not exist")
