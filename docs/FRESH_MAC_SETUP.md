@@ -9,19 +9,22 @@ checkout of this repository. You can also run it from Terminal.
 bash scripts/setup-macos.sh
 ```
 
-The script reuses the app in `/Applications` if present. On a fresh Mac it
-downloads the versioned GitHub preview, verifies the publisher's signature
-and Gatekeeper acceptance, and installs the app in `~/Applications`. It opens
+The script reuses the app in `/Applications` or `~/Applications` if present.
+On a fresh Mac it downloads the 0.2.1 GitHub preview, checks the app version,
+verifies the publisher's signature and Gatekeeper acceptance, and installs
+the app in `~/Applications`. It opens
 the desktop if needed, registers the bundled CLI and MCP server with both
 agents, installs their skills, and checks the desktop connection. Use
 `--agents codex` or `--agents claude` to configure just one. Start a new agent
-session to load the tools.
+session to load the tools. To upgrade an existing installation, quit the app,
+replace it using the [0.2.1 DMG](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.1),
+and rerun the script.
 
 The download includes the desktop and native helpers. It needs no local
 signing certificate, Go, Swift build tools, or HeroUI Pro token. The script
 uses the selected user's normal macOS session and agent permission settings.
-The current 0.2.0 download sets up Codex MCP and skills. RN Devtools 0.2.1
-adds Codex command rules. To build or run changes to RN Devtools itself, see
+RN Devtools 0.2.1 sets up both agents' MCP and skills and installs Codex command
+rules. To build or run changes to RN Devtools itself, see
 [local desktop development](../apps/desktop/README.md#run-locally).
 
 ## Prerequisites

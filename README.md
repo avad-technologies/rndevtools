@@ -4,9 +4,9 @@
 
 A desktop workspace for React Native diagnostics, iOS Simulators, and parallel development across git worktrees.
 
-**[Download the macOS preview](https://github.com/avad-technologies/rndevtools/releases/download/desktop-v0.2.0/RN-Devtools-0.2.0-arm64.dmg)** · Apple silicon · Version 0.2.0
+**[Download the macOS preview](https://github.com/avad-technologies/rndevtools/releases/download/desktop-v0.2.1/RN-Devtools-0.2.1-arm64.dmg)** · Apple silicon · Version 0.2.1
 
-Signed and notarized. No HeroUI account or license is needed to run the app. [Release notes and checksums](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.0).
+Signed and notarized. No HeroUI account or license is needed to run the app. [Release notes and checksums](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.1).
 
 ![RN Devtools Simulator fleet and worktree lanes](docs/images/simulator-fleet.png)
 

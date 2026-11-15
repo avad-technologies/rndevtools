@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # The public preview is versioned because GitHub's /latest skips prereleases.
-release_version=0.2.0
+release_version=0.2.1
 release_base=https://github.com/avad-technologies/rndevtools/releases/download
 app_name='RN Devtools.app'
 publisher='anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "434X69L4Z5"'
@@ -90,7 +90,9 @@ if [[ -e "$app" || -L "$app" ]]; then
     verify_app "$app" || fail "The installed app at $app failed the RN Devtools signature check."
     printf 'Using %s\n' "$app"
 else
+    expected_version=
     if [[ -z "$dmg" ]]; then
+        expected_version=$release_version
         dmg="$scratch/RN-Devtools.dmg"
         printf 'Downloading RN Devtools %s…\n' "$release_version"
         /usr/bin/curl -q --fail --location --silent --show-error --retry 2 \
@@ -103,6 +105,10 @@ else
     /usr/bin/hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg" >/dev/null
     mounted=true
     /usr/sbin/spctl --assess --type execute "$mount_dir/$app_name" || fail 'Gatekeeper rejected the app in the DMG.'
+    if [[ -n "$expected_version" ]]; then
+        version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -expect string -o - "$mount_dir/$app_name/Contents/Info.plist")
+        [[ "$version" == "$expected_version" ]] || fail "The downloaded app is version $version. Expected $expected_version."
+    fi
     /bin/mkdir -p "$applications_dir"
     staging=$(/usr/bin/mktemp -d "$applications_dir/.rndevtools-setup.XXXXXXXX")
     /usr/bin/ditto "$mount_dir/$app_name" "$staging/$app_name"

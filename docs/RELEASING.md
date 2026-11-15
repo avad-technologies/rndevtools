@@ -6,8 +6,8 @@ launch it. Node, pnpm, Go and the HeroUI Pro build license are not needed to
 install that app. Simulator features still require Xcode and an installed iOS
 Simulator runtime. Local Supabase uses the consuming repository's pinned CLI.
 
-The signed and notarized [desktop 0.2.0 preview](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.0)
-is available on GitHub Releases. Its declared minimum is macOS 14; testing so
+The signed and notarized [desktop 0.2.1 preview](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.1)
+is available on GitHub Releases. Its declared minimum is macOS 14. Testing so
 far covers one Apple silicon Mac with macOS 27 and Xcode 27. A separate
 clean-Mac installation and broader version coverage remain pending.
 
