@@ -2,8 +2,8 @@
 
 ## Install and connect in one command
 
-On an Apple silicon Mac, ask Codex or Claude Code to run this from a checkout
-of this repository, or run it from Terminal:
+On an Apple silicon Mac, Codex and Claude Code can run this command from a
+checkout of this repository. You can also run it from Terminal.
 
 ```sh
 bash scripts/setup-macos.sh
@@ -71,7 +71,7 @@ ownership checks and macOS permissions. See the
 
 In a trusted workspace, Claude Code loads the user-scoped RN Devtools hooks
 from its settings. A headless Claude run needs tool permission for the MCP
-operations it uses. For a read-only simulator check, run:
+operations it uses. This command allows the read-only simulator check.
 
 ```sh
 claude -p 'List the booted iOS simulators.' --allowedTools mcp__rndevtools__simulators
