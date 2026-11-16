@@ -9,16 +9,24 @@ checkout of this repository. You can also run it from Terminal.
 bash scripts/setup-macos.sh
 ```
 
-The script reuses the app in `/Applications` or `~/Applications` if present.
-On a fresh Mac it downloads the 0.2.1 GitHub preview, checks the app version,
-verifies the publisher's signature and Gatekeeper acceptance, and installs
-the app in `~/Applications`. It opens
-the desktop if needed, registers the bundled CLI and MCP server with both
-agents, installs their skills, and checks the desktop connection. Use
-`--agents codex` or `--agents claude` to configure just one. Start a new agent
-session to load the tools. To upgrade an existing installation, quit the app,
-replace it using the [0.2.1 DMG](https://github.com/avad-technologies/rndevtools/releases/tag/desktop-v0.2.1),
-and rerun the script.
+The script downloads the 0.2.1 GitHub preview, checks the app version and
+publisher’s signature, and confirms Gatekeeper acceptance. It installs a new
+copy in `~/Applications` or upgrades an older publisher-signed copy in its
+existing location. It reuses a copy at the same or a newer version. Use
+`--dmg /absolute/file.dmg` to install from an official notarized disk image
+already on the Mac.
+
+An upgrade stages the verified app before quitting RN Devtools. It saves the
+active lanes and resumes them on their original Simulators and Metro ports. It
+also checks that each lane returns to its saved Supabase instance. If the new
+desktop fails to start, the installer reopens the previous app. If a lane
+can’t be recovered, the installer reports it and keeps the plan so you can
+rerun setup after resolving the error.
+
+Setup opens the desktop, registers the bundled CLI and MCP server with both
+agents, installs their skills, and checks the connection. Use `--agents codex`
+or `--agents claude` to configure just one. Start a new agent session to load
+the tools.
 
 The download includes the desktop and native helpers. It needs no local
 signing certificate, Go, Swift build tools, or HeroUI Pro token. The script

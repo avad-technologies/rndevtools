@@ -30,6 +30,10 @@ jobs:
         run: |
           node --test scripts/check-public-content.test.mjs
           node scripts/check-public-content.mjs
+      - name: macOS setup logic
+        run: |
+          bash -n scripts/setup-macos.sh
+          node --test scripts/setup-macos-state.test.mjs
       # Neither npm package needs an install script, so none run here. That
       # keeps dependency postinstall code off a job that builds fork PRs.
       - name: Install

@@ -107,9 +107,11 @@ belong in later commits; keep the release tag unchanged.
 
 For a desktop-only preview, build and verify with the local credentials above,
 then prepare a GitHub prerelease under `desktop-v<version>` pointing to that
-build's exact commit. Attach only the verified DMG, `release-manifest.json`,
-and `SHA256SUMS.txt` from the same build. Review the artifacts and preview
-limitations before publishing. This path does not publish npm packages.
+build's exact commit. Update the README download and the version pinned in
+`scripts/setup-macos.sh` for the new preview. Attach the verified DMG,
+`release-manifest.json`, and `SHA256SUMS.txt` from the same build. Review the
+artifacts and preview limitations before publishing. This path does not publish
+npm packages.
 
 `desktop-v*` does not match the Release workflow's `v*` trigger. The current
 preview uses local signing and notarization credentials; repository CI release
